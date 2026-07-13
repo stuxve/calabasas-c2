@@ -62,7 +62,17 @@ typedef struct _PEB *PPEB;
 
 #if CONFIG_DEBUG
 static inline void _dbg_log(const char *fmt, ...) {
-    HANDLE hFile = CreateFileA("C:\\agent_debug.log",
+    /* Build log path in %TEMP% (writable without admin) */
+    static char _dbg_path[MAX_PATH] = {0};
+    if (_dbg_path[0] == '\0') {
+        DWORD tlen = GetTempPathA(MAX_PATH - 20, _dbg_path);
+        if (tlen == 0) {
+            _dbg_path[0] = '.'; _dbg_path[1] = '\\'; _dbg_path[2] = '\0';
+            tlen = 2;
+        }
+        lstrcpyA(_dbg_path + tlen, "agent_debug.log");
+    }
+    HANDLE hFile = CreateFileA(_dbg_path,
         FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile != INVALID_HANDLE_VALUE) {
