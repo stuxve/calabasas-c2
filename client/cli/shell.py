@@ -19,6 +19,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table as RichTable
 
 from .completer import ShellCompleter
 from .themes import BANNER
@@ -585,4 +586,137 @@ class OperatorShell:
                 console.print(f"[green]File data received: {nbytes} bytes[/green]")
         else:
             text = task.result.raw.decode("utf-8", errors="replace")
-            console.print(text)
+            formatter = _NATIVE_FORMATTERS.get(task.module_name)
+            if formatter:
+                formatter(text)
+            else:
+                console.print(text)
+
+
+# ─── Native module output formatters ───────────────────────────────
+
+
+def _fmt_whoami(text: str):
+    """Format whoami output into structured Rich panels."""
+    lines = text.splitlines()
+    info_lines = []
+    priv_lines = []
+    group_lines = []
+    section = "info"
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("=== PRIVILEGES ==="):
+            section = "privs"
+            continue
+        elif stripped.startswith("=== GROUP MEMBERSHIP ==="):
+            section = "groups"
+            continue
+        if section == "info":
+            info_lines.append(stripped)
+        elif section == "privs":
+            if stripped:
+                priv_lines.append(stripped)
+        elif section == "groups":
+            if stripped:
+                group_lines.append(stripped)
+
+    # ── Identity panel ──
+    info_table = RichTable(show_header=False, box=None, padding=(0, 2))
+    info_table.add_column("Key", style="bold cyan", min_width=12)
+    info_table.add_column("Value")
+    for line in info_lines:
+        if ":" in line:
+            key, _, val = line.partition(":")
+            info_table.add_row(key.strip(), val.strip())
+    console.print(Panel(info_table, title="[bold]Identity[/bold]", border_style="cyan"))
+
+    # ── Privileges table ──
+    if priv_lines:
+        priv_table = RichTable(show_header=True, header_style="bold", box=None)
+        priv_table.add_column("Privilege", min_width=40)
+        priv_table.add_column("Status", justify="center")
+        for line in priv_lines:
+            parts = line.rsplit(None, 1)
+            if len(parts) == 2:
+                name, status = parts
+                style = "green" if status == "ENABLED" else "dim"
+                priv_table.add_row(f"[{style}]{name.strip()}[/{style}]",
+                                   f"[{style}]{status}[/{style}]")
+        console.print(Panel(priv_table, title="[bold]Privileges[/bold]", border_style="yellow"))
+
+    # ── Groups table ──
+    if group_lines:
+        grp_table = RichTable(show_header=True, header_style="bold", box=None)
+        grp_table.add_column("Group")
+        for g in group_lines:
+            style = "bold red" if "admin" in g.lower() else "white"
+            grp_table.add_row(f"[{style}]{g}[/{style}]")
+        console.print(Panel(grp_table, title="[bold]Groups[/bold]", border_style="magenta"))
+
+
+def _fmt_ps(text: str):
+    """Format ps output into a Rich table.
+    Agent format: '%-6lu %-6lu %-6lu %s' → space-delimited, first 3 cols are 6-char wide.
+    First two lines are header + separator — skip them.
+    """
+    lines = text.strip().splitlines()
+    if not lines:
+        console.print("[dim]No processes returned.[/dim]")
+        return
+    table = RichTable(title="Processes", show_lines=False)
+    table.add_column("PID", style="cyan", justify="right")
+    table.add_column("PPID", justify="right")
+    table.add_column("SID", justify="right")
+    table.add_column("Name", style="bold")
+    for line in lines:
+        # Skip header and separator lines
+        if line.startswith("PID") or line.startswith("──"):
+            continue
+        fields = line.split(None, 3)
+        if len(fields) >= 4:
+            table.add_row(*fields[:4])
+        elif len(fields) >= 1:
+            table.add_row("", "", "", fields[0])
+    console.print(table)
+
+
+def _fmt_ls(text: str):
+    """Format ls output into a Rich table.
+    Agent format: '%-5s %-20s %-12llu %s' → TYPE  MODIFIED  SIZE  NAME
+    First two lines are header + separator — skip them.
+    """
+    lines = text.strip().splitlines()
+    if not lines:
+        console.print("[dim]Empty directory.[/dim]")
+        return
+    table = RichTable(title="Directory Listing", show_lines=False)
+    table.add_column("Type", justify="center", width=5)
+    table.add_column("Modified", style="dim")
+    table.add_column("Size", justify="right", style="cyan")
+    table.add_column("Name", style="bold")
+    for line in lines:
+        if line.startswith("TYPE") or line.startswith("──"):
+            continue
+        # Fixed-width-ish: TYPE(5) MODIFIED(20) SIZE(12) NAME(rest)
+        fields = line.split(None, 3)
+        if len(fields) >= 4:
+            kind = "[blue]DIR[/blue]" if fields[0] == "DIR" else "[dim]FILE[/dim]"
+            # fields: TYPE, date, time+size..., name
+            # Re-split more carefully since MODIFIED has a space (date time)
+            parts = line.split(None, 4)
+            if len(parts) >= 5:
+                ftype, date, time, size, name = parts
+                kind = "[blue]DIR[/blue]" if ftype == "DIR" else "[dim]FILE[/dim]"
+                table.add_row(kind, f"{date} {time}", size, name)
+            else:
+                table.add_row("[dim]FILE[/dim]", fields[1], fields[2], fields[3])
+        elif len(fields) >= 1:
+            table.add_row("", "", "", fields[0])
+    console.print(table)
+
+
+_NATIVE_FORMATTERS = {
+    "whoami": _fmt_whoami,
+    "ps": _fmt_ps,
+    "ls": _fmt_ls,
+}

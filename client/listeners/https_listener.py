@@ -81,7 +81,13 @@ class HttpsListener(BaseListener):
         # Catch-all for unmatched paths
         self._app.router.add_route("*", "/{path:.*}", self._handle_decoy)
 
-        self._runner = web.AppRunner(self._app, access_log=None)
+        # Agent embeds C2 data in Cookie headers (per malleable profile).
+        # Large results (ps, ls) can exceed aiohttp's default 8190-byte
+        # header limit, so we raise it to 1MB.
+        self._runner = web.AppRunner(
+            self._app, access_log=None,
+            max_field_size=1024 * 1024,
+        )
         await self._runner.setup()
 
         ssl_ctx = None
