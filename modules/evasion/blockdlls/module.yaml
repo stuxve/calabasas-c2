@@ -1,0 +1,39 @@
+---
+name: blockdlls
+category: evasion
+description: >
+  Spawn a child process with PROCESS_CREATION_MITIGATION_POLICY_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON.
+  Prevents EDR DLLs from being injected into the child process.
+  Post-exploitation evasion — use when spawning sacrificial processes.
+
+author: "operator"
+version: "1.0.0"
+execution_type: bof
+bof_file: blockdlls.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  dotnet_min_version: "4.0"
+  os: [windows_10, windows_11, windows_server_2016, windows_server_2019, windows_server_2022]
+
+arguments:
+  - name: command
+    type: string
+    required: true
+    description: "Command line for the child process."
+    pack_type: z
+
+output_format: raw
+opsec_level: medium
+opsec_notes: >
+  Spawns a child process — generates process creation events.
+  The mitigation policy itself is legitimate (used by Edge, Chrome).
+  EDR cannot inject monitoring DLLs into the child, but the process
+  creation event itself is still logged.
+timeout: 60
+tags: [evasion, blockdlls, mitigation, postex, child]
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+mitre_attack_id: T1562.001

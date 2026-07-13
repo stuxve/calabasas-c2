@@ -1,0 +1,45 @@
+---
+name: default
+description: "Default C2 profile — minimal transforms"
+
+http:
+  method: GET
+  uri_paths:
+    - "/api/v1"
+    - "/api/v2"
+    - "/status"
+  query_params:
+    v: "1"
+
+  data_embedding:
+    request:
+      location: cookie
+      param_name: "session"
+      encoding: base64url
+
+    response:
+      location: body
+      content_type: "text/html; charset=UTF-8"
+      encoding: base64
+      wrapper_before: |
+        <html><body><div style="display:none">
+      wrapper_after: |
+        </div></body></html>
+
+  headers:
+    request:
+      User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      Accept: "text/html,*/*;q=0.8"
+      Accept-Language: "en-US,en;q=0.5"
+    response:
+      Server: "nginx/1.24.0"
+      Cache-Control: "no-cache"
+      X-Content-Type-Options: "nosniff"
+
+agent:
+  sleep: 60
+  jitter: 25
+  max_retry: 5
+  kill_date: ""
+  working_hours: ""
+  working_days: ""

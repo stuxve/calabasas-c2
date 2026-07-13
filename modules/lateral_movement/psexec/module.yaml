@@ -1,0 +1,69 @@
+---
+name: psexec
+category: lateral_movement
+description: >
+  Remote execution via SMB service deployment (PsExec-style).
+  Uploads a payload binary to the target's ADMIN$ or C$ share via SMB,
+  creates a service pointing to it, starts the service, then cleans up.
+  Uses advapi32 for SCM + kernel32 for SMB file write.
+  WARNING: writes a file to disk and spawns a process on the remote host.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: psexec.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  dotnet_min_version: "4.0"
+  os:
+    - windows_server_2012r2
+    - windows_server_2016
+    - windows_server_2019
+    - windows_server_2022
+    - windows_10
+    - windows_11
+
+arguments:
+  - name: target
+    type: string
+    required: true
+    description: "Target hostname or IP."
+    pack_type: z
+  - name: payload
+    type: string
+    required: true
+    description: "Local path to the executable to deploy (read by operator, sent as binary)."
+    pack_type: b
+  - name: servicename
+    type: string
+    required: false
+    default: ""
+    description: "Custom service name. Empty = random 8-char hex name."
+    pack_type: z
+  - name: remotepath
+    type: string
+    required: false
+    default: ""
+    description: "Remote filename on ADMIN$ share. Empty = random .exe name."
+    pack_type: z
+
+output_format: raw
+opsec_level: high
+opsec_notes: >
+  Writes an executable to the remote host's ADMIN$ share.
+  Creates and starts a Windows service.
+  Generates: SMB file write events, Event 7045, Sysmon Event 11 (file create),
+  Sysmon Event 1 (process create), Event 4688.
+  File on disk is deleted after execution but may be caught by AV/EDR.
+  This is one of the noisiest lateral movement techniques.
+
+timeout: 180
+tags: [lateral, smb, service, psexec, remote, execution]
+references:
+  - https://attack.mitre.org/techniques/T1570/
+  - https://attack.mitre.org/techniques/T1569/002/
+mitre_attack_id: T1021.002

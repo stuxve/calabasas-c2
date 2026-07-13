@@ -1,0 +1,53 @@
+---
+name: ppidspoof
+category: evasion
+description: >
+  Spawn a child process with a spoofed parent PID.
+  Uses PROC_THREAD_ATTRIBUTE_PARENT_PROCESS to make the child appear
+  to be spawned by another process (e.g., explorer.exe, svchost.exe).
+  Post-exploitation evasion — hides true parent-child relationship.
+  Optionally combines with blockdlls.
+
+author: "operator"
+version: "1.0.0"
+execution_type: bof
+bof_file: ppidspoof.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  dotnet_min_version: "4.0"
+  os: [windows_10, windows_11, windows_server_2016, windows_server_2019, windows_server_2022]
+
+arguments:
+  - name: command
+    type: string
+    required: true
+    description: "Command line for the child process."
+    pack_type: z
+  - name: ppid
+    type: int
+    required: true
+    description: "PID of the desired parent process."
+    pack_type: i
+  - name: blockdlls
+    type: int
+    required: false
+    default: 0
+    description: "1 = also apply blockdlls mitigation policy."
+    pack_type: i
+
+output_format: raw
+opsec_level: medium
+opsec_notes: >
+  Spawns a child process with a spoofed PPID.
+  The child inherits the parent's token/session.
+  Requires PROCESS_CREATE_PROCESS access to the target parent.
+  Combined with blockdlls, the child is resistant to EDR injection
+  and has a clean parent process tree.
+timeout: 60
+tags: [evasion, ppid, spoof, postex, child]
+references:
+  - https://attack.mitre.org/techniques/T1134/004/
+mitre_attack_id: T1134.004

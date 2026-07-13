@@ -1,0 +1,46 @@
+---
+name: timestomp
+category: evasion
+description: >
+  Copy file timestamps (creation, access, modification) from a donor
+  file to a target file. Default donor: C:\Windows\System32\kernel32.dll.
+  Post-exploitation evasion — hides recently modified files in forensic timelines.
+
+author: "operator"
+version: "1.0.0"
+execution_type: bof
+bof_file: timestomp.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  dotnet_min_version: "4.0"
+  os: [windows_10, windows_11, windows_server_2016, windows_server_2019, windows_server_2022]
+
+arguments:
+  - name: target
+    type: string
+    required: true
+    description: "Path to the file to timestomp."
+    pack_type: z
+  - name: donor
+    type: string
+    required: false
+    default: ""
+    description: "Path to the donor file (source of timestamps). Empty = kernel32.dll."
+    pack_type: z
+
+output_format: raw
+opsec_level: low
+opsec_notes: >
+  Modifies file metadata only — no content changes.
+  SetFileTime calls are not logged by default.
+  NTFS $STANDARD_INFORMATION timestamps are modified.
+  $FILE_NAME timestamps in MFT remain original (forensic artifact).
+  Sysmon Event 2 (file creation time change) may detect this.
+timeout: 30
+tags: [evasion, timestomp, forensics, postex]
+references:
+  - https://attack.mitre.org/techniques/T1070/006/
+mitre_attack_id: T1070.006

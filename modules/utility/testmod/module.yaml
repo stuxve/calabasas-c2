@@ -1,0 +1,38 @@
+---
+name: testmod
+category: utility
+description: >
+  Test module
+
+author: "operator"
+version: "1.0.0"
+created: "2026-07-12"
+
+execution_type: bof
+bof_file: testmod.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+  dotnet_min_version: "4.0"
+  dotnet_max_version: "4.8.1"
+
+arguments:
+  - name: target
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target host or domain. Empty = current."
+
+output_format: raw
+opsec_level: low
+opsec_notes: >
+  TODO: Document OPSEC considerations.
+
+timeout: 120
+tags: [test, scaffold]
+references: []
+mitre_attack_id: ""

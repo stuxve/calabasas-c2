@@ -1,0 +1,80 @@
+---
+name: enumdomainusers
+category: enumeration
+description: >
+  Enumerate domain user accounts via native LDAP API calls (ldap_search_s).
+  Queries the domain controller's LDAP service on port 389/636.
+  Uses wldap32.dll directly — no PowerShell, no System.DirectoryServices.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: enumdomainusers.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+  dotnet_min_version: "4.0"
+  dotnet_max_version: "4.8.1"
+  os:
+    - windows_server_2012r2
+    - windows_server_2016
+    - windows_server_2019
+    - windows_server_2022
+    - windows_10
+    - windows_11
+
+arguments:
+  - name: domain
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target domain FQDN. Empty = current domain."
+    example: "corp.local"
+
+  - name: filter
+    type: string
+    pack_type: z
+    required: false
+    default: "(&(objectCategory=person)(objectClass=user))"
+    description: "Custom LDAP filter."
+    example: "(&(objectCategory=person)(objectClass=user)(adminCount=1))"
+
+  - name: attributes
+    type: string
+    pack_type: z
+    required: false
+    default: "sAMAccountName,distinguishedName,description,lastLogon,userAccountControl,memberOf,pwdLastSet,mail"
+    description: "Comma-separated list of LDAP attributes to retrieve."
+
+  - name: server
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Specific DC to query. Empty = auto-discover."
+    example: "dc01.corp.local"
+
+  - name: limit
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Max results. 0 = unlimited."
+
+output_format: raw
+opsec_level: low
+opsec_notes: >
+  Uses standard LDAP queries over port 389. Normal domain-joined machine
+  behavior. May trigger alerts if querying ALL users from a workstation
+  that doesn't normally perform bulk LDAP queries.
+
+timeout: 120
+tags: [ldap, users, enumeration, recon, domain]
+references:
+  - https://docs.microsoft.com/en-us/windows/win32/api/winldap/nf-winldap-ldap_search_s
+mitre_attack_id: T1087.002

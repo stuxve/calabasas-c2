@@ -1,0 +1,60 @@
+---
+name: enumdomaingroups
+category: enumeration
+description: >
+  Enumerate domain groups via native LDAP API calls.
+  Queries objectCategory=group with configurable filters.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: enumdomaingroups.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+  dotnet_min_version: "4.0"
+  dotnet_max_version: "4.8.1"
+
+arguments:
+  - name: domain
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target domain FQDN. Empty = current domain."
+
+  - name: filter
+    type: string
+    pack_type: z
+    required: false
+    default: "(objectCategory=group)"
+    description: "Custom LDAP filter for groups."
+
+  - name: server
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Specific DC to query."
+
+  - name: limit
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Max results. 0 = unlimited."
+
+output_format: raw
+opsec_level: low
+opsec_notes: >
+  Standard LDAP query. Low detection risk.
+
+timeout: 120
+tags: [ldap, groups, enumeration, recon, domain]
+references:
+  - https://attack.mitre.org/techniques/T1069/002/
+mitre_attack_id: T1069.002

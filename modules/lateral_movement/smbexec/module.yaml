@@ -1,0 +1,60 @@
+---
+name: smbexec
+category: lateral_movement
+description: >
+  Execute commands on remote hosts via SCM (Service Control Manager).
+  Opens SCM over RPC, creates a temporary service with the command as
+  binPath, starts the service, then deletes it.
+  Uses advapi32: OpenSCManagerW, CreateServiceW, StartServiceW, DeleteService.
+  WARNING: spawns a child process on the remote host as SYSTEM.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: smbexec.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  dotnet_min_version: "4.0"
+  os:
+    - windows_server_2012r2
+    - windows_server_2016
+    - windows_server_2019
+    - windows_server_2022
+    - windows_10
+    - windows_11
+
+arguments:
+  - name: target
+    type: string
+    required: true
+    description: "Target hostname or IP."
+    pack_type: z
+  - name: command
+    type: string
+    required: true
+    description: "Command to execute (becomes service binPath)."
+    pack_type: z
+  - name: servicename
+    type: string
+    required: false
+    default: ""
+    description: "Custom service name. Empty = random 8-char hex name."
+    pack_type: z
+
+output_format: raw
+opsec_level: high
+opsec_notes: >
+  Creates and deletes a Windows service on the remote host.
+  Generates Event 7045 (new service installed) in System log.
+  Service creation/deletion is highly visible to EDR.
+  The command runs as SYSTEM via the service.
+
+timeout: 120
+tags: [lateral, scm, service, remote, execution]
+references:
+  - https://attack.mitre.org/techniques/T1569/002/
+mitre_attack_id: T1569.002

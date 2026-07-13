@@ -1,0 +1,32 @@
+---
+name: patchamsi
+category: evasion
+description: >
+  Patch AmsiScanBuffer in amsi.dll to return E_INVALIDARG.
+  Prevents AMSI from scanning .NET assemblies and scripts.
+  Run-time evasion — call before execute-assembly or script loading.
+
+author: "operator"
+version: "1.0.0"
+execution_type: bof
+bof_file: patchamsi.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  dotnet_min_version: "4.0"
+  os: [windows_10, windows_11, windows_server_2016, windows_server_2019, windows_server_2022]
+
+arguments: []
+output_format: raw
+opsec_level: medium
+opsec_notes: >
+  Patches amsi.dll in the current process. Does not affect other processes.
+  Some EDRs monitor for AmsiScanBuffer integrity via periodic checks.
+  The patch (mov eax,0x80070057;ret) is a well-known signature.
+timeout: 30
+tags: [evasion, amsi, bypass, runtime]
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+mitre_attack_id: T1562.001

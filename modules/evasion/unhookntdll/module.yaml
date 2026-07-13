@@ -1,0 +1,34 @@
+---
+name: unhookntdll
+category: evasion
+description: >
+  Restore ntdll.dll .text section from a clean on-disk copy.
+  Removes EDR inline hooks (JMP trampolines) from all ntdll functions.
+  Run-time evasion — restores clean syscall stubs.
+
+author: "operator"
+version: "1.0.0"
+execution_type: bof
+bof_file: unhookntdll.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  dotnet_min_version: "4.0"
+  os: [windows_10, windows_11, windows_server_2016, windows_server_2019, windows_server_2022]
+
+arguments: []
+output_format: raw
+opsec_level: high
+opsec_notes: >
+  Reads C:\Windows\System32\ntdll.dll from disk and maps it as SEC_IMAGE.
+  Overwrites the entire .text section of the loaded ntdll.
+  Generates file access events on ntdll.dll.
+  Some EDRs detect .text section overwrites via periodic integrity checks
+  or NtProtectVirtualMemory monitoring.
+timeout: 30
+tags: [evasion, unhook, ntdll, edr, bypass, runtime]
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+mitre_attack_id: T1562.001

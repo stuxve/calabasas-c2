@@ -1,0 +1,54 @@
+---
+name: wmiexec
+category: lateral_movement
+description: >
+  Execute commands on remote hosts via WMI (Win32_Process.Create).
+  Uses COM/DCOM: CoCreateInstanceEx for IWbemLocator, then
+  ConnectServer to the target's ROOT\CIMV2 namespace.
+  Executes via Win32_Process.Create method.
+  WARNING: spawns a child process on the remote host.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: wmiexec.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  dotnet_min_version: "4.0"
+  os:
+    - windows_server_2012r2
+    - windows_server_2016
+    - windows_server_2019
+    - windows_server_2022
+    - windows_10
+    - windows_11
+
+arguments:
+  - name: target
+    type: string
+    required: true
+    description: "Target hostname or IP."
+    pack_type: z
+  - name: command
+    type: string
+    required: true
+    description: "Command to execute on the remote host."
+    pack_type: z
+
+output_format: raw
+opsec_level: high
+opsec_notes: >
+  Spawns a child process on the remote host via WMI.
+  Generates DCOM network traffic (TCP 135 + dynamic RPC port).
+  WMI activity is logged in Microsoft-Windows-WMI-Activity/Operational.
+  Process creation is logged as Event 4688 / Sysmon Event 1.
+
+timeout: 120
+tags: [lateral, wmi, dcom, remote, execution]
+references:
+  - https://attack.mitre.org/techniques/T1047/
+mitre_attack_id: T1047

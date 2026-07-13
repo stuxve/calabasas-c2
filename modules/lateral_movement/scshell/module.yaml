@@ -1,0 +1,65 @@
+---
+name: scshell
+category: lateral_movement
+description: >
+  Fileless lateral movement via service binary path modification.
+  Opens an existing service on the remote host, changes its binPath
+  to the desired command, starts the service, then reverts the binPath.
+  No file is written to disk — the command executes as SYSTEM via
+  the existing service process.
+  Uses advapi32: OpenSCManagerW, OpenServiceW, ChangeServiceConfigW,
+  QueryServiceConfigW, StartServiceW.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: scshell.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  dotnet_min_version: "4.0"
+  os:
+    - windows_server_2012r2
+    - windows_server_2016
+    - windows_server_2019
+    - windows_server_2022
+    - windows_10
+    - windows_11
+
+arguments:
+  - name: target
+    type: string
+    required: true
+    description: "Target hostname or IP."
+    pack_type: z
+  - name: service
+    type: string
+    required: true
+    description: "Name of existing service to hijack (e.g. SensorService, XblAuthManager)."
+    pack_type: z
+  - name: command
+    type: string
+    required: true
+    description: "Command to execute via modified binPath."
+    pack_type: z
+
+output_format: raw
+opsec_level: medium
+opsec_notes: >
+  No file written to disk — fileless execution.
+  Modifies an existing service's binPath temporarily.
+  Generates Event 7040 (service config change) in System log.
+  The original binPath is restored after execution.
+  Choose a service that is normally stopped (manual/disabled start)
+  to minimize disruption. Less noisy than psexec/smbexec since
+  no new service is created or deleted.
+
+timeout: 120
+tags: [lateral, scm, service, fileless, remote, execution]
+references:
+  - https://attack.mitre.org/techniques/T1569/002/
+  - https://github.com/Mr-Un1k0d3r/SCShell
+mitre_attack_id: T1569.002

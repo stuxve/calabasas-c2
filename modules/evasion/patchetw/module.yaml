@@ -1,0 +1,32 @@
+---
+name: patchetw
+category: evasion
+description: >
+  Patch EtwEventWrite in ntdll.dll to return SUCCESS (nop).
+  Prevents CLR ETW events: assembly loads, JIT, method calls.
+  Run-time evasion — suppresses telemetry for the current process.
+
+author: "operator"
+version: "1.0.0"
+execution_type: bof
+bof_file: patchetw.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  dotnet_min_version: "4.0"
+  os: [windows_10, windows_11, windows_server_2016, windows_server_2019, windows_server_2022]
+
+arguments: []
+output_format: raw
+opsec_level: medium
+opsec_notes: >
+  Patches ntdll.dll EtwEventWrite in the current process.
+  Disables ALL ETW events from this process, not just CLR.
+  Some EDRs validate ntdll integrity periodically.
+timeout: 30
+tags: [evasion, etw, bypass, runtime, telemetry]
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+mitre_attack_id: T1562.001

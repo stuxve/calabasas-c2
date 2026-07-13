@@ -1,0 +1,68 @@
+---
+name: ldapsearch
+category: enumeration
+description: >
+  Execute a raw LDAP search with user-specified filter and attributes.
+  General-purpose LDAP query tool using wldap32.dll.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: ldapsearch.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+  dotnet_min_version: "4.0"
+  dotnet_max_version: "4.8.1"
+
+arguments:
+  - name: filter
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "LDAP search filter."
+    example: "(objectClass=computer)"
+
+  - name: attributes
+    type: string
+    pack_type: z
+    required: false
+    default: "sAMAccountName,distinguishedName"
+    description: "Comma-separated attributes to retrieve."
+
+  - name: domain
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target domain FQDN."
+
+  - name: server
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Specific DC to query."
+
+  - name: limit
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Max results. 0 = unlimited."
+
+output_format: raw
+opsec_level: low
+opsec_notes: >
+  Standard LDAP query. Risk depends on the filter used.
+
+timeout: 120
+tags: [ldap, search, enumeration, recon, domain]
+references:
+  - https://docs.microsoft.com/en-us/windows/win32/api/winldap/nf-winldap-ldap_search_s
+mitre_attack_id: T1018

@@ -1,0 +1,54 @@
+---
+name: enumspns
+category: enumeration
+description: >
+  Enumerate accounts with Service Principal Names (SPNs) via LDAP.
+  Identifies Kerberoastable accounts. Uses wldap32.dll directly.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: enumspns.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+  dotnet_min_version: "4.0"
+  dotnet_max_version: "4.8.1"
+
+arguments:
+  - name: domain
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target domain FQDN."
+
+  - name: server
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Specific DC to query."
+
+  - name: limit
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Max results. 0 = unlimited."
+
+output_format: raw
+opsec_level: low
+opsec_notes: >
+  Standard LDAP query for servicePrincipalName attribute.
+  Low risk — normal reconnaissance activity.
+
+timeout: 120
+tags: [ldap, spn, kerberoast, enumeration, recon]
+references:
+  - https://attack.mitre.org/techniques/T1558/003/
+mitre_attack_id: T1558.003
