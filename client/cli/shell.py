@@ -9,6 +9,7 @@ State machine with two contexts:
 import asyncio
 import logging
 import shlex
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -98,6 +99,7 @@ class OperatorShell:
             ("class:integrity", f"[{agent.integrity}]"),
             ("class:arch", f"[{agent.arch}]"),
             ("class:pid", f"[PID:{agent.pid}]"),
+            ("class:last-seen", f"[{agent.last_seen_ago}]"),
             ("class:path", f" {agent.cwd}"),
             ("class:prompt-end", "> "),
         ])
@@ -280,6 +282,10 @@ class OperatorShell:
             console.print(f"[yellow]Cleared {count} pending tasks.[/yellow]")
             return
 
+        if cmd == "tasks":
+            self._show_tasks(agent)
+            return
+
         if cmd == "exit":
             console.print("[bold red]Kill agent process? (y/N)[/bold red]")
             confirm = await self._session.prompt_async(
@@ -382,7 +388,27 @@ class OperatorShell:
             console.print(f"[green]Assembly queued: {asm_path.name} ({len(payload)}B)[/green]")
             return
 
-        # Try as a module name
+        # Native agent modules (built into agent binary, no module.yaml)
+        native_modules = {
+            "whoami": {"desc": "Current user, privileges, groups", "args": False},
+            "ps": {"desc": "List running processes", "args": False},
+            "ls": {"desc": "Directory listing", "args": True},
+            "cat": {"desc": "Read file contents", "args": True},
+        }
+        if cmd in native_modules:
+            native_args = " ".join(args) if args else ""
+            self.task_manager.create_task(
+                agent, TaskType.NATIVE, cmd,
+                arguments=native_args.encode() if native_args else b"",
+            )
+            self.logger.log_command(
+                agent.agent_id, agent.hostname, agent.username,
+                cmd, {"args": native_args},
+            )
+            console.print(f"[green]Task queued: {cmd}[/green]")
+            return
+
+        # Try as a registered module (BOF/Assembly with module.yaml)
         mod = self.module_registry.get(cmd)
         if mod:
             self._execute_module(agent, cmd, args)
@@ -456,6 +482,78 @@ class OperatorShell:
             f"Completed:     {len(agent.completed_tasks)}",
         ]
         console.print(Panel("\n".join(info_lines), title="Agent Info", border_style="cyan"))
+
+    def _show_tasks(self, agent):
+        """Display pending, active, and completed tasks for the agent."""
+        from rich.table import Table
+
+        # Pending
+        if agent.pending_tasks:
+            t = Table(title="Pending Tasks", show_lines=False, border_style="yellow")
+            t.add_column("Module", style="bold")
+            t.add_column("Type")
+            t.add_column("Created")
+            t.add_column("ID", style="dim")
+            for task in agent.pending_tasks:
+                t.add_row(
+                    task.module_name,
+                    task.task_type.name,
+                    task.created_at.strftime("%H:%M:%S"),
+                    task.task_id[:8],
+                )
+            console.print(t)
+        else:
+            console.print("[dim]No pending tasks.[/dim]")
+
+        # Active (sent, awaiting result)
+        if agent.active_tasks:
+            t = Table(title="Active Tasks (sent, awaiting result)", show_lines=False, border_style="cyan")
+            t.add_column("Module", style="bold")
+            t.add_column("Type")
+            t.add_column("Sent")
+            t.add_column("Elapsed")
+            t.add_column("ID", style="dim")
+            for task in agent.active_tasks.values():
+                elapsed = ""
+                if task.sent_at:
+                    secs = (datetime.utcnow() - task.sent_at).total_seconds()
+                    elapsed = f"{int(secs)}s"
+                t.add_row(
+                    task.module_name,
+                    task.task_type.name,
+                    task.sent_at.strftime("%H:%M:%S") if task.sent_at else "?",
+                    elapsed,
+                    task.task_id[:8],
+                )
+            console.print(t)
+        else:
+            console.print("[dim]No active tasks.[/dim]")
+
+        # Completed (last 20)
+        completed = agent.completed_tasks[-20:]
+        if completed:
+            t = Table(title=f"Completed Tasks (last {len(completed)})", show_lines=False, border_style="green")
+            t.add_column("Module", style="bold")
+            t.add_column("Status")
+            t.add_column("Completed")
+            t.add_column("Duration")
+            t.add_column("ID", style="dim")
+            for task in reversed(completed):
+                status_style = "green" if task.status.name == "COMPLETE" else "red"
+                duration = ""
+                if task.sent_at and task.completed_at:
+                    dur = (task.completed_at - task.sent_at).total_seconds()
+                    duration = f"{dur:.1f}s"
+                t.add_row(
+                    task.module_name,
+                    f"[{status_style}]{task.status.name}[/{status_style}]",
+                    task.completed_at.strftime("%H:%M:%S") if task.completed_at else "?",
+                    duration,
+                    task.task_id[:8],
+                )
+            console.print(t)
+        else:
+            console.print("[dim]No completed tasks.[/dim]")
 
     def _on_agent_checkin(self, session, is_new):
         """Event handler for agent check-ins."""

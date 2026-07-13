@@ -24,11 +24,18 @@ AGENT_HELP = """[bold]Agent Commands[/bold]
   info                      Show agent metadata
   sleep <sec> [jitter%]     Change beacon interval
   clear                     Clear pending task queue
+  tasks                     Show pending/active/completed task queue
   back                      Return to main context
   exit                      Kill agent process (asks confirmation)
 
+[bold]Native Modules[/bold] (built into agent, no child process)
+  whoami                    Current user, privileges, group membership
+  ps                        List running processes
+  ls [path]                 Directory listing (default: CWD)
+  cat <path>                Read file contents
+
 [bold]Execution[/bold]
-  <module_name> [args]      Execute a module
+  <module_name> [args]      Execute a registered BOF/Assembly module
   bof <path.o> [args]       Load and execute arbitrary BOF
   assembly <path.exe> [a]   Load and execute .NET assembly
 

