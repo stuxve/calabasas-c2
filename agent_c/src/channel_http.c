@@ -100,6 +100,7 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
     urlComp.dwUrlPathLength = (DWORD)-1;
 
     if (!WinHttpCrackUrl(wUrl, 0, 0, &urlComp)) {
+        DBG("[http] WinHttpCrackUrl FAILED (err=%u)", GetLastError());
         free(wUrl);
         return FALSE;
     }
@@ -120,8 +121,13 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
     if (port == 0) port = isHttps ? 443 : 80;
 
     /* Connect */
+    DBG("[http] connecting to port %u (https=%d)", port, isHttps);
     HINTERNET hConnect = WinHttpConnect(g_hSession, hostname, port, 0);
-    if (!hConnect) { free(wUrl); return FALSE; }
+    if (!hConnect) {
+        DBG("[http] WinHttpConnect FAILED (err=%u)", GetLastError());
+        free(wUrl);
+        return FALSE;
+    }
 
     /* Open request */
     DWORD flags = isHttps ? WINHTTP_FLAG_SECURE : 0;
@@ -176,11 +182,17 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
     /* Send */
     BOOL ok = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                                   WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
-    if (!ok) goto cleanup;
+    if (!ok) {
+        DBG("[http] WinHttpSendRequest FAILED (err=%u)", GetLastError());
+        goto cleanup;
+    }
 
     /* Receive response */
     ok = WinHttpReceiveResponse(hRequest, NULL);
-    if (!ok) goto cleanup;
+    if (!ok) {
+        DBG("[http] WinHttpReceiveResponse FAILED (err=%u)", GetLastError());
+        goto cleanup;
+    }
 
     /* Read response body */
     Buffer resp_buf;
@@ -209,6 +221,7 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
 
     buf_free(&resp_buf);
     ok = (*response != NULL && *response_len > 0);
+    DBG("[http] response decoded: %u bytes (ok=%d)", *response_len, ok);
 
 cleanup:
     WinHttpCloseHandle(hRequest);

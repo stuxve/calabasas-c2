@@ -47,12 +47,42 @@ typedef struct _PEB *PPEB;
 #include <tlhelp32.h>
 #include <sddl.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <windns.h>
 
 #include "config.h"
+
+/* ─── Debug logging ─── */
+#ifndef CONFIG_DEBUG
+#define CONFIG_DEBUG 0
+#endif
+
+#if CONFIG_DEBUG
+static inline void _dbg_log(const char *fmt, ...) {
+    HANDLE hFile = CreateFileA("C:\\agent_debug.log",
+        FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        char buf[1024];
+        va_list ap;
+        va_start(ap, fmt);
+        int len = vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        if (len > 0) {
+            DWORD written;
+            WriteFile(hFile, buf, (DWORD)len, &written, NULL);
+            WriteFile(hFile, "\r\n", 2, &written, NULL);
+        }
+        CloseHandle(hFile);
+    }
+}
+#define DBG(fmt, ...) _dbg_log(fmt, ##__VA_ARGS__)
+#else
+#define DBG(fmt, ...) ((void)0)
+#endif
 
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "winhttp.lib")
