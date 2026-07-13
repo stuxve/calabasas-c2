@@ -23,6 +23,18 @@
 
 #include <windows.h>
 
+/* ─── NT type definitions (if not already provided by agent.h) ─── */
+#ifndef _NTDEF_
+#ifndef _NTSTATUS_DEFINED
+typedef LONG NTSTATUS;
+#define _NTSTATUS_DEFINED
+#endif
+#endif
+
+#ifndef NTAPI
+#define NTAPI __stdcall
+#endif
+
 /* ─── Error codes ─── */
 #define SYSCALL_OK              0
 #define SYSCALL_ERR_NO_NTDLL    1
@@ -90,6 +102,10 @@ int syscall_resolve(DWORD nameHash, SYSCALL_ENTRY *entry);
  *                                 MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
  */
 NTSTATUS do_syscall(SYSCALL_ENTRY *entry, ...);
+
+/* ─── Trampoline helpers ─── */
+void *syscall_make_trampoline(SYSCALL_ENTRY *entry);
+void syscall_free_trampoline(void *trampoline);
 
 /* ─── DJB2 hash helper ─── */
 DWORD djb2_hash(const char *str);

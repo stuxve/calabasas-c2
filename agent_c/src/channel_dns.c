@@ -199,11 +199,8 @@ BOOL dns_send_recv(const unsigned char *packet, DWORD packet_len,
         while (pRec) {
             if (pRec->wType == DNS_TYPE_TEXT) {
                 for (DWORD i = 0; i < pRec->Data.TXT.dwStringCount; i++) {
-                    wchar_t *wTxt = pRec->Data.TXT.pStringArray[i];
-                    /* Convert wide TXT to narrow */
-                    char txt_narrow[4096];
-                    WideCharToMultiByte(CP_UTF8, 0, wTxt, -1,
-                                       txt_narrow, sizeof(txt_narrow), NULL, NULL);
+                    /* pStringArray entries are PSTR (char*) under MinGW windns.h */
+                    char *txt_narrow = (char *)pRec->Data.TXT.pStringArray[i];
 
                     /* TXT data is base64-encoded */
                     DWORD decoded_len;

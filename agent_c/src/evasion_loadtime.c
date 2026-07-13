@@ -32,13 +32,17 @@ BOOL check_debugger_present(void) {
         return FALSE;
 
     /* Method 2: Check PEB->BeingDebugged directly (bypass API hooks) */
+    {
+        void *peb_raw;
 #if defined(_M_X64) || defined(__x86_64__)
-    PPEB peb = (PPEB)__readgsqword(0x60);
+        __asm__ __volatile__("mov %%gs:0x60, %0" : "=r"(peb_raw));
 #else
-    PPEB peb = (PPEB)__readfsdword(0x30);
+        __asm__ __volatile__("mov %%fs:0x30, %0" : "=r"(peb_raw));
 #endif
-    if (peb && peb->BeingDebugged)
-        return FALSE;
+        /* PEB->BeingDebugged is at offset 0x02 (UCHAR) */
+        if (peb_raw && *((unsigned char *)peb_raw + 0x02))
+            return FALSE;
+    }
 
     return TRUE;  /* No debugger detected */
 }

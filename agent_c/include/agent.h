@@ -5,10 +5,43 @@
 #ifndef AGENT_H
 #define AGENT_H
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #define _CRT_SECURE_NO_WARNINGS
 
 #include <windows.h>
+
+/* ─── NT type definitions for MinGW cross-compilation ───
+ * We define these manually rather than including <winternl.h>
+ * because MinGW's winternl.h is often incomplete and causes
+ * redefinition conflicts. */
+
+/* NTSTATUS */
+#ifndef _NTDEF_
+#ifndef _NTSTATUS_DEFINED
+typedef LONG NTSTATUS;
+#define _NTSTATUS_DEFINED
+#endif
+#endif
+
+/* NTAPI calling convention */
+#ifndef NTAPI
+#define NTAPI __stdcall
+#endif
+
+/* UNICODE_STRING — needed by PEB/LDR structures */
+#if !defined(_UNICODE_STRING_DEFINED) && !defined(_WINTERNL_)
+#define _UNICODE_STRING_DEFINED
+typedef struct _UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} UNICODE_STRING, *PUNICODE_STRING;
+#endif
+
+/* PEB — opaque, we only need a pointer for inline asm access */
+typedef struct _PEB *PPEB;
 #include <bcrypt.h>
 #include <winhttp.h>
 #include <tlhelp32.h>

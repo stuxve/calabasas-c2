@@ -269,11 +269,11 @@ NTSTATUS indirect_syscall_0(SYSCALL_ENTRY *entry) {
     if (!entry || !entry->resolved) return (NTSTATUS)0xC0000001; /* STATUS_UNSUCCESSFUL */
     NTSTATUS status;
     __asm__ __volatile__(
-        "mov r10, rcx\n\t"
-        "mov eax, %[ssn]\n\t"
+        "mov %%rcx, %%r10\n\t"
+        "mov %k[ssn], %%eax\n\t"
         "jmp *%[addr]\n\t"
         : "=a"(status)
-        : [ssn] "r"(entry->ssn), [addr] "r"(entry->pSyscallAddr)
+        : [ssn] "r"((DWORD)entry->ssn), [addr] "r"(entry->pSyscallAddr)
         : "r10", "rcx", "rdx", "r8", "r9", "r11", "memory"
     );
     return status;

