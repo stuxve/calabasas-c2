@@ -15,7 +15,7 @@ import yaml
 @dataclass
 class DataEmbedding:
     location: str = "cookie"       # cookie | header | body | uri_param
-    param_name: str = "NID"
+    param_name: str = "session"    # Must match agent's COOKIE_NAME config
     encoding: str = "base64url"    # base64 | base64url | hex | raw
     prepend: str = ""
     append: str = ""
@@ -26,8 +26,8 @@ class ResponseEmbedding:
     location: str = "body"
     content_type: str = "text/html; charset=UTF-8"
     encoding: str = "base64"
-    wrapper_before: str = ""
-    wrapper_after: str = ""
+    wrapper_before: str = '<html><body><div style="display:none">\n'
+    wrapper_after: str = "\n</div></body></html>\n"
 
 
 @dataclass

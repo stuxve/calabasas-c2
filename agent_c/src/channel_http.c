@@ -194,6 +194,16 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
         goto cleanup;
     }
 
+    /* Log HTTP status code */
+    {
+        DWORD statusCode = 0, statusSize = sizeof(statusCode);
+        WinHttpQueryHeaders(hRequest,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
+            WINHTTP_NO_HEADER_INDEX);
+        DBG("[http] HTTP status = %u", statusCode);
+    }
+
     /* Read response body */
     Buffer resp_buf;
     buf_init(&resp_buf, 4096);
@@ -210,6 +220,16 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
         }
         free(chunk);
     } while (bytes_available > 0);
+
+    DBG("[http] raw body len=%u", resp_buf.len);
+    if (resp_buf.len > 0 && resp_buf.len < 512) {
+        /* Log first chunk of body for debugging */
+        char preview[256];
+        DWORD plen = resp_buf.len < 255 ? resp_buf.len : 255;
+        memcpy(preview, resp_buf.data, plen);
+        preview[plen] = '\0';
+        DBG("[http] body: %.200s", preview);
+    }
 
     /* Decode response body (strip HTML wrapper, base64 decode) */
     if (resp_buf.len > 0) {
