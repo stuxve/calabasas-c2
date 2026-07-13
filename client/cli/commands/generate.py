@@ -12,7 +12,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-console = Console(stderr=True)
+console = Console(stderr=True, no_color=True)
 
 
 def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:

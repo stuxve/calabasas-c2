@@ -9,7 +9,7 @@ from rich.text import Text
 
 from ...core.module_registry import ModuleRegistry, ModuleDefinition
 
-console = Console(stderr=True)
+console = Console(stderr=True, no_color=True)
 
 
 def cmd_modules_list(registry: ModuleRegistry):

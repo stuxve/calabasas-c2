@@ -10,7 +10,7 @@ from ..protocol.commands import CallbackType
 from .transforms import apply_transform
 
 
-console = Console(stderr=True)
+console = Console(stderr=True, no_color=True)
 
 
 class FormattedOutput:
