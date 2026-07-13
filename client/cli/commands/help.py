@@ -31,6 +31,7 @@ AGENT_HELP = """[bold]Agent Commands[/bold]
 [bold]Native Modules[/bold] (built into agent, no child process)
   whoami                    Current user, privileges, group membership
   ps                        List running processes
+  cd [path]                 Change working directory
   ls [path]                 Directory listing (default: CWD)
   cat <path>                Read file contents
 

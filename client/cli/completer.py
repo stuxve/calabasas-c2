@@ -30,6 +30,7 @@ AGENT_COMMANDS = {
     "exit": "Kill agent (asks confirmation)",
     "whoami": "Current user, privileges, groups (native)",
     "ps": "List running processes (native)",
+    "cd": "Change working directory (native, cd <path>)",
     "ls": "Directory listing (native, ls [path])",
     "cat": "Read file contents (native, cat <path>)",
     "upload": "Upload file (upload <local> <remote>)",
