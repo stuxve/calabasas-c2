@@ -344,7 +344,7 @@ class HttpsListener(BaseListener):
         error_msg = find_tlv_string(body, TlvType.RESULT_ERROR_MSG)
 
         if task_id_bytes:
-            task_id = UUID(bytes=task_id_bytes[:16]).hex if len(task_id_bytes) >= 16 else task_id_bytes.hex()
+            task_id = str(UUID(bytes=task_id_bytes[:16])) if len(task_id_bytes) >= 16 else task_id_bytes.hex()
 
             task = session.active_tasks.get(task_id)
             if task:
