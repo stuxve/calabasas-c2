@@ -44,7 +44,7 @@ from ..protocol.commands import TaskType
 log = logging.getLogger(__name__)
 # Write to stderr to bypass prompt_toolkit's patch_stdout which corrupts
 # ANSI escape sequences when writing to stdout during prompt_async.
-console = Console(stderr=True, no_color=True)
+console = Console(stderr=True)
 
 
 class OperatorShell:
