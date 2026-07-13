@@ -5,7 +5,7 @@ Help command rendering.
 from rich.console import Console
 from rich.panel import Panel
 
-console = Console()
+console = Console(force_terminal=True)
 
 MAIN_HELP = """[bold]Global Commands[/bold]
   agents                    List connected agents

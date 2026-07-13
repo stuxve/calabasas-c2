@@ -42,7 +42,7 @@ from ..logging.operator_logger import OperatorLogger
 from ..protocol.commands import TaskType
 
 log = logging.getLogger(__name__)
-console = Console()
+console = Console(force_terminal=True)
 
 
 class OperatorShell:

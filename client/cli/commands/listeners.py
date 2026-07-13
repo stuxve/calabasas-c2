@@ -5,7 +5,7 @@ Listener management commands.
 from rich.console import Console
 from rich.table import Table
 
-console = Console()
+console = Console(force_terminal=True)
 
 
 def cmd_listeners_list(listeners: dict):

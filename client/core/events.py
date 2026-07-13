@@ -3,8 +3,11 @@ Simple async event bus for decoupling listeners from the CLI.
 """
 
 import asyncio
+import logging
 from typing import Any, Callable, Coroutine
 from collections import defaultdict
+
+log = logging.getLogger(__name__)
 
 
 class EventBus:
@@ -44,7 +47,7 @@ class EventBus:
                     await result
             except Exception as e:
                 # Don't let a handler crash the emitter
-                pass
+                log.error(f"Event handler error for {event_type}: {e}", exc_info=True)
 
     def init_queue(self):
         """Initialize the async queue (call from within an event loop)."""
