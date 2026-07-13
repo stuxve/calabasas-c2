@@ -18,8 +18,8 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table as RichTable
+
+
 
 from .completer import ShellCompleter
 from .themes import BANNER
@@ -36,7 +36,7 @@ from ..core.module_registry import (
     ArgumentError, UserCancelled,
 )
 from ..core.events import event_bus, EventBus
-from ..formatters.table import OutputParser, render_table, console as fmt_console
+from ..formatters.table import OutputParser
 from ..listeners.base import BaseListener
 from ..logging.operator_logger import OperatorLogger
 from ..protocol.commands import TaskType
@@ -484,237 +484,199 @@ class OperatorShell:
             f"Active Tasks:  {len(agent.active_tasks)}",
             f"Completed:     {len(agent.completed_tasks)}",
         ]
-        console.print(Panel("\n".join(info_lines), title="Agent Info", border_style="cyan"))
+        _print("\n".join(info_lines))
+        _print("")
 
     def _show_tasks(self, agent):
         """Display pending, active, and completed tasks for the agent."""
-        from rich.table import Table
-
         # Pending
         if agent.pending_tasks:
-            t = Table(title="Pending Tasks", show_lines=False, border_style="yellow")
-            t.add_column("Module", style="bold")
-            t.add_column("Type")
-            t.add_column("Created")
-            t.add_column("ID", style="dim")
+            _print("\n  Pending Tasks")
+            _print(f"  {'Module':<20} {'Type':<10} {'Created':<10} ID")
+            _print(f"  {'-'*20} {'-'*10} {'-'*10} {'-'*8}")
             for task in agent.pending_tasks:
-                t.add_row(
-                    task.module_name,
-                    task.task_type.name,
-                    task.created_at.strftime("%H:%M:%S"),
-                    task.task_id[:8],
-                )
-            console.print(t)
+                _print(f"  {task.module_name:<20} {task.task_type.name:<10} "
+                       f"{task.created_at.strftime('%H:%M:%S'):<10} {task.task_id[:8]}")
         else:
-            console.print("[dim]No pending tasks.[/dim]")
+            _print("  No pending tasks.")
 
         # Active (sent, awaiting result)
         if agent.active_tasks:
-            t = Table(title="Active Tasks (sent, awaiting result)", show_lines=False, border_style="cyan")
-            t.add_column("Module", style="bold")
-            t.add_column("Type")
-            t.add_column("Sent")
-            t.add_column("Elapsed")
-            t.add_column("ID", style="dim")
+            _print("\n  Active Tasks")
+            _print(f"  {'Module':<20} {'Type':<10} {'Sent':<10} {'Elapsed':<10} ID")
+            _print(f"  {'-'*20} {'-'*10} {'-'*10} {'-'*10} {'-'*8}")
             for task in agent.active_tasks.values():
                 elapsed = ""
                 if task.sent_at:
                     secs = (datetime.utcnow() - task.sent_at).total_seconds()
                     elapsed = f"{int(secs)}s"
-                t.add_row(
-                    task.module_name,
-                    task.task_type.name,
-                    task.sent_at.strftime("%H:%M:%S") if task.sent_at else "?",
-                    elapsed,
-                    task.task_id[:8],
-                )
-            console.print(t)
+                sent = task.sent_at.strftime("%H:%M:%S") if task.sent_at else "?"
+                _print(f"  {task.module_name:<20} {task.task_type.name:<10} "
+                       f"{sent:<10} {elapsed:<10} {task.task_id[:8]}")
         else:
-            console.print("[dim]No active tasks.[/dim]")
+            _print("  No active tasks.")
 
         # Completed (last 20)
         completed = agent.completed_tasks[-20:]
         if completed:
-            t = Table(title=f"Completed Tasks (last {len(completed)})", show_lines=False, border_style="green")
-            t.add_column("Module", style="bold")
-            t.add_column("Status")
-            t.add_column("Completed")
-            t.add_column("Duration")
-            t.add_column("ID", style="dim")
+            _print(f"\n  Completed Tasks (last {len(completed)})")
+            _print(f"  {'Module':<20} {'Status':<10} {'Completed':<10} {'Duration':<10} ID")
+            _print(f"  {'-'*20} {'-'*10} {'-'*10} {'-'*10} {'-'*8}")
             for task in reversed(completed):
-                status_style = "green" if task.status.name == "COMPLETE" else "red"
                 duration = ""
                 if task.sent_at and task.completed_at:
                     dur = (task.completed_at - task.sent_at).total_seconds()
                     duration = f"{dur:.1f}s"
-                t.add_row(
-                    task.module_name,
-                    f"[{status_style}]{task.status.name}[/{status_style}]",
-                    task.completed_at.strftime("%H:%M:%S") if task.completed_at else "?",
-                    duration,
-                    task.task_id[:8],
-                )
-            console.print(t)
+                comp = task.completed_at.strftime("%H:%M:%S") if task.completed_at else "?"
+                _print(f"  {task.module_name:<20} {task.status.name:<10} "
+                       f"{comp:<10} {duration:<10} {task.task_id[:8]}")
         else:
-            console.print("[dim]No completed tasks.[/dim]")
+            _print("  No completed tasks.")
 
     def _on_agent_checkin(self, session, is_new):
         """Event handler for agent check-ins."""
         if is_new:
-            console.print(
-                f"\n[bold green][+] New agent:[/] {session.hostname} "
+            _print(
+                f"\n[+] New agent: {session.hostname} "
                 f"({session.username}) [{session.integrity}] "
-                f"[{session.arch}] PID:{session.pid}",
-                highlight=False,
+                f"[{session.arch}] PID:{session.pid}"
             )
 
     def _on_task_result(self, session, task):
         """Event handler for task results."""
-        st = "green" if task.status.name == "COMPLETE" else "red"
-        console.print(f"\n[{st}][*] Result from {session.hostname} ({task.module_name}):[/{st}]")
+        marker = "[*]" if task.status.name == "COMPLETE" else "[!]"
+        _print(f"\n{marker} Result from {session.hostname} ({task.module_name}):")
         if not (task.result and task.result.raw):
             return
         mod = self.module_registry.get(task.module_name)
         if mod:
             output = self.output_parser.parse(mod, task.result.raw)
             if output.error:
-                console.print(f"[red]Error: {output.error}[/red]")
+                _print(f"[!] Error: {output.error}")
             elif output.raw_rows:
-                render_table(mod.columns, output.raw_rows, title=task.module_name)
+                _print_table(mod.columns, output.raw_rows)
             elif output.text:
-                console.print(output.text)
+                _print(output.text)
             elif output.file_data:
                 nbytes = len(output.file_data)
-                console.print(f"[green]File data received: {nbytes} bytes[/green]")
+                _print(f"[*] File data received: {nbytes} bytes")
         else:
             text = task.result.raw.decode("utf-8", errors="replace")
             formatter = _NATIVE_FORMATTERS.get(task.module_name)
             if formatter:
                 formatter(text)
             else:
-                console.print(text)
+                _print(text)
 
 
-# ─── Native module output formatters ───────────────────────────────
+# ─── Plain-text output helpers (bypass Rich to avoid ANSI corruption) ──
+
+
+def _print(text: str):
+    """Write plain text to stderr (avoids prompt_toolkit's patch_stdout)."""
+    import sys
+    sys.stderr.write(text + "\n")
+    sys.stderr.flush()
+
+
+def _print_table(columns: list, rows: list):
+    """Render a plain-text aligned table to stderr."""
+    if not rows:
+        _print("  (no data)")
+        return
+    # Calculate column widths
+    widths = {col: len(col) for col in columns}
+    for row in rows:
+        for col in columns:
+            val = str(row.get(col, ""))
+            widths[col] = max(widths[col], len(val))
+    # Header
+    header = "  ".join(col.ljust(widths[col]) for col in columns)
+    _print(f"  {header}")
+    _print(f"  {'  '.join('-' * widths[col] for col in columns)}")
+    # Rows
+    for row in rows:
+        line = "  ".join(str(row.get(col, "")).ljust(widths[col]) for col in columns)
+        _print(f"  {line}")
 
 
 def _fmt_whoami(text: str):
-    """Format whoami output into structured Rich panels."""
+    """Format whoami as clean raw text — no panels, no ANSI."""
     lines = text.splitlines()
-    info_lines = []
-    priv_lines = []
-    group_lines = []
     section = "info"
+    _print("")
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("=== PRIVILEGES ==="):
             section = "privs"
+            _print("  Privileges")
+            _print("  " + "-" * 58)
             continue
         elif stripped.startswith("=== GROUP MEMBERSHIP ==="):
             section = "groups"
+            _print("")
+            _print("  Groups")
+            _print("  " + "-" * 58)
             continue
         if section == "info":
-            info_lines.append(stripped)
+            if ":" in stripped and stripped:
+                key, _, val = stripped.partition(":")
+                _print(f"  {key.strip():<14} {val.strip()}")
         elif section == "privs":
             if stripped:
-                priv_lines.append(stripped)
+                parts = stripped.rsplit(None, 1)
+                if len(parts) == 2:
+                    name, status = parts
+                    _print(f"    {name:<45} {status}")
         elif section == "groups":
             if stripped:
-                group_lines.append(stripped)
-
-    # ── Identity panel ──
-    info_table = RichTable(show_header=False, box=None, padding=(0, 2))
-    info_table.add_column("Key", style="bold cyan", min_width=12)
-    info_table.add_column("Value")
-    for line in info_lines:
-        if ":" in line:
-            key, _, val = line.partition(":")
-            info_table.add_row(key.strip(), val.strip())
-    console.print(Panel(info_table, title="[bold]Identity[/bold]", border_style="cyan"))
-
-    # ── Privileges table ──
-    if priv_lines:
-        priv_table = RichTable(show_header=True, header_style="bold", box=None)
-        priv_table.add_column("Privilege", min_width=40)
-        priv_table.add_column("Status", justify="center")
-        for line in priv_lines:
-            parts = line.rsplit(None, 1)
-            if len(parts) == 2:
-                name, status = parts
-                style = "green" if status == "ENABLED" else "dim"
-                priv_table.add_row(f"[{style}]{name.strip()}[/{style}]",
-                                   f"[{style}]{status}[/{style}]")
-        console.print(Panel(priv_table, title="[bold]Privileges[/bold]", border_style="yellow"))
-
-    # ── Groups table ──
-    if group_lines:
-        grp_table = RichTable(show_header=True, header_style="bold", box=None)
-        grp_table.add_column("Group")
-        for g in group_lines:
-            style = "bold red" if "admin" in g.lower() else "white"
-            grp_table.add_row(f"[{style}]{g}[/{style}]")
-        console.print(Panel(grp_table, title="[bold]Groups[/bold]", border_style="magenta"))
+                _print(f"    {stripped}")
+    _print("")
 
 
 def _fmt_ps(text: str):
-    """Format ps output into a Rich table.
-    Agent format: '%-6lu %-6lu %-6lu %s' → space-delimited, first 3 cols are 6-char wide.
-    First two lines are header + separator — skip them.
-    """
+    """Format ps as clean aligned text."""
     lines = text.strip().splitlines()
     if not lines:
-        console.print("[dim]No processes returned.[/dim]")
+        _print("  No processes returned.")
         return
-    table = RichTable(title="Processes", show_lines=False)
-    table.add_column("PID", style="cyan", justify="right")
-    table.add_column("PPID", justify="right")
-    table.add_column("SID", justify="right")
-    table.add_column("Name", style="bold")
+    _print("")
+    _print(f"  {'PID':>6}  {'PPID':>6}  {'SID':>4}  Name")
+    _print(f"  {'------':>6}  {'------':>6}  {'----':>4}  {'----'}")
     for line in lines:
-        # Skip header and separator lines
         if line.startswith("PID") or line.startswith("──"):
             continue
         fields = line.split(None, 3)
         if len(fields) >= 4:
-            table.add_row(*fields[:4])
-        elif len(fields) >= 1:
-            table.add_row("", "", "", fields[0])
-    console.print(table)
+            _print(f"  {fields[0]:>6}  {fields[1]:>6}  {fields[2]:>4}  {fields[3]}")
+        elif fields:
+            _print(f"  {'':>6}  {'':>6}  {'':>4}  {fields[0]}")
+    _print("")
 
 
 def _fmt_ls(text: str):
-    """Format ls output into a Rich table.
-    Agent format: '%-5s %-20s %-12llu %s' → TYPE  MODIFIED  SIZE  NAME
-    First two lines are header + separator — skip them.
-    """
+    """Format ls as clean aligned text."""
     lines = text.strip().splitlines()
     if not lines:
-        console.print("[dim]Empty directory.[/dim]")
+        _print("  Empty directory.")
         return
-    table = RichTable(title="Directory Listing", show_lines=False)
-    table.add_column("Type", justify="center", width=5)
-    table.add_column("Modified", style="dim")
-    table.add_column("Size", justify="right", style="cyan")
-    table.add_column("Name", style="bold")
+    _print("")
+    _print(f"  {'TYPE':<5}  {'MODIFIED':<20}  {'SIZE':>12}  NAME")
+    _print(f"  {'-----':<5}  {'--------------------':<20}  {'------------':>12}  {'----'}")
     for line in lines:
         if line.startswith("TYPE") or line.startswith("──"):
             continue
-        # Fixed-width-ish: TYPE(5) MODIFIED(20) SIZE(12) NAME(rest)
-        fields = line.split(None, 3)
-        if len(fields) >= 4:
-            kind = "[blue]DIR[/blue]" if fields[0] == "DIR" else "[dim]FILE[/dim]"
-            # fields: TYPE, date, time+size..., name
-            # Re-split more carefully since MODIFIED has a space (date time)
-            parts = line.split(None, 4)
-            if len(parts) >= 5:
-                ftype, date, time, size, name = parts
-                kind = "[blue]DIR[/blue]" if ftype == "DIR" else "[dim]FILE[/dim]"
-                table.add_row(kind, f"{date} {time}", size, name)
-            else:
-                table.add_row("[dim]FILE[/dim]", fields[1], fields[2], fields[3])
-        elif len(fields) >= 1:
-            table.add_row("", "", "", fields[0])
-    console.print(table)
+        parts = line.split(None, 4)
+        if len(parts) >= 5:
+            ftype, date, time, size, name = parts
+            _print(f"  {ftype:<5}  {date + ' ' + time:<20}  {size:>12}  {name}")
+        else:
+            fields = line.split(None, 3)
+            if len(fields) >= 4:
+                _print(f"  {fields[0]:<5}  {fields[1]:<20}  {fields[2]:>12}  {fields[3]}")
+            elif fields:
+                _print(f"  {'':5}  {'':20}  {'':12}  {fields[0]}")
+    _print("")
 
 
 _NATIVE_FORMATTERS = {
