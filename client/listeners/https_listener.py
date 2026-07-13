@@ -461,9 +461,19 @@ class HttpsListener(BaseListener):
         if resp_emb.location == "body":
             body_content = self.profile.wrap_response(encoded)
             headers = dict(self.profile.response_headers)
+            # aiohttp requires charset separate from content_type
+            ct = resp_emb.content_type
+            charset = None
+            if "charset=" in ct:
+                parts = ct.split(";")
+                ct = parts[0].strip()
+                for p in parts[1:]:
+                    if "charset=" in p:
+                        charset = p.split("=")[1].strip()
             return web.Response(
                 status=200,
-                content_type=resp_emb.content_type,
+                content_type=ct,
+                charset=charset,
                 body=body_content,
                 headers=headers,
             )
