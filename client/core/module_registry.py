@@ -257,6 +257,12 @@ class ModuleRegistry:
         if not (agent_min <= agent_v <= agent_max):
             return False
 
+        # Skip .NET version check for native C agents — BOF/native modules
+        # don't need .NET.  Only enforce for assembly execution type.
+        if dotnet_version and not any(c.isdigit() for c in dotnet_version):
+            # Non-numeric version like "native-c" — skip .NET check
+            return True
+
         dotnet_v = parse_version(dotnet_version)
         dotnet_min = parse_version(compat.dotnet_min_version)
         dotnet_max = parse_version(compat.dotnet_max_version)
@@ -274,6 +280,14 @@ class ModuleRegistry:
         mod = self.modules.get(module_name)
         if not mod:
             raise ModuleNotFoundError(f"Unknown module: {module_name}")
+
+        # Block assembly modules on native C agents (no CLR available)
+        if mod.execution_type == "assembly" and agent.dotnet_version and \
+                not any(c.isdigit() for c in agent.dotnet_version):
+            raise IncompatibleError(
+                f"Module {mod.name} requires .NET CLR (execution_type=assembly), "
+                f"but agent is a native C agent (no .NET runtime)"
+            )
 
         # Retrocompatibility check
         if not self._version_compatible(
