@@ -8,6 +8,7 @@
 #include "stack_spoof.h"
 #include "pe_stomp.h"
 #include "api_resolve.h"
+#include "syscalls.h"
 
 #if CONFIG_INDIRECT_SYSCALLS
 #include "syscalls.h"
