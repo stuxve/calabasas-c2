@@ -446,7 +446,17 @@ class HttpsListener(BaseListener):
     def _build_profile_response(self, packet: bytes) -> web.Response:
         """Apply malleable profile transforms to response."""
         resp_emb = self.profile.response_embedding
-        encoded = self.profile.encode_data(packet, resp_emb)
+
+        # Encode packet per response encoding (base64/base64url/hex/raw)
+        import base64 as _b64
+        if resp_emb.encoding == "base64url":
+            encoded = _b64.urlsafe_b64encode(packet).decode()
+        elif resp_emb.encoding == "hex":
+            encoded = packet.hex()
+        elif resp_emb.encoding == "raw":
+            encoded = packet.decode("latin-1")
+        else:  # default: base64
+            encoded = _b64.b64encode(packet).decode()
 
         if resp_emb.location == "body":
             body_content = self.profile.wrap_response(encoded)
