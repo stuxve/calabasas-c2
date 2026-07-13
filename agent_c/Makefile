@@ -1,9 +1,9 @@
 # Makefile for cross-compiling the C agent from Linux (Kali) using MinGW-w64.
 #
 # Usage:
-#   make              — build x64 agent
-#   make ARCH=x86     — build x86 agent
-#   make clean        — remove build artifacts
+#   make              - build x64 agent
+#   make ARCH=x86     - build x86 agent
+#   make clean        - remove build artifacts
 
 CC_x64  = x86_64-w64-mingw32-gcc
 CC_x86  = i686-w64-mingw32-gcc
