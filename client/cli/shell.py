@@ -42,7 +42,9 @@ from ..logging.operator_logger import OperatorLogger
 from ..protocol.commands import TaskType
 
 log = logging.getLogger(__name__)
-console = Console(force_terminal=True)
+# Write to stderr to bypass prompt_toolkit's patch_stdout which corrupts
+# ANSI escape sequences when writing to stdout during prompt_async.
+console = Console(stderr=True)
 
 
 class OperatorShell:

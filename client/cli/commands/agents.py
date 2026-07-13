@@ -7,7 +7,7 @@ from rich.table import Table
 
 from ...core.session_manager import SessionManager
 
-console = Console(force_terminal=True)
+console = Console(stderr=True)
 
 
 def cmd_agents(session_manager: SessionManager):
