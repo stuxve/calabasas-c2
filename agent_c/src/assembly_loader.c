@@ -16,6 +16,9 @@
 #include "agent.h"
 #include <objbase.h>
 
+/* GUID_NULL is needed by IID_NULL — provide it if not linked with uuid.lib */
+const GUID GUID_NULL = {0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}};
+
 /* ─── CLR hosting GUIDs ─── */
 
 /* {9280188D-0E8E-4867-B30C-7FA83884E8DE} */
