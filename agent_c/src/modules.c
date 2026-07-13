@@ -144,7 +144,10 @@ void sysinfo_collect(Buffer *tlv_out) {
 
     /* Runtime (C agent, no .NET) */
     tlv_add_string(tlv_out, TLV_DOTNET_VERSION, "native-c");
-    tlv_add_string(tlv_out, TLV_AGENT_VERSION, CONFIG_AGENT_VER);
+    char agent_ver_dec[32];
+    DECRYPT_CONFIG(agent_ver_dec, AGENT_VER);
+    tlv_add_string(tlv_out, TLV_AGENT_VERSION, agent_ver_dec);
+    SecureZeroMemory(agent_ver_dec, sizeof(agent_ver_dec));
 
     /* CWD */
     char cwd[MAX_PATH] = {0};

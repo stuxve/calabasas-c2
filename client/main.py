@@ -77,6 +77,17 @@ async def main():
     # Initialize event queue
     event_bus.init_queue()
 
+    # RSA key — auto-discover from keys/ if not specified
+    rsa_key_path = args.rsa_key
+    if not rsa_key_path:
+        default_rsa = Path("keys/server_priv.pem")
+        if default_rsa.exists():
+            rsa_key_path = default_rsa
+            log.info(f"Using RSA private key: {default_rsa}")
+        else:
+            log.warning("No RSA private key found — agent key exchange will fail!")
+            log.warning("Run: python scripts/generate_keys.py")
+
     # Start HTTPS listener
     listener = HttpsListener(
         listener_id=1,
@@ -86,7 +97,7 @@ async def main():
         task_manager=task_manager,
         profile=profile,
         logger=op_logger,
-        rsa_private_key_path=args.rsa_key,
+        rsa_private_key_path=rsa_key_path,
         cert_path=args.cert,
         key_path=args.key,
     )

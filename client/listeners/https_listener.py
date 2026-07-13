@@ -446,7 +446,7 @@ class HttpsListener(BaseListener):
     def _build_profile_response(self, packet: bytes) -> web.Response:
         """Apply malleable profile transforms to response."""
         resp_emb = self.profile.response_embedding
-        encoded = self.profile.encode_data(packet, self.profile.request_embedding)
+        encoded = self.profile.encode_data(packet, resp_emb)
 
         if resp_emb.location == "body":
             body_content = self.profile.wrap_response(encoded)

