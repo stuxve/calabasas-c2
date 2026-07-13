@@ -348,10 +348,14 @@ class OperatorShell:
                 console.print("[red]Usage: download <remote> [local][/red]")
                 return
             remote_path = args[0]
-            self.task_manager.create_task(
+            local_save = args[1] if len(args) > 1 else ""
+            # Store the intended local path so we can use it when result arrives
+            task = self.task_manager.create_task(
                 agent, TaskType.NATIVE, "download",
                 arguments=remote_path.encode(),
             )
+            task._download_remote = remote_path
+            task._download_local = local_save
             console.print(f"[green]Download queued: {remote_path}[/green]")
             return
 
@@ -566,6 +570,28 @@ class OperatorShell:
                 _print(f"\n{marker} {session.hostname}: {new_cwd}")
             else:
                 _print(f"\n{marker} {session.hostname}: {new_cwd}")
+            return
+
+        # Handle download — save file to disk
+        if task.module_name == "download" and task.status.name == "COMPLETE":
+            data = task.result.raw
+            if not data:
+                _print(f"\n[!] Download failed: empty response")
+                return
+            remote_path = getattr(task, "_download_remote", "unknown")
+            local_override = getattr(task, "_download_local", "")
+            if local_override:
+                save_path = Path(local_override)
+            else:
+                dl_dir = Path("downloads")
+                dl_dir.mkdir(exist_ok=True)
+                filename = remote_path.replace("\\", "/").rsplit("/", 1)[-1] or "download"
+                save_path = dl_dir / f"{session.hostname}_{filename}"
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_bytes(data)
+            size_kb = len(data) / 1024
+            _print(f"\n{marker} Downloaded {remote_path} from {session.hostname}")
+            _print(f"    Saved: {save_path.resolve()} ({size_kb:.1f} KB)")
             return
 
         _print(f"\n{marker} Result from {session.hostname} ({task.module_name}):")
