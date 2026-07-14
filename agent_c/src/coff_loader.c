@@ -251,6 +251,45 @@ static BOOL resolve_symbol(const char *name, void **out_addr, BOOL *out_indirect
         return TRUE;
     }
 
+    /* ─── Fallback: bare CRT function names → msvcrt.dll ─── */
+    /* BOFs compiled with MinGW may reference standard C library functions
+     * without the MSVCRT$ prefix. Map them to msvcrt.dll automatically. */
+    static const char *crt_functions[] = {
+        "malloc", "free", "calloc", "realloc",
+        "memcpy", "memset", "memcmp", "memmove",
+        "strlen", "strcmp", "strncmp", "strcpy", "strncpy", "strcat", "strncat", "strstr",
+        "sprintf", "snprintf", "_snprintf", "printf", "sscanf",
+        "wcscat", "wcscpy", "wcslen", "wcsncpy", "wcscmp", "wcsncmp",
+        "swprintf", "_wcsicmp", "_stricmp", "_snwprintf",
+        "atoi", "atol", "strtol", "strtoul",
+        "qsort", "bsearch", "abs",
+        "tolower", "toupper", "isdigit", "isalpha",
+        NULL
+    };
+
+    for (int i = 0; crt_functions[i] != NULL; i++) {
+        if (strcmp(clean, crt_functions[i]) == 0) {
+            HMODULE hMsvcrt = LoadLibraryA("msvcrt.dll");
+            if (!hMsvcrt) return FALSE;
+
+            FARPROC proc = GetProcAddress(hMsvcrt, clean);
+            if (!proc) return FALSE;
+
+            if (strncmp(name, "__imp_", 6) == 0) {
+                void **indirect = (void**)VirtualAlloc(NULL, sizeof(void*),
+                    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                if (!indirect) return FALSE;
+                *indirect = (void*)proc;
+                *out_addr = (void*)indirect;
+                *out_indirect = TRUE;
+            } else {
+                *out_addr = (void*)proc;
+                *out_indirect = FALSE;
+            }
+            return TRUE;
+        }
+    }
+
     return FALSE;
 }
 

