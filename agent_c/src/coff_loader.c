@@ -515,17 +515,27 @@ BOOL coff_load_and_execute(
             if (rva >= loaded[i].size)
                 continue;
 
+            /*
+             * CRITICAL: In COFF object files, the bytes at the relocation
+             * site contain an ADDEND — an offset into the target (e.g.,
+             * which string within .rdata). We must read it and add it to
+             * the target address before computing the final value.
+             */
             switch (reloc_type) {
                 case IMAGE_REL_AMD64_ADDR64: {
                     /* 64-bit absolute address */
-                    INT64 val = (INT64)(uintptr_t)target_addr;
+                    INT64 addend;
+                    memcpy(&addend, patch_addr, 8);
+                    INT64 val = (INT64)(uintptr_t)target_addr + addend;
                     memcpy(patch_addr, &val, 8);
                     break;
                 }
 
                 case IMAGE_REL_AMD64_ADDR32NB: {
                     /* 32-bit address without image base (RVA-like) */
-                    INT32 delta = (INT32)((uintptr_t)target_addr -
+                    INT32 addend;
+                    memcpy(&addend, patch_addr, 4);
+                    INT32 delta = (INT32)((uintptr_t)target_addr + addend -
                                           (uintptr_t)loaded[i].base);
                     memcpy(patch_addr, &delta, 4);
                     break;
@@ -533,7 +543,9 @@ BOOL coff_load_and_execute(
 
                 case IMAGE_REL_AMD64_REL32: {
                     /* 32-bit PC-relative. Displacement from (patch_addr + 4) */
-                    INT64 diff = (INT64)((uintptr_t)target_addr -
+                    INT32 addend;
+                    memcpy(&addend, patch_addr, 4);
+                    INT64 diff = (INT64)((uintptr_t)target_addr + addend -
                                          ((uintptr_t)patch_addr + 4));
                     INT32 rel = (INT32)diff;
                     memcpy(patch_addr, &rel, 4);
@@ -541,7 +553,9 @@ BOOL coff_load_and_execute(
                 }
 
                 case IMAGE_REL_AMD64_REL32_1: {
-                    INT64 diff = (INT64)((uintptr_t)target_addr -
+                    INT32 addend;
+                    memcpy(&addend, patch_addr, 4);
+                    INT64 diff = (INT64)((uintptr_t)target_addr + addend -
                                          ((uintptr_t)patch_addr + 5));
                     INT32 rel = (INT32)diff;
                     memcpy(patch_addr, &rel, 4);
@@ -549,7 +563,9 @@ BOOL coff_load_and_execute(
                 }
 
                 case IMAGE_REL_AMD64_REL32_2: {
-                    INT64 diff = (INT64)((uintptr_t)target_addr -
+                    INT32 addend;
+                    memcpy(&addend, patch_addr, 4);
+                    INT64 diff = (INT64)((uintptr_t)target_addr + addend -
                                          ((uintptr_t)patch_addr + 6));
                     INT32 rel = (INT32)diff;
                     memcpy(patch_addr, &rel, 4);
@@ -557,7 +573,9 @@ BOOL coff_load_and_execute(
                 }
 
                 case IMAGE_REL_AMD64_REL32_3: {
-                    INT64 diff = (INT64)((uintptr_t)target_addr -
+                    INT32 addend;
+                    memcpy(&addend, patch_addr, 4);
+                    INT64 diff = (INT64)((uintptr_t)target_addr + addend -
                                          ((uintptr_t)patch_addr + 7));
                     INT32 rel = (INT32)diff;
                     memcpy(patch_addr, &rel, 4);
@@ -565,7 +583,9 @@ BOOL coff_load_and_execute(
                 }
 
                 case IMAGE_REL_AMD64_REL32_4: {
-                    INT64 diff = (INT64)((uintptr_t)target_addr -
+                    INT32 addend;
+                    memcpy(&addend, patch_addr, 4);
+                    INT64 diff = (INT64)((uintptr_t)target_addr + addend -
                                          ((uintptr_t)patch_addr + 8));
                     INT32 rel = (INT32)diff;
                     memcpy(patch_addr, &rel, 4);
@@ -573,7 +593,9 @@ BOOL coff_load_and_execute(
                 }
 
                 case IMAGE_REL_AMD64_REL32_5: {
-                    INT64 diff = (INT64)((uintptr_t)target_addr -
+                    INT32 addend;
+                    memcpy(&addend, patch_addr, 4);
+                    INT64 diff = (INT64)((uintptr_t)target_addr + addend -
                                          ((uintptr_t)patch_addr + 9));
                     INT32 rel = (INT32)diff;
                     memcpy(patch_addr, &rel, 4);
