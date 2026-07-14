@@ -597,16 +597,23 @@ class OperatorShell:
         _print(f"\n{marker} Result from {session.hostname} ({task.module_name}):")
         mod = self.module_registry.get(task.module_name)
         if mod:
-            output = self.output_parser.parse(mod, task.result.raw)
-            if output.error:
-                _print(f"[!] Error: {output.error}")
-            elif output.raw_rows:
-                _print_table(mod.columns, output.raw_rows)
-            elif output.text:
-                _print(output.text)
-            elif output.file_data:
-                nbytes = len(output.file_data)
-                _print(f"[*] File data received: {nbytes} bytes")
+            try:
+                output = self.output_parser.parse(mod, task.result.raw)
+                if output.error:
+                    _print(f"[!] Error: {output.error}")
+                elif output.raw_rows:
+                    _print_table(mod.columns, output.raw_rows)
+                elif output.text:
+                    _print(output.text)
+                elif output.file_data:
+                    nbytes = len(output.file_data)
+                    _print(f"[*] File data received: {nbytes} bytes")
+                else:
+                    # Parser returned empty — show raw
+                    _print(task.result.raw.decode("utf-8", errors="replace"))
+            except (ValueError, Exception):
+                # Parse failed (e.g. plain-text diagnostics, not TLV) — show raw
+                _print(task.result.raw.decode("utf-8", errors="replace"))
         else:
             text = task.result.raw.decode("utf-8", errors="replace")
             formatter = _NATIVE_FORMATTERS.get(task.module_name)
