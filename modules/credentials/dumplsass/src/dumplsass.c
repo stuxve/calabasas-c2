@@ -32,13 +32,14 @@ DECLSPEC_IMPORT BOOL    WINAPI KERNEL32$ReadFile(HANDLE, LPVOID, DWORD, LPDWORD,
 DECLSPEC_IMPORT BOOL    WINAPI ADVAPI32$OpenProcessToken(HANDLE, DWORD, PHANDLE);
 DECLSPEC_IMPORT BOOL    WINAPI ADVAPI32$LookupPrivilegeValueA(LPCSTR, LPCSTR, PLUID);
 DECLSPEC_IMPORT BOOL    WINAPI ADVAPI32$AdjustTokenPrivileges(HANDLE, BOOL, PTOKEN_PRIVILEGES, DWORD, PTOKEN_PRIVILEGES, PDWORD);
-DECLSPEC_IMPORT HANDLE  WINAPI KERNEL32$GetCurrentProcess(void);
 
 DECLSPEC_IMPORT int __cdecl MSVCRT$_wcsicmp(const wchar_t*, const wchar_t*);
 
 static BOOL enable_debug_priv(void) {
     HANDLE hToken;
-    if (!ADVAPI32$OpenProcessToken(KERNEL32$GetCurrentProcess(),
+    /* GetCurrentProcess() just returns (HANDLE)-1 — use directly to avoid import */
+    HANDLE hSelf = (HANDLE)(LONG_PTR)-1;
+    if (!ADVAPI32$OpenProcessToken(hSelf,
             TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
         return FALSE;
 
