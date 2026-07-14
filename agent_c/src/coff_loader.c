@@ -443,12 +443,6 @@ BOOL coff_load_and_execute(
     for (DWORD s = 0; s < hdr->NumberOfSymbols; s++) {
         const COFF_SYMBOL *sym = &sym_table[s];
 
-        /* Skip aux symbols */
-        if (sym->NumberOfAuxSymbols > 0) {
-            s += sym->NumberOfAuxSymbols;
-            continue;
-        }
-
         /* Internal symbols (defined in a section) */
         if (sym->SectionNumber > 0 && sym->SectionNumber <= hdr->NumberOfSections) {
             int sec_idx = sym->SectionNumber - 1;  /* 1-based */
@@ -456,27 +450,29 @@ BOOL coff_load_and_execute(
                 sym_addrs[s] = (void*)((unsigned char*)loaded[sec_idx].base + sym->Value);
                 sym_resolved[s] = TRUE;
             }
-            continue;
         }
-
         /* External symbols (SectionNumber == 0, EXTERNAL class) */
-        if (sym->SectionNumber == 0 && sym->StorageClass == IMAGE_SYM_CLASS_EXTERNAL) {
+        else if (sym->SectionNumber == 0 && sym->StorageClass == IMAGE_SYM_CLASS_EXTERNAL) {
             char name_buf[256];
             const char *name = get_symbol_name(sym, string_table, string_table_size,
                                                 name_buf, sizeof(name_buf));
-            if (name[0] == '\0')
-                continue;
-
-            void *addr = NULL;
-            BOOL indirect = FALSE;
-            if (resolve_symbol(name, &addr, &indirect)) {
-                sym_addrs[s] = addr;
-                sym_indirect[s] = indirect;
-                sym_resolved[s] = TRUE;
-            } else {
-                /* Unresolved external — report it */
-                BeaconPrintf(0x0d, "[!] COFF: unresolved symbol: %s\n", name);
+            if (name[0] != '\0') {
+                void *addr = NULL;
+                BOOL indirect = FALSE;
+                if (resolve_symbol(name, &addr, &indirect)) {
+                    sym_addrs[s] = addr;
+                    sym_indirect[s] = indirect;
+                    sym_resolved[s] = TRUE;
+                } else {
+                    /* Unresolved external — report it */
+                    BeaconPrintf(0x0d, "[!] COFF: unresolved symbol: %s\n", name);
+                }
             }
+        }
+
+        /* Skip auxiliary symbol entries (AFTER processing the main symbol) */
+        if (sym->NumberOfAuxSymbols > 0) {
+            s += sym->NumberOfAuxSymbols;
         }
     }
 
@@ -616,40 +612,41 @@ BOOL coff_load_and_execute(
     BofEntryFunc entry = NULL;
     for (DWORD s = 0; s < hdr->NumberOfSymbols; s++) {
         const COFF_SYMBOL *sym = &sym_table[s];
-        if (sym->NumberOfAuxSymbols > 0) {
-            s += sym->NumberOfAuxSymbols;
-            continue;
+
+        if (sym->SectionNumber > 0 && sym->StorageClass == IMAGE_SYM_CLASS_EXTERNAL) {
+            char name_buf[256];
+            const char *name = get_symbol_name(sym, string_table, string_table_size,
+                                                name_buf, sizeof(name_buf));
+
+            if (strcmp(name, "go") == 0 || strcmp(name, "_go") == 0) {
+                int sec_idx = sym->SectionNumber - 1;
+                if (sec_idx >= 0 && sec_idx < hdr->NumberOfSections && loaded[sec_idx].base) {
+                    entry = (BofEntryFunc)((unsigned char*)loaded[sec_idx].base + sym->Value);
+                }
+                break;
+            }
         }
 
-        if (sym->SectionNumber <= 0) continue;
-        if (sym->StorageClass != IMAGE_SYM_CLASS_EXTERNAL) continue;
-
-        char name_buf[256];
-        const char *name = get_symbol_name(sym, string_table, string_table_size,
-                                            name_buf, sizeof(name_buf));
-
-        if (strcmp(name, "go") == 0 || strcmp(name, "_go") == 0) {
-            int sec_idx = sym->SectionNumber - 1;
-            if (sec_idx >= 0 && sec_idx < hdr->NumberOfSections && loaded[sec_idx].base) {
-                entry = (BofEntryFunc)((unsigned char*)loaded[sec_idx].base + sym->Value);
-            }
-            break;
+        /* Skip aux symbols AFTER checking the main symbol */
+        if (sym->NumberOfAuxSymbols > 0) {
+            s += sym->NumberOfAuxSymbols;
         }
     }
 
     if (!entry) {
         BeaconPrintf(0x0d, "[!] COFF: entry point 'go' not found in symbol table (%u symbols scanned)\n",
                      hdr->NumberOfSymbols);
-        /* Dump all EXTERNAL symbols so operator can see what's in the BOF */
+        /* Dump all symbols so operator can see what's in the BOF */
         for (DWORD s = 0; s < hdr->NumberOfSymbols; s++) {
             const COFF_SYMBOL *sym = &sym_table[s];
-            if (sym->NumberOfAuxSymbols > 0) { s += sym->NumberOfAuxSymbols; continue; }
-            if (sym->SectionNumber <= 0) continue;
-            if (sym->StorageClass != IMAGE_SYM_CLASS_EXTERNAL) continue;
-            char nb[256];
-            const char *n = get_symbol_name(sym, string_table, string_table_size, nb, sizeof(nb));
-            BeaconPrintf(0x0d, "  [dbg] exported symbol: '%s' (section %d, value 0x%X)\n",
-                         n, sym->SectionNumber, sym->Value);
+            if (sym->SectionNumber > 0) {
+                char nb[256];
+                const char *n = get_symbol_name(sym, string_table, string_table_size, nb, sizeof(nb));
+                BeaconPrintf(0x0d, "  [dbg] symbol: '%s' (section %d, class %d, value 0x%X, aux %d)\n",
+                             n, sym->SectionNumber, sym->StorageClass, sym->Value, sym->NumberOfAuxSymbols);
+            }
+            if (sym->NumberOfAuxSymbols > 0)
+                s += sym->NumberOfAuxSymbols;
         }
         goto cleanup_syms_diag;
     }
