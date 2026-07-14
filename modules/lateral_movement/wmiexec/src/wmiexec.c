@@ -2,8 +2,8 @@
  * wmiexec.c — Remote command execution via WMI (DCOM)
  *
  * Uses COM/DCOM:
- *   CoInitializeEx → CoCreateInstance(CLSID_WbemLocator) →
- *   IWbemLocator::ConnectServer("\\\\target\\ROOT\\CIMV2") →
+ *   CoInitializeEx -> CoCreateInstance(CLSID_WbemLocator) ->
+ *   IWbemLocator::ConnectServer("\\\\target\\ROOT\\CIMV2") ->
  *   IWbemServices::ExecMethod("Win32_Process", "Create", ...)
  *
  * We use the COM vtable approach (no #import, no type library).
@@ -58,6 +58,13 @@ DECLSPEC_IMPORT HRESULT WINAPI OLE32$CoCreateInstance(REFCLSID, LPUNKNOWN, DWORD
 DECLSPEC_IMPORT HRESULT WINAPI OLE32$CoSetProxyBlanket(
     IUnknown*, DWORD, DWORD, OLECHAR*, DWORD, DWORD, RPC_AUTH_IDENTITY_HANDLE, DWORD);
 
+DECLSPEC_IMPORT int     WINAPI KERNEL32$MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int);
+
+DECLSPEC_IMPORT BSTR    WINAPI OLEAUT32$SysAllocString(const OLECHAR*);
+DECLSPEC_IMPORT void    WINAPI OLEAUT32$SysFreeString(BSTR);
+
+DECLSPEC_IMPORT int __cdecl MSVCRT$swprintf(wchar_t*, size_t, const wchar_t*, ...);
+
 void go(char *args, int args_len) {
     datap parser;
     BeaconDataParse(&parser, args, args_len);
@@ -92,16 +99,16 @@ void go(char *args, int args_len) {
     /* Build connection string: \\\\target\\ROOT\\CIMV2 */
     wchar_t connStr[512];
     wchar_t wTarget[256];
-    MultiByteToWideChar(CP_UTF8, 0, target, -1, wTarget, 256);
-    swprintf(connStr, 512, L"\\\\%s\\ROOT\\CIMV2", wTarget);
+    KERNEL32$MultiByteToWideChar(CP_UTF8, 0, target, -1, wTarget, 256);
+    MSVCRT$swprintf(connStr, 512, L"\\\\%s\\ROOT\\CIMV2", wTarget);
 
-    BSTR bstrConn = SysAllocString(connStr);
+    BSTR bstrConn = OLEAUT32$SysAllocString(connStr);
 
     /* Connect to remote WMI */
     IWbemServices *services = NULL;
     hr = locator->lpVtbl->ConnectServer(locator, bstrConn,
         NULL, NULL, NULL, 0, NULL, NULL, &services);
-    SysFreeString(bstrConn);
+    OLEAUT32$SysFreeString(bstrConn);
 
     if (FAILED(hr) || !services) {
         BeaconPrintf(CALLBACK_ERROR, "[!] ConnectServer failed: 0x%08lX\n", (unsigned long)hr);
@@ -120,14 +127,6 @@ void go(char *args, int args_len) {
     /*
      * Call Win32_Process.Create(CommandLine)
      *
-     * This requires:
-     * 1. Get the Win32_Process class object
-     * 2. Get the "Create" method input parameters
-     * 3. SpawnInstance to create parameter object
-     * 4. Set "CommandLine" property
-     * 5. ExecMethod
-     *
-     * Full implementation requires IWbemClassObject manipulation.
      * TODO: implement the full IWbemClassObject chain
      */
 

