@@ -330,33 +330,57 @@ BOOL coff_load_and_execute(
     unsigned char **output,
     DWORD *output_len
 ) {
-    if (!coff_data || coff_len < sizeof(COFF_HEADER))
-        return FALSE;
+    /* ─── Pre-declare variables used by cleanup labels ─── */
+    LoadedSection loaded[MAX_SECTIONS];
+    memset(loaded, 0, sizeof(loaded));
+    const COFF_HEADER *hdr = NULL;
+    const COFF_SECTION *sections = NULL;
+    void **sym_addrs = NULL;
+    BOOL *sym_indirect = NULL;
+    BOOL *sym_resolved = NULL;
 
-    /* ─── Step 1: Parse COFF header ─── */
-    const COFF_HEADER *hdr = (const COFF_HEADER *)coff_data;
-
-    if (hdr->Machine != COFF_MACHINE_AMD64) {
-        /* Only x64 supported for now */
+    /* ─── Initialize output buffer EARLY for diagnostics ─── */
+    g_bof_output_cap = 4096;
+    g_bof_output = (unsigned char *)malloc(g_bof_output_cap);
+    g_bof_output_len = 0;
+    if (!g_bof_output) {
+        if (output) *output = NULL;
+        if (output_len) *output_len = 0;
         return FALSE;
     }
 
-    if (hdr->NumberOfSections > MAX_SECTIONS)
-        return FALSE;
+    if (!coff_data || coff_len < sizeof(COFF_HEADER)) {
+        BeaconPrintf(0x0d, "[!] COFF: invalid data (NULL or too small: %u bytes)\n", coff_len);
+        goto cleanup_with_diag;
+    }
+
+    /* ─── Step 1: Parse COFF header ─── */
+    hdr = (const COFF_HEADER *)coff_data;
+
+    if (hdr->Machine != COFF_MACHINE_AMD64) {
+        BeaconPrintf(0x0d, "[!] COFF: bad machine type 0x%04X (expected 0x8664 for x64)\n", hdr->Machine);
+        goto cleanup_with_diag;
+    }
+
+    if (hdr->NumberOfSections > MAX_SECTIONS) {
+        BeaconPrintf(0x0d, "[!] COFF: too many sections: %u (max %d)\n", hdr->NumberOfSections, MAX_SECTIONS);
+        goto cleanup_with_diag;
+    }
 
     if (hdr->SizeOfOptionalHeader != 0) {
-        /* Object files don't have optional headers */
-        return FALSE;
+        BeaconPrintf(0x0d, "[!] COFF: has optional header (size %u) — not an object file\n", hdr->SizeOfOptionalHeader);
+        goto cleanup_with_diag;
     }
 
     /* ─── Step 2: Parse section headers ─── */
-    const COFF_SECTION *sections = (const COFF_SECTION *)(coff_data + sizeof(COFF_HEADER));
-    LoadedSection loaded[MAX_SECTIONS];
-    memset(loaded, 0, sizeof(loaded));
+    sections = (const COFF_SECTION *)(coff_data + sizeof(COFF_HEADER));
 
     /* ─── Step 3: Parse symbol table ─── */
-    if (hdr->PointerToSymbolTable == 0 || hdr->NumberOfSymbols == 0)
-        return FALSE;
+    if (hdr->PointerToSymbolTable == 0 || hdr->NumberOfSymbols == 0) {
+        BeaconPrintf(0x0d, "[!] COFF: no symbol table (offset=%u, count=%u)\n",
+                     hdr->PointerToSymbolTable, hdr->NumberOfSymbols);
+        goto cleanup_with_diag;
+    }
 
     const COFF_SYMBOL *sym_table = (const COFF_SYMBOL *)(coff_data + hdr->PointerToSymbolTable);
     DWORD sym_table_end = hdr->PointerToSymbolTable + hdr->NumberOfSymbols * sizeof(COFF_SYMBOL);
@@ -380,16 +404,21 @@ BOOL coff_load_and_execute(
         /* Allocate as RW initially — will fix protections later */
         loaded[i].base = VirtualAlloc(NULL, alloc_size,
             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (!loaded[i].base)
-            goto cleanup;
+        if (!loaded[i].base) {
+            BeaconPrintf(0x0d, "[!] COFF: VirtualAlloc failed for section %d (size %u)\n", i, alloc_size);
+            goto cleanup_with_diag;
+        }
 
         loaded[i].size = alloc_size;
         loaded[i].chars = sections[i].Characteristics;
 
         /* Copy section data */
         if (sections[i].SizeOfRawData > 0 && sections[i].PointerToRawData > 0) {
-            if (sections[i].PointerToRawData + sections[i].SizeOfRawData > coff_len)
-                goto cleanup;
+            if (sections[i].PointerToRawData + sections[i].SizeOfRawData > coff_len) {
+                BeaconPrintf(0x0d, "[!] COFF: section %d data exceeds file (offset %u + size %u > %u)\n",
+                             i, sections[i].PointerToRawData, sections[i].SizeOfRawData, coff_len);
+                goto cleanup_with_diag;
+            }
             memcpy(loaded[i].base,
                    coff_data + sections[i].PointerToRawData,
                    sections[i].SizeOfRawData);
@@ -403,11 +432,13 @@ BOOL coff_load_and_execute(
 
     /* ─── Step 5: Resolve external symbols ─── */
     /* Track resolved addresses per symbol index */
-    void **sym_addrs = (void **)calloc(hdr->NumberOfSymbols, sizeof(void*));
-    BOOL *sym_indirect = (BOOL *)calloc(hdr->NumberOfSymbols, sizeof(BOOL));
-    BOOL *sym_resolved = (BOOL *)calloc(hdr->NumberOfSymbols, sizeof(BOOL));
-    if (!sym_addrs || !sym_indirect || !sym_resolved)
-        goto cleanup_syms;
+    sym_addrs = (void **)calloc(hdr->NumberOfSymbols, sizeof(void*));
+    sym_indirect = (BOOL *)calloc(hdr->NumberOfSymbols, sizeof(BOOL));
+    sym_resolved = (BOOL *)calloc(hdr->NumberOfSymbols, sizeof(BOOL));
+    if (!sym_addrs || !sym_indirect || !sym_resolved) {
+        BeaconPrintf(0x0d, "[!] COFF: failed to allocate symbol tracking arrays (%u symbols)\n", hdr->NumberOfSymbols);
+        goto cleanup_syms_diag;
+    }
 
     for (DWORD s = 0; s < hdr->NumberOfSymbols; s++) {
         const COFF_SYMBOL *sym = &sym_table[s];
@@ -442,8 +473,10 @@ BOOL coff_load_and_execute(
                 sym_addrs[s] = addr;
                 sym_indirect[s] = indirect;
                 sym_resolved[s] = TRUE;
+            } else {
+                /* Unresolved external — report it */
+                BeaconPrintf(0x0d, "[!] COFF: unresolved symbol: %s\n", name);
             }
-            /* Unresolved externals are left as NULL — will fail at relocation */
         }
     }
 
@@ -470,11 +503,12 @@ BOOL coff_load_and_execute(
                 continue;
 
             if (!sym_resolved[sym_idx]) {
-                /* Unresolved symbol — try to get name for error reporting */
+                /* Unresolved symbol referenced by relocation — fatal */
                 char name_buf[256];
                 const char *name = get_symbol_name(&sym_table[sym_idx],
                     string_table, string_table_size, name_buf, sizeof(name_buf));
-                /* Skip silently — BOF may not use all symbols */
+                BeaconPrintf(0x0d, "[!] COFF: relocation in section %d references unresolved symbol [%u]: %s\n",
+                             i, sym_idx, name);
                 continue;
             }
 
@@ -603,16 +637,37 @@ BOOL coff_load_and_execute(
         }
     }
 
-    if (!entry)
-        goto cleanup_syms;
+    if (!entry) {
+        BeaconPrintf(0x0d, "[!] COFF: entry point 'go' not found in symbol table (%u symbols scanned)\n",
+                     hdr->NumberOfSymbols);
+        /* Dump all EXTERNAL symbols so operator can see what's in the BOF */
+        for (DWORD s = 0; s < hdr->NumberOfSymbols; s++) {
+            const COFF_SYMBOL *sym = &sym_table[s];
+            if (sym->NumberOfAuxSymbols > 0) { s += sym->NumberOfAuxSymbols; continue; }
+            if (sym->SectionNumber <= 0) continue;
+            if (sym->StorageClass != IMAGE_SYM_CLASS_EXTERNAL) continue;
+            char nb[256];
+            const char *n = get_symbol_name(sym, string_table, string_table_size, nb, sizeof(nb));
+            BeaconPrintf(0x0d, "  [dbg] exported symbol: '%s' (section %d, value 0x%X)\n",
+                         n, sym->SectionNumber, sym->Value);
+        }
+        goto cleanup_syms_diag;
+    }
 
-    /* ─── Step 9: Initialize output buffer and execute ─── */
-    g_bof_output_cap = 1024 * 256;  /* 256KB initial */
-    g_bof_output = (unsigned char *)malloc(g_bof_output_cap);
-    g_bof_output_len = 0;
-
-    if (!g_bof_output)
-        goto cleanup_syms;
+    /* ─── Step 9: Grow output buffer for BOF execution and execute ─── */
+    /* Buffer was initialized at the top for diagnostics — grow it now for real output */
+    {
+        int new_cap = 1024 * 256;  /* 256KB */
+        if (g_bof_output_cap < new_cap) {
+            unsigned char *new_buf = (unsigned char *)realloc(g_bof_output, new_cap);
+            if (!new_buf) {
+                BeaconPrintf(0x0d, "[!] COFF: failed to grow output buffer to %d bytes\n", new_cap);
+                goto cleanup_syms_diag;
+            }
+            g_bof_output = new_buf;
+            g_bof_output_cap = new_cap;
+        }
+    }
 
     /* Call the BOF entry point */
     entry((char *)arg_data, (int)arg_len);
@@ -651,7 +706,7 @@ BOOL coff_load_and_execute(
 
     return TRUE;
 
-cleanup_syms:
+cleanup_syms_diag:
     if (sym_addrs) {
         for (DWORD s = 0; s < hdr->NumberOfSymbols; s++) {
             if (sym_indirect && sym_indirect[s] && sym_addrs[s])
@@ -661,6 +716,29 @@ cleanup_syms:
     }
     if (sym_indirect) free(sym_indirect);
     if (sym_resolved) free(sym_resolved);
+    /* Fall through to cleanup_with_diag */
+
+cleanup_with_diag:
+    /* Free loaded sections */
+    for (int i = 0; i < MAX_SECTIONS; i++) {
+        if (loaded[i].base)
+            VirtualFree(loaded[i].base, 0, MEM_RELEASE);
+    }
+
+    /* Return diagnostic output to caller even though we failed */
+    if (g_bof_output && g_bof_output_len > 0 && output && output_len) {
+        *output = (unsigned char *)malloc(g_bof_output_len);
+        if (*output) {
+            memcpy(*output, g_bof_output, g_bof_output_len);
+            *output_len = (DWORD)g_bof_output_len;
+        } else {
+            *output = NULL;
+            *output_len = 0;
+        }
+    } else if (output && output_len) {
+        *output = NULL;
+        *output_len = 0;
+    }
 
     if (g_bof_output) {
         free(g_bof_output);
@@ -669,10 +747,5 @@ cleanup_syms:
         g_bof_output_cap = 0;
     }
 
-cleanup:
-    for (int i = 0; i < hdr->NumberOfSections; i++) {
-        if (loaded[i].base)
-            VirtualFree(loaded[i].base, 0, MEM_RELEASE);
-    }
     return FALSE;
 }
