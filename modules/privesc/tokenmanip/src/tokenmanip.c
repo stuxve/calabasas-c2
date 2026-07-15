@@ -42,6 +42,7 @@ DECLSPEC_IMPORT int    WINAPI   KERNEL32$WideCharToMultiByte(UINT, DWORD, LPCWCH
 DECLSPEC_IMPORT int    WINAPI   KERNEL32$MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int);
 DECLSPEC_IMPORT LPVOID WINAPI   KERNEL32$VirtualAlloc(LPVOID, SIZE_T, DWORD, DWORD);
 DECLSPEC_IMPORT BOOL   WINAPI   KERNEL32$VirtualFree(LPVOID, SIZE_T, DWORD);
+DECLSPEC_IMPORT DWORD  WINAPI   KERNEL32$GetLastError(void);
 
 DECLSPEC_IMPORT int    __cdecl  MSVCRT$strcmp(const char*, const char*);
 DECLSPEC_IMPORT int    __cdecl  MSVCRT$memset(void*, int, size_t);
@@ -503,9 +504,6 @@ static void do_whoami(void) {
 
     KERNEL32$CloseHandle(hToken);
 }
-
-/* GetLastError import */
-DECLSPEC_IMPORT DWORD WINAPI KERNEL32$GetLastError(void);
 
 void go(char *args, int args_len) {
     datap parser;
