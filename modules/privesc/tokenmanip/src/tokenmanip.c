@@ -103,8 +103,12 @@ DECLSPEC_IMPORT void*  __cdecl  MSVCRT$memcpy(void*, const void*, size_t);
 #endif
 
 #define SECURITY_NT_AUTHORITY_ID {0,0,0,0,0,5}
+#ifndef SECURITY_BUILTIN_DOMAIN_RID
 #define SECURITY_BUILTIN_DOMAIN_RID      32
+#endif
+#ifndef DOMAIN_ALIAS_RID_ADMINS
 #define DOMAIN_ALIAS_RID_ADMINS          544
+#endif
 
 /* ── Token info structs ── */
 typedef struct {

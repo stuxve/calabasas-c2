@@ -25,6 +25,7 @@ DECLSPEC_IMPORT int WINAPI KERNEL32$WideCharToMultiByte(UINT, DWORD, LPCWCH, int
 DECLSPEC_IMPORT int WINAPI KERNEL32$MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int);
 
 DECLSPEC_IMPORT int    __cdecl MSVCRT$sscanf(const char*, const char*, ...);
+DECLSPEC_IMPORT int    __cdecl MSVCRT$snprintf(char*, size_t, const char*, ...);
 DECLSPEC_IMPORT size_t __cdecl MSVCRT$strlen(const char*);
 DECLSPEC_IMPORT int    __cdecl MSVCRT$memset(void*, int, size_t);
 DECLSPEC_IMPORT void*  __cdecl MSVCRT$memcpy(void*, const void*, size_t);

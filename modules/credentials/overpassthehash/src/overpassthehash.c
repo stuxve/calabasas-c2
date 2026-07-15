@@ -198,7 +198,7 @@ static BOOL hmac_md5(HCRYPTPROV hProv, const unsigned char *key, int key_len,
     if (!blob) return FALSE;
 
     PLAINTEXTKEYBLOB_HDR *hdr = (PLAINTEXTKEYBLOB_HDR *)blob;
-    hdr->hdr.bType = PLAINTEXTBLOB;
+    hdr->hdr.bType = PLAINTEXTKEYBLOB;
     hdr->hdr.bVersion = CUR_BLOB_VERSION;
     hdr->hdr.reserved = 0;
     hdr->hdr.aiKeyAlg = CALG_RC4;
@@ -239,7 +239,7 @@ static BOOL rc4_encrypt(HCRYPTPROV hProv, const unsigned char *key, int key_len,
     if (!blob) return FALSE;
 
     PLAINTEXTKEYBLOB_HDR *hdr = (PLAINTEXTKEYBLOB_HDR *)blob;
-    hdr->hdr.bType = PLAINTEXTBLOB;
+    hdr->hdr.bType = PLAINTEXTKEYBLOB;
     hdr->hdr.bVersion = CUR_BLOB_VERSION;
     hdr->hdr.reserved = 0;
     hdr->hdr.aiKeyAlg = CALG_RC4;
