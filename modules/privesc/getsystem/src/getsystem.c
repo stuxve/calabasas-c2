@@ -177,7 +177,7 @@ void go(char *args, int args_len) {
 
         while (1) {
             DWORD nextOffset = *(DWORD*)(current + 0x00);
-            DWORD pid        = (DWORD)(*(ULONG_PTR*)(current + 0x48));
+            DWORD pid        = (DWORD)(*(ULONG_PTR*)(current + 0x50));
             USHORT nameLen   = *(USHORT*)(current + 0x38);
             wchar_t *nameBuf = *(wchar_t**)(current + 0x38 + sizeof(ULONG_PTR));
 

@@ -233,8 +233,8 @@ static void do_list(void) {
 
     while (1) {
         DWORD nextOffset = *(DWORD*)(current + 0x00);
-        DWORD pid        = (DWORD)(*(ULONG_PTR*)(current + 0x48));
-        DWORD ppid       = (DWORD)(*(ULONG_PTR*)(current + 0x50));
+        DWORD pid        = (DWORD)(*(ULONG_PTR*)(current + 0x50));
+        DWORD ppid       = (DWORD)(*(ULONG_PTR*)(current + 0x58));
 
         /* Read UNICODE_STRING for process name */
         USHORT nameLen   = *(USHORT*)(current + 0x38);
