@@ -34,9 +34,15 @@ DECLSPEC_IMPORT void*  __cdecl MSVCRT$memcpy(void*, const void*, size_t);
 #define KerbQueryTicketCacheExMessage    14
 
 /* Cache options */
+#ifndef KERB_RETRIEVE_TICKET_AS_KERB_CRED
 #define KERB_RETRIEVE_TICKET_AS_KERB_CRED  8
+#endif
+#ifndef KERB_RETRIEVE_TICKET_DEFAULT
 #define KERB_RETRIEVE_TICKET_DEFAULT       0
+#endif
+#ifndef KERB_RETRIEVE_TICKET_DONT_USE_CACHE
 #define KERB_RETRIEVE_TICKET_DONT_USE_CACHE 4
+#endif
 
 #pragma pack(push, 1)
 

@@ -10,9 +10,9 @@
  * Win32 APIs: ws2_32.dll (Kerberos TCP), secur32.dll (ticket injection),
  *             advapi32.dll (crypto — HMAC-MD5 / AES via SystemFunction)
  */
-#include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 #define SECURITY_WIN32
 #include <security.h>
 #include <ntsecapi.h>
@@ -73,14 +73,30 @@ DECLSPEC_IMPORT BOOL WINAPI ADVAPI32$CryptEncrypt(HCRYPTKEY, HCRYPTHASH, BOOL, D
 DECLSPEC_IMPORT BOOL WINAPI ADVAPI32$CryptDestroyKey(HCRYPTKEY);
 DECLSPEC_IMPORT BOOL WINAPI ADVAPI32$CryptGenRandom(HCRYPTPROV, DWORD, BYTE*);
 
+#ifndef CALG_MD5
 #define CALG_MD5      0x00008003
+#endif
+#ifndef CALG_HMAC
 #define CALG_HMAC     0x00008009
+#endif
+#ifndef CALG_RC4
 #define CALG_RC4      0x00006801
+#endif
+#ifndef PROV_RSA_FULL
 #define PROV_RSA_FULL 1
+#endif
+#ifndef CRYPT_VERIFYCONTEXT
 #define CRYPT_VERIFYCONTEXT 0xF0000000
+#endif
+#ifndef HP_HASHVAL
 #define HP_HASHVAL    0x0002
+#endif
+#ifndef HP_HMAC_INFO
 #define HP_HMAC_INFO  0x0005
+#endif
+#ifndef KP_ALGID
 #define KP_ALGID      7
+#endif
 
 /* HMAC_INFO struct for CryptoAPI */
 typedef struct {

