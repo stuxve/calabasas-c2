@@ -132,8 +132,6 @@ static void filetime_to_str(LARGE_INTEGER ft, char *buf, int buf_len) {
     MSVCRT$snprintf(buf, buf_len, "%08X:%08X", ft.HighPart, ft.LowPart);
 }
 
-DECLSPEC_IMPORT int __cdecl MSVCRT$snprintf(char*, size_t, const char*, ...);
-
 /*
  * Retrieve a single ticket as KRB-CRED (.kirbi) blob.
  * Returns allocated buffer (caller frees), or NULL on failure.
