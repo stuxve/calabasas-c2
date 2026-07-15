@@ -102,7 +102,7 @@ DECLSPEC_IMPORT void*  __cdecl  MSVCRT$memcpy(void*, const void*, size_t);
 #define SE_PRIVILEGE_ENABLED             0x00000002
 #endif
 
-#define SECURITY_NT_AUTHORITY_ID {0,0,0,0,0,5}
+#define SECURITY_NT_AUTHORITY_ID {{0,0,0,0,0,5}}
 #ifndef SECURITY_BUILTIN_DOMAIN_RID
 #define SECURITY_BUILTIN_DOMAIN_RID      32
 #endif
