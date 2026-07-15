@@ -1,0 +1,68 @@
+---
+name: getsystem
+category: privesc
+description: >
+  Elevate to SYSTEM via named pipe impersonation. Creates a named pipe,
+  triggers a SYSTEM-level service (or scheduled task) to connect to it,
+  then impersonates the connecting client's token (which is SYSTEM).
+  Three techniques available:
+    1. Named pipe + service creation (most reliable, requires admin)
+    2. Named pipe + Print Spooler (PrintSpoofer-style, needs SeImpersonatePrivilege)
+    3. Token duplication from existing SYSTEM process
+
+author: "operator"
+version: "1.0.0"
+created: "2025-07-14"
+updated: "2025-07-14"
+
+execution_type: bof
+bof_file: getsystem.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+  dotnet_min_version: "4.0"
+  dotnet_max_version: "4.8.1"
+  os:
+    - windows_server_2008r2
+    - windows_server_2012
+    - windows_server_2012r2
+    - windows_server_2016
+    - windows_server_2019
+    - windows_server_2022
+    - windows_10
+    - windows_11
+
+arguments:
+  - name: technique
+    type: int
+    required: false
+    default: 0
+    description: >
+      0=auto (try all in OPSEC order),
+      1=token duplication from SYSTEM process (quietest),
+      2=PrintSpoofer named pipe via Spooler (no child process, needs SeImpersonatePrivilege),
+      3=named pipe + temp service (noisiest — spawns cmd.exe, creates SCM event)
+    pack_type: i
+
+output_format: raw
+
+opsec_level: high
+opsec_notes: >
+  Technique 1 creates a temporary Windows service (generates event 7045)
+  and creates a named pipe. The service is deleted immediately after.
+  Technique 2 opens SYSTEM processes (lsass, winlogon, services.exe)
+  and duplicates their token — may trigger EDR alerts for cross-process
+  token access. Both techniques require local admin (HIGH integrity).
+  Technique 1 additionally generates SCM events.
+
+tags: [system, privesc, token, impersonation, service, pipe]
+
+references:
+  - https://attack.mitre.org/techniques/T1134/001/
+  - https://attack.mitre.org/techniques/T1134/002/
+mitre_attack_id: T1134
+
+timeout: 30
