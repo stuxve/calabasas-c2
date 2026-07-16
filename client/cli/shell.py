@@ -128,7 +128,7 @@ class OperatorShell:
             try:
                 with patch_stdout():
                     text = await self._session.prompt_async(
-                        self._get_prompt(),
+                        self._get_prompt,
                     )
 
                 text = text.strip()
@@ -547,6 +547,15 @@ class OperatorShell:
         else:
             _print("  No completed tasks.")
 
+    def _invalidate_prompt(self):
+        """Force prompt redraw so dynamic metadata (user, integrity) updates live."""
+        try:
+            app = self._session.app
+            if app is not None:
+                app.invalidate()
+        except Exception:
+            pass  # No running app — nothing to invalidate
+
     def _on_agent_checkin(self, session, is_new):
         """Event handler for agent check-ins."""
         if is_new:
@@ -555,6 +564,9 @@ class OperatorShell:
                 f"({session.username}) [{session.integrity}] "
                 f"[{session.arch}] PID:{session.pid}"
             )
+        # Refresh prompt if the current agent's metadata changed
+        if self._current_agent and self._current_agent.agent_id == session.agent_id:
+            self._invalidate_prompt()
 
     def _on_task_result(self, session, task):
         """Event handler for task results."""
