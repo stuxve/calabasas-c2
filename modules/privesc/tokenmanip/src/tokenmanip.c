@@ -30,9 +30,8 @@ DECLSPEC_IMPORT BOOL   WINAPI   ADVAPI32$GetTokenInformation(HANDLE, DWORD, LPVO
 DECLSPEC_IMPORT BOOL   WINAPI   ADVAPI32$LookupAccountSidW(LPCWSTR, PSID, LPWSTR, LPDWORD, LPWSTR, LPDWORD, PDWORD);
 DECLSPEC_IMPORT BOOL   WINAPI   ADVAPI32$LookupPrivilegeNameW(LPCWSTR, PVOID, LPWSTR, LPDWORD);
 DECLSPEC_IMPORT BOOL   WINAPI   ADVAPI32$LogonUserW(LPCWSTR, LPCWSTR, LPCWSTR, DWORD, DWORD, PHANDLE);
-DECLSPEC_IMPORT BOOL   WINAPI   ADVAPI32$CheckTokenMembership(HANDLE, PSID, PBOOL);
-DECLSPEC_IMPORT BOOL   WINAPI   ADVAPI32$AllocateAndInitializeSid(PVOID, BYTE, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, PSID*);
-DECLSPEC_IMPORT PVOID  WINAPI   ADVAPI32$FreeSid(PSID);
+/* CheckTokenMembership / AllocateAndInitializeSid removed — unreliable on
+   cross-process tokens.  Admin check now uses integrity level instead. */
 
 DECLSPEC_IMPORT HANDLE WINAPI   KERNEL32$OpenProcess(DWORD, BOOL, DWORD);
 DECLSPEC_IMPORT BOOL   WINAPI   KERNEL32$CloseHandle(HANDLE);
@@ -103,13 +102,8 @@ DECLSPEC_IMPORT void*  __cdecl  MSVCRT$memcpy(void*, const void*, size_t);
 #define SE_PRIVILEGE_ENABLED             0x00000002
 #endif
 
-#define SECURITY_NT_AUTHORITY_ID {{0,0,0,0,0,5}}
-#ifndef SECURITY_BUILTIN_DOMAIN_RID
-#define SECURITY_BUILTIN_DOMAIN_RID      32
-#endif
-#ifndef DOMAIN_ALIAS_RID_ADMINS
-#define DOMAIN_ALIAS_RID_ADMINS          544
-#endif
+/* SECURITY_NT_AUTHORITY / BUILTIN_DOMAIN_RID / DOMAIN_ALIAS_RID_ADMINS
+   removed — no longer needed after switching admin check to integrity level. */
 
 /* ── Token info structs ── */
 typedef struct {
@@ -179,20 +173,24 @@ static const char* get_integrity(HANDLE hToken) {
 }
 
 /*
- * Check if token is elevated (member of Administrators)
+ * Check if token is elevated/admin.
+ * Uses integrity level: HIGH or SYSTEM = admin (UAC-elevated or SYSTEM).
+ * CheckTokenMembership fails silently on tokens from other processes
+ * due to cross-context duplication restrictions, so integrity is more reliable.
  */
 static BOOL is_admin_token(HANDLE hToken) {
-    SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY_ID;
-    PSID adminSid = NULL;
-    BOOL isAdmin = FALSE;
+    BYTE buf[64];
+    DWORD needed = 0;
 
-    if (ADVAPI32$AllocateAndInitializeSid(&ntAuth, 2,
-            SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
-            0, 0, 0, 0, 0, 0, &adminSid)) {
-        ADVAPI32$CheckTokenMembership(hToken, adminSid, &isAdmin);
-        ADVAPI32$FreeSid(adminSid);
-    }
-    return isAdmin;
+    if (!ADVAPI32$GetTokenInformation(hToken, MY_TokenIntegrityLevel, buf, sizeof(buf), &needed))
+        return FALSE;
+
+    PSID pSid = *(PSID*)buf;
+    DWORD *subAuth = (DWORD*)((BYTE*)pSid + 8 + (((BYTE*)pSid)[1] - 1) * 4);
+    DWORD rid = *subAuth;
+
+    /* HIGH (0x3000) = UAC-elevated admin, SYSTEM (0x4000+) = NT AUTHORITY\SYSTEM */
+    return (rid >= 0x3000);
 }
 
 /*
