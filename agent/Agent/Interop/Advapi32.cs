@@ -25,6 +25,25 @@ namespace Agent.Interop
             uint DesiredAccess, out IntPtr TokenHandle);
 
         [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool OpenThreadToken(IntPtr ThreadHandle,
+            uint DesiredAccess, bool OpenAsSelf, out IntPtr TokenHandle);
+
+        /// <summary>
+        /// Get the effective token — thread impersonation token if present,
+        /// otherwise the process token. Use this everywhere the "current identity"
+        /// matters (whoami, privilege checks, etc.).
+        /// </summary>
+        public static bool OpenEffectiveToken(uint desiredAccess, out IntPtr hToken)
+        {
+            // Try thread token first (set by ImpersonateLoggedOnUser / getsystem)
+            if (OpenThreadToken(Kernel32.GetCurrentThread(), desiredAccess, false, out hToken))
+                return true;
+
+            // No impersonation — fall back to process token
+            return OpenProcessToken(Kernel32.GetCurrentProcess(), desiredAccess, out hToken);
+        }
+
+        [DllImport("advapi32.dll", SetLastError = true)]
         public static extern bool GetTokenInformation(IntPtr TokenHandle,
             uint TokenInformationClass, IntPtr TokenInformation,
             uint TokenInformationLength, out uint ReturnLength);

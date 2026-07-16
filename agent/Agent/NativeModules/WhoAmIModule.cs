@@ -66,8 +66,7 @@ namespace Agent.NativeModules
         private string GetIntegrityLevel()
         {
             IntPtr hToken;
-            if (!Advapi32.OpenProcessToken(Kernel32.GetCurrentProcess(),
-                Advapi32.TOKEN_QUERY, out hToken))
+            if (!Advapi32.OpenEffectiveToken(Advapi32.TOKEN_QUERY, out hToken))
                 return "UNKNOWN";
 
             try
@@ -107,8 +106,7 @@ namespace Agent.NativeModules
         private void EnumPrivileges(StringBuilder sb)
         {
             IntPtr hToken;
-            if (!Advapi32.OpenProcessToken(Kernel32.GetCurrentProcess(),
-                Advapi32.TOKEN_QUERY, out hToken))
+            if (!Advapi32.OpenEffectiveToken(Advapi32.TOKEN_QUERY, out hToken))
                 return;
 
             try

@@ -100,6 +100,9 @@ namespace Agent.Interop
         public static extern IntPtr GetCurrentProcess();
 
         [DllImport("kernel32.dll")]
+        public static extern IntPtr GetCurrentThread();
+
+        [DllImport("kernel32.dll")]
         public static extern uint GetCurrentProcessId();
 
         // Sleep
