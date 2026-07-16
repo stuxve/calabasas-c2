@@ -410,6 +410,7 @@ class OperatorShell:
             "ps": {"desc": "List running processes", "args": False},
             "ls": {"desc": "Directory listing", "args": True},
             "cat": {"desc": "Read file contents", "args": True},
+            "rev2self": {"desc": "Revert to process token", "args": False},
         }
         if cmd in native_modules:
             native_args = " ".join(args) if args else ""

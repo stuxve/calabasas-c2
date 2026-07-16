@@ -35,6 +35,7 @@ AGENT_COMMANDS = {
     "cat": "Read file contents (native, cat <path>)",
     "upload": "Upload file (upload <local> <remote>)",
     "download": "Download file (download <remote> [local])",
+    "rev2self": "Revert to process token (drop impersonation)",
     "shell": "DANGER: spawns cmd.exe",
     "powershell": "DANGER: spawns powershell.exe",
     "bof": "Load and execute arbitrary BOF",
