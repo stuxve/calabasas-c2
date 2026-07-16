@@ -2,13 +2,11 @@
 name: getsystem
 category: privesc
 description: >
-  Elevate to SYSTEM via named pipe impersonation. Creates a named pipe,
-  triggers a SYSTEM-level service (or scheduled task) to connect to it,
-  then impersonates the connecting client's token (which is SYSTEM).
-  Three techniques available:
-    1. Named pipe + service creation (most reliable, requires admin)
-    2. Named pipe + Print Spooler (PrintSpoofer-style, needs SeImpersonatePrivilege)
-    3. Token duplication from existing SYSTEM process
+  Elevate to SYSTEM via token duplication from a running SYSTEM process.
+  Enables SeDebugPrivilege, enumerates processes via NtQuerySystemInformation,
+  finds a SYSTEM process (winlogon, services.exe, etc.), duplicates its token,
+  and impersonates it on the current thread. No pipes, no services, no child
+  processes — pure in-process token manipulation.
 
 author: "operator"
 version: "1.0.0"
@@ -41,25 +39,19 @@ arguments:
     required: false
     default: 0
     description: >
-      0=auto (try all in OPSEC order),
-      1=token duplication from SYSTEM process (quietest),
-      2=PrintSpoofer named pipe via Spooler (no child process, needs SeImpersonatePrivilege),
-      3=named pipe + temp service (noisiest — spawns cmd.exe, creates SCM event)
+      Ignored (reserved for future use). Only token duplication is implemented.
     pack_type: i
 
 output_format: raw
 
 opsec_level: high
 opsec_notes: >
-  Technique 1 (token dup) opens SYSTEM processes (winlogon, services.exe)
-  and duplicates their token — may trigger EDR alerts for cross-process
-  token access. Technique 2 (PrintSpoofer) creates a named pipe and
-  triggers the Spooler — no child process but pipe creation is detectable.
-  Technique 3 (service) creates a temp Windows service (event 7045),
-  spawns cmd.exe as SYSTEM, and creates a named pipe. Noisiest option.
-  All techniques require local admin (HIGH integrity) or SeImpersonatePrivilege.
+  Enables SeDebugPrivilege and opens SYSTEM processes (winlogon, services.exe)
+  to duplicate their token. May trigger EDR alerts for cross-process token
+  access and privilege adjustment. No child processes, no pipes, no services
+  created. Requires HIGH integrity (local admin).
 
-tags: [system, privesc, token, impersonation, service, pipe]
+tags: [system, privesc, token, impersonation, sedebug]
 
 references:
   - https://attack.mitre.org/techniques/T1134/001/
