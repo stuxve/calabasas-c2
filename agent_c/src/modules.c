@@ -531,32 +531,30 @@ static void mod_shell_exec(Buffer *out, const char *cmd_line, BOOL use_powershel
         return;
     }
 
-    /* Close write ends in parent — child has them */
+    /* Close write ends in parent — child has them.
+     * This is critical: ReadFile on the read end will return FALSE
+     * with ERROR_BROKEN_PIPE once the child exits and all data is read. */
     CloseHandle(hStdoutWrite);
     CloseHandle(hStderrWrite);
+    hStdoutWrite = NULL;
+    hStderrWrite = NULL;
 
-    /* Wait for process with timeout (30 seconds) */
-    WaitForSingleObject(pi.hProcess, 30000);
-
-    /* Read stdout */
+    /* Read stdout BEFORE waiting — prevents pipe buffer deadlock.
+     * ReadFile blocks until data is available or the pipe breaks (child exits).
+     * If the child writes more than the pipe buffer (4KB default),
+     * WaitForSingleObject would deadlock because the child blocks on write. */
     DWORD bytes_read;
     char read_buf[4096];
     while (TRUE) {
-        DWORD avail = 0;
-        PeekNamedPipe(hStdoutRead, NULL, 0, NULL, &avail, NULL);
-        if (avail == 0) break;
         if (ReadFile(hStdoutRead, read_buf, sizeof(read_buf), &bytes_read, NULL) && bytes_read > 0) {
             buf_append(out, read_buf, bytes_read);
         } else {
-            break;
+            break;  /* ERROR_BROKEN_PIPE = child exited, pipe drained */
         }
     }
 
-    /* Read stderr */
+    /* Read any remaining stderr */
     while (TRUE) {
-        DWORD avail = 0;
-        PeekNamedPipe(hStderrRead, NULL, 0, NULL, &avail, NULL);
-        if (avail == 0) break;
         if (ReadFile(hStderrRead, read_buf, sizeof(read_buf), &bytes_read, NULL) && bytes_read > 0) {
             buf_append(out, "[STDERR] ", 9);
             buf_append(out, read_buf, bytes_read);
@@ -564,6 +562,9 @@ static void mod_shell_exec(Buffer *out, const char *cmd_line, BOOL use_powershel
             break;
         }
     }
+
+    /* Now wait for process exit (should be near-instant since pipes are drained) */
+    WaitForSingleObject(pi.hProcess, 5000);
 
     CloseHandle(hStdoutRead);
     CloseHandle(hStderrRead);
