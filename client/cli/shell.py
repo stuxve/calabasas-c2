@@ -575,6 +575,25 @@ class OperatorShell:
             _print(f"\n{marker} Result from {session.hostname} ({task.module_name}): (no output)")
             return
 
+        # Update prompt immediately for impersonation changes
+        if task.status.name == "COMPLETE":
+            text_preview = task.result.raw.decode("utf-8", errors="replace")
+            if task.module_name == "getsystem" and "SUCCESS" in text_preview:
+                # Save original identity so rev2self can restore it
+                if not hasattr(session, "_original_username"):
+                    session._original_username = session.username
+                    session._original_integrity = session.integrity
+                session.username = "NT AUTHORITY\\SYSTEM"
+                session.integrity = "SYSTEM"
+                self._invalidate_prompt()
+            elif task.module_name == "rev2self" and "Reverted" in text_preview:
+                if hasattr(session, "_original_username"):
+                    session.username = session._original_username
+                    session.integrity = session._original_integrity
+                    del session._original_username
+                    del session._original_integrity
+                self._invalidate_prompt()
+
         # Handle cd specially — update agent CWD from result
         if task.module_name == "cd" and task.status.name == "COMPLETE":
             new_cwd = task.result.raw.decode("utf-8", errors="replace").strip()
