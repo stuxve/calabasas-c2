@@ -616,7 +616,7 @@ class OperatorShell:
 
     def _on_task_result(self, session, task):
         """Event handler for task results."""
-        marker = "\033[91m[*]\033[0m" if task.status.name == "COMPLETE" else "\033[91m[!]\033[0m"
+        marker = "[*]" if task.status.name == "COMPLETE" else "[!]"
         if not (task.result and task.result.raw):
             _print(f"\n{marker} Result from {session.hostname} ({task.module_name}): (no output)")
             return
@@ -722,10 +722,10 @@ def _print_table(columns: list, rows: list):
         for col in columns:
             val = str(row.get(col, ""))
             widths[col] = max(widths[col], len(val))
-    # Header — styled
+    # Header
     header = "  ".join(col.upper().ljust(widths[col]) for col in columns)
-    _print(f"\033[91m  {header}\033[0m")
-    _print(f"\033[90m  {'  '.join('─' * widths[col] for col in columns)}\033[0m")
+    _print(f"  {header}")
+    _print(f"  {'  '.join('─' * widths[col] for col in columns)}")
     # Rows
     for row in rows:
         line = "  ".join(str(row.get(col, "")).ljust(widths[col]) for col in columns)
