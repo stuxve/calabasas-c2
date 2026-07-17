@@ -1,5 +1,5 @@
 """
-Calabasas C2 — Operator Client Entry Point.
+Caraxes C2 — Operator Client Entry Point.
 
 Usage:
   python -m client.main [--modules-dir ./modules] [--profile profiles/default.yaml]
@@ -24,11 +24,11 @@ from .profiles.parser import load_profile, MalleableProfile
 from .listeners.https_listener import HttpsListener
 from .cli.shell import OperatorShell
 
-log = logging.getLogger("calabasas")
+log = logging.getLogger("caraxes")
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Calabasas C2 Operator Client")
+    p = argparse.ArgumentParser(description="Caraxes C2 Operator Client")
     p.add_argument("--modules-dir", type=Path, default=Path("./modules"),
                     help="Directory containing modules")
     p.add_argument("--profile", type=Path, default=None,

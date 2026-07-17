@@ -17,22 +17,33 @@ def cmd_agents(session_manager: SessionManager):
         console.print("[dim]No agents connected.[/dim]")
         return
 
-    table = Table(show_lines=False, title="Active Agents")
-    table.add_column("ID", style="bold")
+    table = Table(
+        show_lines=False,
+        title="[bold bright_red]Sessions[/bold bright_red]",
+        title_style="",
+        border_style="bright_black",
+        header_style="bold bright_red",
+        pad_edge=True,
+        padding=(0, 1),
+    )
+    table.add_column("ID", style="bold white", justify="right")
     table.add_column("Hostname", style="bold white")
-    table.add_column("User", style="cyan")
-    table.add_column("PID")
-    table.add_column("Arch")
-    table.add_column("Integrity")
-    table.add_column("Channel")
-    table.add_column("Last Seen")
+    table.add_column("User", style="bright_yellow")
+    table.add_column("PID", style="white", justify="right")
+    table.add_column("Arch", style="white")
+    table.add_column("Integrity", min_width=8)
+    table.add_column("Channel", style="cyan")
+    table.add_column("Last", style="bright_black", justify="right")
 
     for s in sessions:
-        integrity_style = "yellow"
-        if s.integrity == "HIGH":
-            integrity_style = "bold red"
-        elif s.integrity == "SYSTEM":
-            integrity_style = "bold magenta"
+        if s.integrity == "SYSTEM":
+            int_str = "[bold bright_magenta]SYSTEM[/bold bright_magenta]"
+        elif s.integrity == "HIGH":
+            int_str = "[bold red]HIGH[/bold red]"
+        elif s.integrity == "LOW":
+            int_str = "[dim white]LOW[/dim white]"
+        else:
+            int_str = "[yellow]MEDIUM[/yellow]"
 
         table.add_row(
             str(s.display_id),
@@ -40,7 +51,7 @@ def cmd_agents(session_manager: SessionManager):
             s.username or "???",
             str(s.pid),
             s.arch,
-            f"[{integrity_style}]{s.integrity}[/{integrity_style}]",
+            int_str,
             s.c2_channel,
             s.last_seen_ago,
         )

@@ -22,7 +22,7 @@ from rich.console import Console
 
 
 from .completer import ShellCompleter
-from .themes import BANNER
+from .themes import get_banner
 from .commands.agents import cmd_agents
 from .commands.listeners import cmd_listeners_list
 from .commands.modules import cmd_modules_list, cmd_modules_search, cmd_module_help
@@ -89,38 +89,56 @@ class OperatorShell:
 
     def _get_prompt(self) -> FormattedText:
         if self._context == "main":
-            return FormattedText([("class:prompt", "main> ")])
+            return FormattedText([
+                ("fg:ansired bold", "caraxes"),
+                ("fg:ansibrightblack", " > "),
+            ])
 
         agent = self._current_agent
         if not agent:
-            return FormattedText([("class:prompt", "main> ")])
+            return FormattedText([
+                ("fg:ansired bold", "caraxes"),
+                ("fg:ansibrightblack", " > "),
+            ])
+
+        # Integrity color — SYSTEM gets magenta, HIGH gets red
+        int_style = "fg:ansiyellow"
+        if agent.integrity == "SYSTEM":
+            int_style = "fg:ansibrightmagenta bold"
+        elif agent.integrity == "HIGH":
+            int_style = "fg:ansired bold"
 
         return FormattedText([
-            ("class:agent-id", f"[agent {agent.display_id}]"),
-            ("class:hostname", f"[{agent.hostname}]"),
-            ("class:username", f"[{agent.username}]"),
-            ("class:integrity", f"[{agent.integrity}]"),
-            ("class:arch", f"[{agent.arch}]"),
-            ("class:pid", f"[PID:{agent.pid}]"),
-            ("class:last-seen", f"[{agent.last_seen_ago}]"),
-            ("class:path", f" {agent.cwd}"),
-            ("class:prompt-end", "> "),
+            ("fg:ansired bold", "caraxes"),
+            ("fg:ansibrightblack", " ("),
+            ("fg:ansiwhite bold", f"{agent.hostname}"),
+            ("fg:ansibrightblack", ") "),
+            ("fg:ansibrightyellow", f"{agent.username}"),
+            ("fg:ansibrightblack", " ["),
+            (int_style, f"{agent.integrity}"),
+            ("fg:ansibrightblack", "] "),
+            ("fg:ansicyan", f"{agent.cwd}"),
+            ("fg:ansibrightblack", " > "),
         ])
 
     async def run(self):
         """Main shell loop."""
-        console.print(BANNER, style="bold cyan")
-        console.print(
-            f"[*] Loaded {len(self.module_registry.modules)} modules",
-            style="green",
-        )
+        console.print(get_banner())
+        console.print()
+
+        # Startup info block — Sliver-style with bullet markers
+        num_modules = len(self.module_registry.modules)
+        num_listeners = len(self._listeners)
+        console.print(f"  [bold bright_red]Jobs:[/bold bright_red] {num_listeners} listeners running")
+        console.print(f"  [bold bright_red]Modules:[/bold bright_red] {num_modules} loaded")
         for lid, listener in self._listeners.items():
             info = listener.info()
+            status = info["status"]
+            s_style = "bold green" if status == "RUNNING" else "bold red"
             console.print(
-                f"[*] Listener {info['type']} on "
-                f"{info.get('interface', '')}:{info.get('port', '')} "
-                f"[{info['status']}]",
-                style="green",
+                f"    [{s_style}]►[/{s_style}] {info['type']} "
+                f"on {info.get('interface', '0.0.0.0')}:{info.get('port', '')} "
+                f"[{s_style}]{status}[/{s_style}]"
             )
         console.print()
 
@@ -180,8 +198,9 @@ class OperatorShell:
             self._context = "agent"
             self._completer.context = "agent"
             console.print(
-                f"[green][*] Interacting with agent {display_id} "
-                f"({agent.hostname})[/green]"
+                f"[bright_red][*][/bright_red] Active session: "
+                f"[bold white]{agent.hostname}[/bold white] "
+                f"([bright_yellow]{agent.username}[/bright_yellow])"
             )
 
         elif cmd == "listeners":
@@ -560,9 +579,10 @@ class OperatorShell:
         """Event handler for agent check-ins."""
         if is_new:
             _print(
-                f"\n[+] New agent: {session.hostname} "
-                f"({session.username}) [{session.integrity}] "
-                f"[{session.arch}] PID:{session.pid}"
+                f"\n[*] Session #{session.display_id} opened -> "
+                f"{session.hostname} ({session.username}) "
+                f"- {session.os_version} - {session.arch} "
+                f"[{session.integrity}] PID:{session.pid}"
             )
         # Refresh prompt if the current agent's metadata changed
         if self._current_agent and self._current_agent.agent_id == session.agent_id:
@@ -570,7 +590,7 @@ class OperatorShell:
 
     def _on_task_result(self, session, task):
         """Event handler for task results."""
-        marker = "[*]" if task.status.name == "COMPLETE" else "[!]"
+        marker = "\033[91m[*]\033[0m" if task.status.name == "COMPLETE" else "\033[91m[!]\033[0m"
         if not (task.result and task.result.raw):
             _print(f"\n{marker} Result from {session.hostname} ({task.module_name}): (no output)")
             return
@@ -676,10 +696,10 @@ def _print_table(columns: list, rows: list):
         for col in columns:
             val = str(row.get(col, ""))
             widths[col] = max(widths[col], len(val))
-    # Header
-    header = "  ".join(col.ljust(widths[col]) for col in columns)
-    _print(f"  {header}")
-    _print(f"  {'  '.join('-' * widths[col] for col in columns)}")
+    # Header — styled
+    header = "  ".join(col.upper().ljust(widths[col]) for col in columns)
+    _print(f"\033[91m  {header}\033[0m")
+    _print(f"\033[90m  {'  '.join('─' * widths[col] for col in columns)}\033[0m")
     # Rows
     for row in rows:
         line = "  ".join(str(row.get(col, "")).ljust(widths[col]) for col in columns)

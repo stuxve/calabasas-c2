@@ -1,6 +1,6 @@
-# Calabasas C2 — Usage Guide
+# Caraxes C2 — Usage Guide
 
-Calabasas is a modular Active Directory post-exploitation framework. It follows the principle of "avoiding command execution" — every operation is implemented through direct Win32 API calls, in-process BOF execution, or in-memory .NET assembly loading. The agent process never spawns a child process unless the operator explicitly requests it.
+Caraxes is a modular Active Directory post-exploitation framework. It follows the principle of "avoiding command execution" — every operation is implemented through direct Win32 API calls, in-process BOF execution, or in-memory .NET assembly loading. The agent process never spawns a child process unless the operator explicitly requests it.
 
 This document covers everything needed to set up, deploy, and operate the framework in an authorized penetration test.
 
@@ -35,8 +35,8 @@ Required Python packages:
 ## 2. Installation
 
 ```bash
-git clone <repo-url> calabasas-c2
-cd calabasas-c2
+git clone <repo-url> caraxes-c2
+cd caraxes-c2
 pip install -r requirements.txt
 
 # Verify MinGW
@@ -1059,7 +1059,7 @@ main> exit
 ## 17. Project Structure Reference
 
 ```
-calabasas-c2/
+caraxes-c2/
 ├── client/                    Python operator client
 │   ├── main.py                Entry point
 │   ├── cli/                   Interactive shell, completions, commands

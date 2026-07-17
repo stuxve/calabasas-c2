@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/assets/banner.png" alt="Calabasas C2" width="700">
+  <img src="docs/assets/banner.png" alt="Caraxes C2" width="700">
 </p>
 
-<h1 align="center">Calabasas C2</h1>
+<h1 align="center">Caraxes C2</h1>
 
 <p align="center">
   <b>Modular Active Directory Post-Exploitation Framework</b><br>
@@ -29,7 +29,7 @@
 
 ## Philosophy
 
-Calabasas is built on three principles borrowed from [Kraken](https://github.com/kraken-ng/Kraken):
+Caraxes is built on three principles borrowed from [Kraken](https://github.com/kraken-ng/Kraken):
 
 **1. No command execution.** Every capability — from listing files to performing DCSync — is implemented through direct Win32 API calls via P/Invoke, in-process BOF execution, or in-memory .NET assembly loading. The agent **never** spawns `cmd.exe`, `powershell.exe`, or any child process unless the operator explicitly requests it.
 
@@ -117,7 +117,7 @@ Calabasas is built on three principles borrowed from [Kraken](https://github.com
 ### 1. Install dependencies
 
 ```bash
-git clone <repo> && cd calabasas-c2
+git clone <repo> && cd caraxes-c2
 pip install -r requirements.txt
 sudo apt install mingw-w64    # Cross-compiler for agent
 ```
@@ -320,7 +320,7 @@ Restart the operator — the module auto-discovers on startup. Existing Cobalt S
 ## Project Structure
 
 ```
-calabasas-c2/
+caraxes-c2/
 ├── client/                    # Python operator (4,400 LOC)
 │   ├── cli/                   #   Interactive shell, tab completion, commands
 │   ├── core/                  #   Session manager, task manager, module registry

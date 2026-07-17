@@ -1,4 +1,4 @@
-# Calabasas C2 — Pre-Production Testing Checklist
+# Caraxes C2 — Pre-Production Testing Checklist
 
 Test every item below in a controlled lab before using the framework on an authorized engagement. Each section includes the specific test, expected result, and how to verify it.
 
@@ -622,7 +622,7 @@ Run these final checks from the perspective of a defender reviewing the lab's te
 - [ ] Capture full PCAP during a 1-hour session → review for any plaintext C2 data
 - [ ] HTTP requests match the configured malleable profile (no leaking default headers)
 - [ ] No DNS queries to suspicious domains from the agent (beyond the configured DNS channel)
-- [ ] TLS certificate looks plausible (not obviously "Calabasas C2" in the subject)
+- [ ] TLS certificate looks plausible (not obviously "Caraxes C2" in the subject)
 
 ### 22.2 Host Forensics
 - [ ] After agent exit: no files left on disk (unless explicitly uploaded)
