@@ -733,36 +733,10 @@ def _print_table(columns: list, rows: list):
 
 
 def _fmt_whoami(text: str):
-    """Format whoami as clean raw text — no panels, no ANSI."""
-    lines = text.splitlines()
-    section = "info"
+    """Print whoami output as-is — the agent already formats it like whoami /all."""
     _print("")
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("=== PRIVILEGES ==="):
-            section = "privs"
-            _print("  Privileges")
-            _print("  " + "-" * 58)
-            continue
-        elif stripped.startswith("=== GROUP MEMBERSHIP ==="):
-            section = "groups"
-            _print("")
-            _print("  Groups")
-            _print("  " + "-" * 58)
-            continue
-        if section == "info":
-            if ":" in stripped and stripped:
-                key, _, val = stripped.partition(":")
-                _print(f"  {key.strip():<14} {val.strip()}")
-        elif section == "privs":
-            if stripped:
-                parts = stripped.rsplit(None, 1)
-                if len(parts) == 2:
-                    name, status = parts
-                    _print(f"    {name:<45} {status}")
-        elif section == "groups":
-            if stripped:
-                _print(f"    {stripped}")
+    for line in text.splitlines():
+        _print(f"  {line}")
     _print("")
 
 

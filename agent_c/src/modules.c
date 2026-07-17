@@ -7,6 +7,9 @@
  */
 #include "agent.h"
 
+/* Helper: buf_append a string literal with auto-length */
+#define BUF_STR(buf, s) buf_append(buf, s, (DWORD)(sizeof(s) - 1))
+
 /* ─── Argument parsing helpers (BeaconDataParse-compatible) ─── */
 
 typedef struct {
@@ -208,50 +211,57 @@ void mod_whoami(Buffer *out) {
        fall back to process token if no impersonation is active */
     if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, FALSE, &hToken)) {
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
-            buf_append(out, "Failed to open token\n", 21);
+            BUF_STR(out, "Failed to open token\n");
             return;
         }
     }
 
     /* ── USER INFORMATION ── */
-    DWORD token_len;
+    DWORD token_len = 0;
+    unsigned char *token_buf = NULL;
     GetTokenInformation(hToken, TokenUser, NULL, 0, &token_len);
-    unsigned char *token_buf = (unsigned char *)malloc(token_len);
-    GetTokenInformation(hToken, TokenUser, token_buf, token_len, &token_len);
-    TOKEN_USER *tu = (TOKEN_USER *)token_buf;
+    if (token_len > 0 && (token_buf = (unsigned char *)malloc(token_len)) != NULL) {
+        if (GetTokenInformation(hToken, TokenUser, token_buf, token_len, &token_len)) {
+            TOKEN_USER *tu = (TOKEN_USER *)token_buf;
 
-    char name[256], domain[256];
-    DWORD name_len = sizeof(name), domain_len = sizeof(domain);
-    SID_NAME_USE snu;
-    LookupAccountSidA(NULL, tu->User.Sid, name, &name_len, domain, &domain_len, &snu);
+            char name[256] = {0}, domain[256] = {0};
+            DWORD name_len = sizeof(name), domain_len = sizeof(domain);
+            SID_NAME_USE snu;
+            LookupAccountSidA(NULL, tu->User.Sid, name, &name_len, domain, &domain_len, &snu);
 
-    char *sid_str = NULL;
-    ConvertSidToStringSidA(tu->User.Sid, &sid_str);
+            char *sid_str = NULL;
+            ConvertSidToStringSidA(tu->User.Sid, &sid_str);
 
-    char fullname[512];
-    snprintf(fullname, sizeof(fullname), "%s\\%s", domain, name);
+            char fullname[512];
+            snprintf(fullname, sizeof(fullname), "%s\\%s", domain, name);
 
-    buf_append(out, "\nUSER INFORMATION\n", 17);
-    buf_append(out, "----------------\n", 17);
-    snprintf(line, sizeof(line), "%-45s %s\n", "User Name", "SID");
-    buf_append(out, line, (DWORD)strlen(line));
-    snprintf(line, sizeof(line), "%-45s %s\n",
-             "=============================================",
-             "============================================");
-    buf_append(out, line, (DWORD)strlen(line));
-    snprintf(line, sizeof(line), "%-45s %s\n", fullname, sid_str ? sid_str : "?");
-    buf_append(out, line, (DWORD)strlen(line));
-    if (sid_str) LocalFree(sid_str);
-    free(token_buf);
+            BUF_STR(out, "\nUSER INFORMATION\n");
+            BUF_STR(out, "----------------\n");
+            snprintf(line, sizeof(line), "%-45s %s\n", "User Name", "SID");
+            buf_append(out, line, (DWORD)strlen(line));
+            snprintf(line, sizeof(line), "%-45s %s\n",
+                     "=============================================",
+                     "============================================");
+            buf_append(out, line, (DWORD)strlen(line));
+            snprintf(line, sizeof(line), "%-45s %s\n", fullname, sid_str ? sid_str : "?");
+            buf_append(out, line, (DWORD)strlen(line));
+            if (sid_str) LocalFree(sid_str);
+        }
+        free(token_buf);
+    }
 
     /* ── GROUP INFORMATION ── */
+    token_len = 0;
+    token_buf = NULL;
     GetTokenInformation(hToken, TokenGroups, NULL, 0, &token_len);
+    if (token_len == 0) goto skip_groups;
     token_buf = (unsigned char *)malloc(token_len);
+    if (!token_buf) goto skip_groups;
     if (GetTokenInformation(hToken, TokenGroups, token_buf, token_len, &token_len)) {
         TOKEN_GROUPS *tg = (TOKEN_GROUPS *)token_buf;
 
-        buf_append(out, "\nGROUP INFORMATION\n", 18);
-        buf_append(out, "-----------------\n", 18);
+        BUF_STR(out, "\nGROUP INFORMATION\n");
+        BUF_STR(out, "-----------------\n");
         snprintf(line, sizeof(line), "%-50s %-18s %-50s %s\n",
                  "Group Name", "Type", "SID", "Attributes");
         buf_append(out, line, (DWORD)strlen(line));
@@ -292,64 +302,71 @@ void mod_whoami(Buffer *out) {
         }
     }
     free(token_buf);
+skip_groups:
 
     /* ── PRIVILEGES INFORMATION ── */
+    token_len = 0;
+    token_buf = NULL;
     GetTokenInformation(hToken, TokenPrivileges, NULL, 0, &token_len);
-    token_buf = (unsigned char *)malloc(token_len);
-    if (GetTokenInformation(hToken, TokenPrivileges, token_buf, token_len, &token_len)) {
-        TOKEN_PRIVILEGES *tp = (TOKEN_PRIVILEGES *)token_buf;
+    if (token_len > 0 && (token_buf = (unsigned char *)malloc(token_len)) != NULL) {
+        if (GetTokenInformation(hToken, TokenPrivileges, token_buf, token_len, &token_len)) {
+            TOKEN_PRIVILEGES *tp = (TOKEN_PRIVILEGES *)token_buf;
 
-        buf_append(out, "\nPRIVILEGES INFORMATION\n", 22);
-        buf_append(out, "----------------------\n", 22);
-        snprintf(line, sizeof(line), "%-42s %-52s %s\n",
-                 "Privilege Name", "Description", "State");
-        buf_append(out, line, (DWORD)strlen(line));
-        snprintf(line, sizeof(line), "%-42s %-52s %s\n",
-                 "==========================================",
-                 "====================================================",
-                 "=============");
-        buf_append(out, line, (DWORD)strlen(line));
-
-        for (DWORD i = 0; i < tp->PrivilegeCount; i++) {
-            char priv_name[128] = {0};
-            DWORD pn_len = sizeof(priv_name);
-            LookupPrivilegeNameA(NULL, &tp->Privileges[i].Luid, priv_name, &pn_len);
-
-            /* Get human-readable description via LookupPrivilegeDisplayNameA */
-            char priv_desc[256] = {0};
-            DWORD pd_len = sizeof(priv_desc);
-            DWORD lang_id = 0;
-            if (!LookupPrivilegeDisplayNameA(NULL, priv_name, priv_desc, &pd_len, &lang_id))
-                strncpy(priv_desc, "(no description)", sizeof(priv_desc) - 1);
-
-            const char *status = (tp->Privileges[i].Attributes & SE_PRIVILEGE_ENABLED)
-                                 ? "Enabled" : "Disabled";
-            snprintf(line, sizeof(line), "%-42s %-52s %s\n", priv_name, priv_desc, status);
+            BUF_STR(out, "\nPRIVILEGES INFORMATION\n");
+            BUF_STR(out, "----------------------\n");
+            snprintf(line, sizeof(line), "%-42s %-52s %s\n",
+                     "Privilege Name", "Description", "State");
             buf_append(out, line, (DWORD)strlen(line));
+            snprintf(line, sizeof(line), "%-42s %-52s %s\n",
+                     "==========================================",
+                     "====================================================",
+                     "=============");
+            buf_append(out, line, (DWORD)strlen(line));
+
+            for (DWORD i = 0; i < tp->PrivilegeCount; i++) {
+                char priv_name[128] = {0};
+                DWORD pn_len = sizeof(priv_name);
+                LookupPrivilegeNameA(NULL, &tp->Privileges[i].Luid, priv_name, &pn_len);
+
+                /* Get human-readable description via LookupPrivilegeDisplayNameA */
+                char priv_desc[256] = {0};
+                DWORD pd_len = sizeof(priv_desc);
+                DWORD lang_id = 0;
+                if (!LookupPrivilegeDisplayNameA(NULL, priv_name, priv_desc, &pd_len, &lang_id))
+                    strncpy(priv_desc, "(no description)", sizeof(priv_desc) - 1);
+
+                const char *status = (tp->Privileges[i].Attributes & SE_PRIVILEGE_ENABLED)
+                                     ? "Enabled" : "Disabled";
+                snprintf(line, sizeof(line), "%-42s %-52s %s\n", priv_name, priv_desc, status);
+                buf_append(out, line, (DWORD)strlen(line));
+            }
         }
+        free(token_buf);
     }
-    free(token_buf);
 
     /* ── INTEGRITY LEVEL ── */
+    token_len = 0;
+    token_buf = NULL;
     GetTokenInformation(hToken, TokenIntegrityLevel, NULL, 0, &token_len);
-    token_buf = (unsigned char *)malloc(token_len);
-    if (GetTokenInformation(hToken, TokenIntegrityLevel, token_buf, token_len, &token_len)) {
-        TOKEN_MANDATORY_LABEL *tml = (TOKEN_MANDATORY_LABEL *)token_buf;
-        DWORD *sub = GetSidSubAuthority(tml->Label.Sid,
-                     *GetSidSubAuthorityCount(tml->Label.Sid) - 1);
-        const char *level = "Medium Mandatory Level";
-        if (*sub >= 0x4000) level = "System Mandatory Level";
-        else if (*sub >= 0x3000) level = "High Mandatory Level";
-        else if (*sub < 0x2000) level = "Low Mandatory Level";
+    if (token_len > 0 && (token_buf = (unsigned char *)malloc(token_len)) != NULL) {
+        if (GetTokenInformation(hToken, TokenIntegrityLevel, token_buf, token_len, &token_len)) {
+            TOKEN_MANDATORY_LABEL *tml = (TOKEN_MANDATORY_LABEL *)token_buf;
+            DWORD *sub = GetSidSubAuthority(tml->Label.Sid,
+                         *GetSidSubAuthorityCount(tml->Label.Sid) - 1);
+            const char *level = "Medium Mandatory Level";
+            if (*sub >= 0x4000) level = "System Mandatory Level";
+            else if (*sub >= 0x3000) level = "High Mandatory Level";
+            else if (*sub < 0x2000) level = "Low Mandatory Level";
 
-        char *int_sid = NULL;
-        ConvertSidToStringSidA(tml->Label.Sid, &int_sid);
-        snprintf(line, sizeof(line), "\nIntegrity: %s (%s)\n",
-                 level, int_sid ? int_sid : "?");
-        buf_append(out, line, (DWORD)strlen(line));
-        if (int_sid) LocalFree(int_sid);
+            char *int_sid = NULL;
+            ConvertSidToStringSidA(tml->Label.Sid, &int_sid);
+            snprintf(line, sizeof(line), "\nIntegrity: %s (%s)\n",
+                     level, int_sid ? int_sid : "?");
+            buf_append(out, line, (DWORD)strlen(line));
+            if (int_sid) LocalFree(int_sid);
+        }
+        free(token_buf);
     }
-    free(token_buf);
 
     CloseHandle(hToken);
 }
