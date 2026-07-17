@@ -70,6 +70,7 @@ class OperatorShell:
         self._current_agent: Optional[AgentSession] = None
         self._listeners: dict[int, BaseListener] = {}
         self._running = True
+        self._prompt_refresh_task: Optional[asyncio.Task] = None
 
         self._completer = ShellCompleter(module_registry, session_manager)
 
@@ -116,6 +117,9 @@ class OperatorShell:
             ("fg:ansibrightyellow", f"{agent.username}"),
             ("fg:ansibrightblack", " ["),
             (int_style, f"{agent.integrity}"),
+            ("fg:ansibrightblack", "] "),
+            ("fg:ansibrightblack", "["),
+            ("fg:ansibrightblack", f"{agent.last_seen_ago}"),
             ("fg:ansibrightblack", "] "),
             ("fg:ansicyan", f"{agent.cwd}"),
             ("fg:ansibrightblack", " > "),
@@ -167,6 +171,7 @@ class OperatorShell:
                 console.print(f"[bold red]Error:[/] {e}")
                 log.error(f"Shell error: {e}", exc_info=True)
 
+        self._stop_prompt_refresh()
         console.print("[*] Shutting down...", style="yellow")
 
     async def _handle_main(self, text: str):
@@ -197,6 +202,7 @@ class OperatorShell:
             self._current_agent = agent
             self._context = "agent"
             self._completer.context = "agent"
+            self._start_prompt_refresh()
             console.print(
                 f"[bright_red][*][/bright_red] Active session: "
                 f"[bold white]{agent.hostname}[/bold white] "
@@ -256,6 +262,7 @@ class OperatorShell:
             self._current_agent = None
             self._context = "main"
             self._completer.context = "main"
+            self._stop_prompt_refresh()
             return
 
         if cmd == "help":
@@ -319,6 +326,7 @@ class OperatorShell:
                 self._current_agent = None
                 self._context = "main"
                 self._completer.context = "main"
+                self._stop_prompt_refresh()
             return
 
         if cmd in ("shell", "powershell"):
@@ -574,6 +582,24 @@ class OperatorShell:
                 app.invalidate()
         except Exception:
             pass  # No running app — nothing to invalidate
+
+    def _start_prompt_refresh(self):
+        """Start a background task that invalidates the prompt every second
+        so the last-seen timer ticks in real time."""
+        self._stop_prompt_refresh()
+
+        async def _tick():
+            while True:
+                await asyncio.sleep(1)
+                self._invalidate_prompt()
+
+        self._prompt_refresh_task = asyncio.ensure_future(_tick())
+
+    def _stop_prompt_refresh(self):
+        """Cancel the prompt refresh timer."""
+        if self._prompt_refresh_task is not None:
+            self._prompt_refresh_task.cancel()
+            self._prompt_refresh_task = None
 
     def _on_agent_checkin(self, session, is_new):
         """Event handler for agent check-ins."""
