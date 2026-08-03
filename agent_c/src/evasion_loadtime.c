@@ -57,7 +57,7 @@ BOOL check_remote_debugger(void) {
     typedef NTSTATUS (NTAPI *pNtQueryInformationProcess)(
         HANDLE, ULONG, PVOID, ULONG, PULONG);
 
-    #define HASH_NtQueryInformationProcess_LT 0x8CDEF1A0
+    #define HASH_NtQueryInformationProcess_LT 0xD034FC62
     pNtQueryInformationProcess NtQIP =
         (pNtQueryInformationProcess)api_resolve(HASH_NTDLL, HASH_NtQueryInformationProcess_LT);
     if (!NtQIP) return TRUE;

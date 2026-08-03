@@ -110,28 +110,28 @@ void syscall_free_trampoline(void *trampoline);
 /* ─── DJB2 hash helper ─── */
 DWORD djb2_hash(const char *str);
 
-/* Pre-computed hashes for the Nt functions we need */
-#define HASH_NtAllocateVirtualMemory    0xF783B8EC
-#define HASH_NtProtectVirtualMemory     0x50E92888
-#define HASH_NtWriteVirtualMemory       0xC3170192
-#define HASH_NtCreateThreadEx           0x64DC7453
-#define HASH_NtOpenProcess              0x4B82F718
-#define HASH_NtClose                    0x40D6E69D
-#define HASH_NtQuerySystemInformation   0x7BC23928
-#define HASH_NtQueryInformationProcess  0x8CDEF1A0
-#define HASH_NtCreateSection            0xE971E7B2
-#define HASH_NtMapViewOfSection         0xFA4015C6
-#define HASH_NtUnmapViewOfSection       0x6BA2B09C
-#define HASH_NtQueueApcThread           0x0A6664B8
-#define HASH_NtResumeThread             0x5A4BC3D0
-#define HASH_NtSuspendThread            0xE43D93E1
-#define HASH_NtGetContextThread         0x6B2B024E
-#define HASH_NtSetContextThread         0xE2899C0F
-#define HASH_NtFreeVirtualMemory        0x2802C609
-#define HASH_NtReadVirtualMemory        0xA38DACF0
-#define HASH_NtWaitForSingleObject      0xC6A2FA17
-#define HASH_NtDelayExecution           0xF5A936AA
-#define HASH_NtCreateFile               0x43FFB97E
-#define HASH_NtSetInformationThread     0x0D938F78
+/* Pre-computed hashes for the Nt functions we need (DJB2 case-sensitive) */
+#define HASH_NtAllocateVirtualMemory    0x6793C34C
+#define HASH_NtProtectVirtualMemory     0x082962C8
+#define HASH_NtWriteVirtualMemory       0x95F3A792
+#define HASH_NtCreateThreadEx           0xCB0C2130
+#define HASH_NtOpenProcess              0x5003C058
+#define HASH_NtClose                    0x8B8E133D
+#define HASH_NtQuerySystemInformation   0xEE4F73A8
+#define HASH_NtQueryInformationProcess  0xD034FC62
+#define HASH_NtCreateSection            0xD02E20D0
+#define HASH_NtMapViewOfSection         0x231F196A
+#define HASH_NtUnmapViewOfSection       0x595014AD
+#define HASH_NtQueueApcThread           0xD4612238
+#define HASH_NtResumeThread             0x2C7B3D30
+#define HASH_NtSuspendThread            0x50FEBD61
+#define HASH_NtGetContextThread         0x9E0E1A44
+#define HASH_NtSetContextThread         0x308BE0D0
+#define HASH_NtFreeVirtualMemory        0x471AA7E9
+#define HASH_NtReadVirtualMemory        0xC24062E3
+#define HASH_NtWaitForSingleObject      0x4C6DC63C
+#define HASH_NtDelayExecution           0x0A49084A
+#define HASH_NtCreateFile               0x15A5ECDB
+#define HASH_NtSetInformationThread     0x54212E31
 
 #endif /* SYSCALLS_H */
