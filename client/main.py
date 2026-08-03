@@ -88,6 +88,17 @@ async def main():
             log.warning("No RSA private key found — agent key exchange will fail!")
             log.warning("Run: python scripts/generate_keys.py")
 
+    # TLS certs — auto-discover from certs/ if not specified
+    cert_path = args.cert
+    key_path = args.key
+    if not cert_path:
+        default_cert = Path("certs/server.pem")
+        default_key = Path("certs/server.key")
+        if default_cert.exists() and default_key.exists():
+            cert_path = default_cert
+            key_path = default_key
+            log.info(f"Using TLS cert: {default_cert}")
+
     # Start HTTPS listener
     listener = HttpsListener(
         listener_id=1,
@@ -98,8 +109,8 @@ async def main():
         profile=profile,
         logger=op_logger,
         rsa_private_key_path=rsa_key_path,
-        cert_path=args.cert,
-        key_path=args.key,
+        cert_path=cert_path,
+        key_path=key_path,
     )
     await listener.start()
 
