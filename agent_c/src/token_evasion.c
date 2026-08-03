@@ -6,26 +6,8 @@
 #include "api_resolve.h"
 #include <tlhelp32.h>
 
-/* ─── Dangerous privilege names (to strip for stealth) ─── */
-const wchar_t *PRIVS_DANGEROUS[] = {
-    L"SeDebugPrivilege",
-    L"SeTcbPrivilege",
-    L"SeAssignPrimaryTokenPrivilege",
-    L"SeLoadDriverPrivilege",
-    L"SeBackupPrivilege",
-    L"SeRestorePrivilege",
-    L"SeTakeOwnershipPrivilege",
-    L"SeCreateTokenPrivilege",
-    L"SeImpersonatePrivilege",
-    L"SeEnableDelegationPrivilege",
-    NULL
-};
-
-const wchar_t *PRIVS_MINIMAL[] = {
-    L"SeChangeNotifyPrivilege",
-    L"SeIncreaseWorkingSetPrivilege",
-    NULL
-};
+/* Privilege name arrays removed — plaintext strings are a detection vector.
+ * Build privilege names on the stack with XOR when needed. */
 
 /* ═══════════════════════════════════════════════════════════════════
  *  Credential Guard detection

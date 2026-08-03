@@ -132,7 +132,7 @@ static BOOL _inject_createthread(HANDLE hProc, void *remoteBase,
     hThread = CreateRemoteThread(hProc, NULL, 0,
         (LPTHREAD_START_ROUTINE)remoteBase, NULL, 0, NULL);
     if (!hThread) {
-        _set_error(result, "CreateRemoteThread failed", GetLastError());
+        _set_error(result, "Remote thread failed", GetLastError());
         return FALSE;
     }
 #endif
@@ -517,7 +517,7 @@ static BOOL _inject_section_map(HANDLE hProc, const unsigned char *payload,
     hThread = CreateRemoteThread(hProc, NULL, 0,
         (LPTHREAD_START_ROUTINE)remoteBase, NULL, 0, NULL);
     if (!hThread) {
-        _set_error(result, "CreateRemoteThread (section) failed", GetLastError());
+        _set_error(result, "Remote thread (section) failed", GetLastError());
         return FALSE;
     }
 #endif

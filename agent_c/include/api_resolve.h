@@ -88,8 +88,17 @@ DWORD api_hash(const char *str);
 #define HASH_GetTickCount64         0xFD7F4E0C
 #define HASH_QueryPerformanceCounter 0xF7FD0E5F
 
+/* ntdll */
+#define HASH_NtQuerySystemInformation 0xEE4F73A8
+
 /* advapi32 */
 #define HASH_OpenProcessToken       0xC5D7E25E
+#define HASH_DuplicateTokenEx       0x7D9A8F1E
+#define HASH_ImpersonateLoggedOnUser 0xA6FFD55A
+#define HASH_RevertToSelf           0x58CF32AA
+#define HASH_LookupAccountSidW      0xBC518D43
+#define HASH_SetThreadToken         0x575B17CA
+#define HASH_AdjustTokenPrivileges  0xCE4CD9CB
 #define HASH_GetTokenInformation    0x45AD8A3F
 #define HASH_LookupPrivilegeNameW   0x2C9ED1F5
 #define HASH_RegOpenKeyExW          0xAF86DA7B

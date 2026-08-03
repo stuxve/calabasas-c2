@@ -121,9 +121,4 @@ HANDLE token_duplicate(HANDLE hToken, DWORD impLevel);
  */
 int token_strip_privileges(HANDLE hToken, const wchar_t **privNames);
 
-/*
- * Common privilege lists for filtering */
-extern const wchar_t *PRIVS_DANGEROUS[];   /* SeDebug, SeTcb, SeAssignPrimary, etc. */
-extern const wchar_t *PRIVS_MINIMAL[];     /* Only SeChangeNotify, SeIncreaseWorkingSet */
-
 #endif /* TOKEN_EVASION_H */
