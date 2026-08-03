@@ -379,27 +379,111 @@ skip_groups:
 
 void mod_ps(Buffer *out) {
     char line[512];
-    snprintf(line, sizeof(line), "%-6s %-6s %-6s %s\n", "PID", "PPID", "SID", "NAME");
-    buf_append(out, line, (DWORD)strlen(line));
-    buf_append(out, "────── ────── ────── ────────────────────\n", 42);
 
-    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnap == INVALID_HANDLE_VALUE) return;
-
-    PROCESSENTRY32 pe;
-    pe.dwSize = sizeof(pe);
-
-    if (Process32First(hSnap, &pe)) {
-        do {
-            snprintf(line, sizeof(line), "%-6lu %-6lu %-6lu %s\n",
-                     pe.th32ProcessID, pe.th32ParentProcessID,
-                     0UL, /* session ID not in PROCESSENTRY32 */
-                     pe.szExeFile);
-            buf_append(out, line, (DWORD)strlen(line));
-        } while (Process32Next(hSnap, &pe));
+    /*
+     * Use NtQuerySystemInformation(SystemProcessInformation) instead of
+     * CreateToolhelp32Snapshot. Advantages:
+     *   - Single syscall, no per-process OpenProcess
+     *   - Gives PPID and session ID directly
+     *   - We only call OpenProcessToken for the owner column
+     */
+    typedef LONG (NTAPI *pNtQuerySystemInformation)(ULONG, PVOID, ULONG, PULONG);
+    pNtQuerySystemInformation NtQSI = (pNtQuerySystemInformation)
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation");
+    if (!NtQSI) {
+        buf_append(out, "[!] NtQuerySystemInformation not found\n", 39);
+        return;
     }
 
-    CloseHandle(hSnap);
+    ULONG buf_size = 1024 * 1024;
+    unsigned char *buffer = (unsigned char *)VirtualAlloc(NULL, buf_size,
+                                MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!buffer) { buf_append(out, "[!] VirtualAlloc failed\n", 24); return; }
+
+    ULONG ret_len = 0;
+    LONG status;
+    while ((status = NtQSI(5 /* SystemProcessInformation */, buffer, buf_size, &ret_len))
+            == (LONG)0xC0000004L) { /* STATUS_INFO_LENGTH_MISMATCH */
+        VirtualFree(buffer, 0, MEM_RELEASE);
+        buf_size = ret_len + 4096;
+        buffer = (unsigned char *)VirtualAlloc(NULL, buf_size,
+                     MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!buffer) { buf_append(out, "[!] VirtualAlloc failed\n", 24); return; }
+    }
+    if (status != 0) {
+        snprintf(line, sizeof(line), "[!] NtQuerySystemInformation failed: 0x%08lx\n", (unsigned long)status);
+        buf_append(out, line, (DWORD)strlen(line));
+        VirtualFree(buffer, 0, MEM_RELEASE);
+        return;
+    }
+
+    snprintf(line, sizeof(line), "%-7s %-7s %-4s %-28s %s\n",
+             "PID", "PPID", "SID", "USER", "NAME");
+    buf_append(out, line, (DWORD)strlen(line));
+    buf_append(out, "─────── ─────── ──── ──────────────────────────── ────────────────────────────\n", 79);
+
+    unsigned char *current = buffer;
+    while (1) {
+        DWORD next_offset = *(DWORD *)(current + 0x00);
+        ULONG_PTR pid_raw = *(ULONG_PTR *)(current + 0x50);
+        ULONG_PTR ppid_raw = *(ULONG_PTR *)(current + 0x58);
+        DWORD pid  = (DWORD)pid_raw;
+        DWORD ppid = (DWORD)ppid_raw;
+        DWORD sid  = *(DWORD *)(current + 0x64); /* SessionId offset for x64 */
+
+        /* Process name from UNICODE_STRING at offset 0x38 */
+        USHORT name_len = *(USHORT *)(current + 0x38);
+        wchar_t *name_buf = *(wchar_t **)(current + 0x38 + sizeof(ULONG_PTR));
+        char proc_name[128] = "[System]";
+        if (name_len > 0 && name_buf) {
+            int conv = WideCharToMultiByte(CP_UTF8, 0, name_buf, name_len / 2,
+                                           proc_name, 127, NULL, NULL);
+            if (conv > 0) proc_name[conv] = '\0';
+        }
+
+        /* Resolve process owner via token */
+        char user_str[128] = "";
+        if (pid != 0) {
+            HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (!hProc)
+                hProc = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+            if (hProc) {
+                HANDLE hToken = NULL;
+                if (OpenProcessToken(hProc, TOKEN_QUERY, &hToken)) {
+                    DWORD tlen = 0;
+                    GetTokenInformation(hToken, TokenUser, NULL, 0, &tlen);
+                    if (tlen > 0) {
+                        unsigned char *tbuf = (unsigned char *)malloc(tlen);
+                        if (tbuf) {
+                            if (GetTokenInformation(hToken, TokenUser, tbuf, tlen, &tlen)) {
+                                TOKEN_USER *tu = (TOKEN_USER *)tbuf;
+                                char uname[64] = {0}, domain[64] = {0};
+                                DWORD uname_len = sizeof(uname), domain_len = sizeof(domain);
+                                SID_NAME_USE snu;
+                                if (LookupAccountSidA(NULL, tu->User.Sid, uname, &uname_len,
+                                                      domain, &domain_len, &snu)) {
+                                    snprintf(user_str, sizeof(user_str), "%s\\%s", domain, uname);
+                                }
+                            }
+                            free(tbuf);
+                        }
+                    }
+                    CloseHandle(hToken);
+                }
+                CloseHandle(hProc);
+            }
+        }
+
+        snprintf(line, sizeof(line), "%-7lu %-7lu %-4lu %-28s %s\n",
+                 (unsigned long)pid, (unsigned long)ppid,
+                 (unsigned long)sid, user_str, proc_name);
+        buf_append(out, line, (DWORD)strlen(line));
+
+        if (next_offset == 0) break;
+        current += next_offset;
+    }
+
+    VirtualFree(buffer, 0, MEM_RELEASE);
 }
 
 /* ─── Module: ls (directory listing) ─── */
