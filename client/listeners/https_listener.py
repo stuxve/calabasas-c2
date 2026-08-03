@@ -77,6 +77,7 @@ class HttpsListener(BaseListener):
         # Register routes for all profile URI paths
         for uri_path in self.profile.uri_paths:
             self._app.router.add_route("*", uri_path, self._handle_request)
+            log.debug(f"Registered route: {uri_path}")
 
         # Catch-all for unmatched paths
         self._app.router.add_route("*", "/{path:.*}", self._handle_decoy)
@@ -85,7 +86,8 @@ class HttpsListener(BaseListener):
         # Large results (ps, ls) can exceed aiohttp's default 8190-byte
         # header limit, so we raise it to 1MB.
         self._runner = web.AppRunner(
-            self._app, access_log=None,
+            self._app,
+            access_log=logging.getLogger("caraxes.access"),
             max_field_size=1024 * 1024,
         )
         await self._runner.setup()
@@ -94,11 +96,15 @@ class HttpsListener(BaseListener):
         if self._cert_path and self._key_path:
             ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ssl_ctx.load_cert_chain(str(self._cert_path), str(self._key_path))
+            # Accept TLS 1.2+ (WinHTTP on Win11 uses TLS 1.2/1.3)
+            ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            log.info(f"[*] TLS enabled with cert {self._cert_path}")
 
         self._site = web.TCPSite(self._runner, self.host, self.port, ssl_context=ssl_ctx)
         await self._site.start()
         self.running = True
-        log.info(f"[*] {self.listener_type} listener started on {self.host}:{self.port}")
+        proto = "HTTPS" if ssl_ctx else "HTTP"
+        log.info(f"[*] {proto} listener started on {self.host}:{self.port}")
 
     async def stop(self):
         if self._runner:
@@ -117,6 +123,7 @@ class HttpsListener(BaseListener):
         }
 
     async def _handle_decoy(self, request: web.Request) -> web.Response:
+        log.debug(f"[decoy] {request.method} {request.path} from {request.remote}")
         decoy = self.profile.generate_decoy_response()
         return web.Response(
             status=decoy["status"],
@@ -127,25 +134,42 @@ class HttpsListener(BaseListener):
 
     async def _handle_request(self, request: web.Request) -> web.Response:
         try:
+            log.info(f"[request] {request.method} {request.path} from {request.remote} "
+                     f"headers={dict(request.headers)}")
+
             # Extract C2 data from the request per malleable profile
             raw_data = await self._extract_request_data(request)
             if raw_data is None or len(raw_data) < HEADER_SIZE:
+                log.debug(f"[request] no C2 data extracted (raw={len(raw_data) if raw_data else 0} bytes)")
                 return await self._handle_decoy(request)
+
+            log.debug(f"[request] extracted {len(raw_data)} bytes of C2 data")
 
             # Parse outer packet header
             magic, size, msg_id = unpack_packet_header(raw_data)
+            log.debug(f"[request] packet: magic=0x{magic:08X} size={size} msg_id={msg_id}")
             if magic != self.magic:
+                log.warning(f"[request] magic mismatch: got 0x{magic:08X}, expected 0x{self.magic:08X}")
                 return await self._handle_decoy(request)
 
             encrypted_payload = raw_data[HEADER_SIZE:size]
             if not encrypted_payload:
+                log.debug("[request] empty encrypted payload")
                 return await self._handle_decoy(request)
+
+            log.debug(f"[request] encrypted payload: {len(encrypted_payload)} bytes")
 
             # Try to identify agent and decrypt
             agent_id, plaintext = self._decrypt_and_identify(encrypted_payload)
 
             if plaintext is None:
+                log.warning(f"[request] decryption failed — could not identify agent "
+                           f"(payload {len(encrypted_payload)} bytes, "
+                           f"sessions={len(list(self.session_manager.all_sessions()))}, "
+                           f"rsa_key={'yes' if self._rsa_private_key else 'NO'})")
                 return await self._handle_decoy(request)
+
+            log.info(f"[request] identified agent {agent_id[:8]}, plaintext {len(plaintext)} bytes")
 
             # Parse command
             cmd, body = unpack_command(plaintext)
@@ -216,9 +240,11 @@ class HttpsListener(BaseListener):
         For key exchange: uses RSA.
         For established sessions: tries session keys.
         """
-        # First 16 bytes could be agent_id hint (design choice)
-        # For now, try each active session's key
-        for session in self.session_manager.all_sessions():
+        sessions = list(self.session_manager.all_sessions())
+        log.debug(f"[decrypt] trying {len(sessions)} session keys, "
+                  f"payload={len(encrypted_payload)} bytes")
+
+        for session in sessions:
             if not session.encryption_key:
                 continue
             try:
@@ -227,23 +253,26 @@ class HttpsListener(BaseListener):
                     "AGENT→C2", session.agent_id,
                     encrypted_payload, len(plaintext)
                 )
+                log.debug(f"[decrypt] matched session {session.agent_id[:8]}")
                 return session.agent_id, plaintext
             except Exception:
                 continue
 
         # Could be a key exchange — try RSA decrypt
         if self._rsa_private_key:
+            log.debug("[decrypt] no session match, trying RSA key exchange decrypt")
             try:
                 plaintext = rsa_decrypt(self._rsa_private_key, encrypted_payload)
-                # Key exchange payload starts with agent_id (16 bytes UUID)
-                # followed by the actual ECDH public key
+                log.debug(f"[decrypt] RSA decrypt OK: {len(plaintext)} bytes plaintext")
                 if len(plaintext) >= 16:
                     agent_id = UUID(bytes=plaintext[:16]).hex
-                    # Re-wrap as a proper command payload for processing
                     inner = pack_command(Command.KEY_EXCHANGE_INIT, plaintext[16:])
+                    log.info(f"[decrypt] key exchange from new agent {agent_id[:8]}")
                     return agent_id, inner
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"[decrypt] RSA decrypt failed: {e}")
+        else:
+            log.warning("[decrypt] no RSA private key loaded!")
 
         return None, None
 

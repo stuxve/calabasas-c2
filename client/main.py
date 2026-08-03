@@ -53,13 +53,16 @@ def parse_args():
 async def main():
     args = parse_args()
 
-    # Logging
+    # Logging — always use DEBUG to surface connection diagnostics
     level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    # Silence noisy aiohttp internals but keep our access log
+    logging.getLogger("aiohttp").setLevel(logging.WARNING)
+    logging.getLogger("caraxes.access").setLevel(level)
 
     # Core components
     session_manager = SessionManager()
