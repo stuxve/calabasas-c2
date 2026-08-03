@@ -107,12 +107,17 @@ static BYTE *_find_module(DWORD modHash) {
 
     while (curr != head) {
         /*
-         * LDR_DATA_TABLE_ENTRY (InMemoryOrderLinks is at offset 0x00 in the list entry)
-         * FullDllName (UNICODE_STRING) is at offset 0x48 from InMemoryOrderLinks on x64
-         * BaseDllName (UNICODE_STRING) is at offset 0x58 from InMemoryOrderLinks on x64
-         * DllBase is at offset 0x20 from InMemoryOrderLinks on x64
+         * curr points to InMemoryOrderLinks which is at offset 0x10 in
+         * LDR_DATA_TABLE_ENTRY.  All offsets below are relative to curr.
+         *
+         * Struct field              Struct offset   From curr (- 0x10)
+         * ──────────────────────    ─────────────   ──────────────────
+         * InMemoryOrderLinks        0x10            0x00 (curr itself)
+         * DllBase                   0x30            0x20
+         * BaseDllName (UNICODE_STR) 0x58            0x48
+         * BaseDllName.Buffer        0x58 + 0x08     0x50
          */
-        wchar_t *baseName = *(wchar_t **)((BYTE *)curr + 0x58 + sizeof(void *));
+        wchar_t *baseName = *(wchar_t **)((BYTE *)curr + 0x50);
         void *dllBase = *(void **)((BYTE *)curr + 0x20);
 
         if (baseName && dllBase) {
