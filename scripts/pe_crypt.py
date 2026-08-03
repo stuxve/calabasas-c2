@@ -80,7 +80,7 @@ def generate_junk_functions() -> str:
 
     for i in range(num_funcs):
         name = "".join(rng.choices(string.ascii_lowercase, k=rng.randint(6, 12)))
-        ret_type = rng.choice(["int", "unsigned int", "DWORD"])
+        ret_type = rng.choice(["int", "unsigned int", "unsigned long"])
         body_ops = []
         var = "x"
         body_ops.append(f"    {ret_type} {var} = {rng.randint(1, 0xFFFF)};")
