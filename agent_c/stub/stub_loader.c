@@ -204,6 +204,9 @@ typedef BOOL    (WINAPI *fnVirtualProtect_t)(LPVOID, SIZE_T, DWORD, PDWORD);
 typedef BOOL    (WINAPI *fnVirtualFree_t)(LPVOID, SIZE_T, DWORD);
 typedef BOOL    (WINAPI *fnFlushInstructionCache_t)(HANDLE, LPCVOID, SIZE_T);
 typedef HANDLE  (WINAPI *fnGetCurrentProcess_t)(void);
+typedef LPTOP_LEVEL_EXCEPTION_FILTER (WINAPI *fnSetUnhandledExceptionFilter_t)(LPTOP_LEVEL_EXCEPTION_FILTER);
+typedef DWORD   (WINAPI *fnTlsAlloc_t)(void);
+typedef BOOL    (WINAPI *fnTlsSetValue_t)(DWORD, LPVOID);
 
 #if defined(_M_X64) || defined(__x86_64__)
 typedef BOOLEAN (WINAPI *fnRtlAddFunctionTable_t)(PRUNTIME_FUNCTION, DWORD, DWORD64);
@@ -217,6 +220,9 @@ typedef struct {
     fnVirtualFree_t          pVirtualFree;
     fnFlushInstructionCache_t pFlushInstructionCache;
     fnGetCurrentProcess_t    pGetCurrentProcess;
+    fnSetUnhandledExceptionFilter_t pSetUnhandledExceptionFilter;
+    fnTlsAlloc_t             pTlsAlloc;
+    fnTlsSetValue_t          pTlsSetValue;
 #if defined(_M_X64) || defined(__x86_64__)
     fnRtlAddFunctionTable_t  pRtlAddFunctionTable;
 #endif
@@ -233,6 +239,9 @@ typedef struct {
 #define H_FlushInstructionCache 0xB7DCEDDD
 #define H_GetCurrentProcess     0xCA8D7527
 #define H_RtlAddFunctionTable   0xBDB9F1AE
+#define H_SetUnhandledExceptionFilter 0x252C3659
+#define H_TlsAlloc              0x8BF55163
+#define H_TlsSetValue           0xC324EBA1
 
 static BOOL _resolve_apis(RESOLVED_APIS *api) {
     SLOG("[stub] finding kernel32...");
@@ -253,6 +262,10 @@ static BOOL _resolve_apis(RESOLVED_APIS *api) {
     api->pFlushInstructionCache = (fnFlushInstructionCache_t)_resolve_export(k32, H_FlushInstructionCache);
     api->pGetCurrentProcess  = (fnGetCurrentProcess_t)  _resolve_export(k32, H_GetCurrentProcess);
 
+    api->pSetUnhandledExceptionFilter = (fnSetUnhandledExceptionFilter_t)_resolve_export(k32, H_SetUnhandledExceptionFilter);
+    api->pTlsAlloc    = (fnTlsAlloc_t)   _resolve_export(k32, H_TlsAlloc);
+    api->pTlsSetValue = (fnTlsSetValue_t)_resolve_export(k32, H_TlsSetValue);
+
     SLOG("[stub] core APIs resolved");
 
 #if defined(_M_X64) || defined(__x86_64__)
@@ -271,6 +284,29 @@ static BOOL _resolve_apis(RESOLVED_APIS *api) {
     return ok;
 }
 
+
+/* ─── Crash handler (debug builds) ─── */
+#ifdef STUB_DEBUG
+static LONG WINAPI _stub_exception_handler(EXCEPTION_POINTERS *ep) {
+    _log_open();  /* re-open in case it was closed */
+    SLOG("[stub] !!! UNHANDLED EXCEPTION !!!");
+    if (ep && ep->ExceptionRecord) {
+        SHEX("[stub] exception code", ep->ExceptionRecord->ExceptionCode);
+        SHEX("[stub] exception addr", (ULONG_PTR)ep->ExceptionRecord->ExceptionAddress);
+    }
+    if (ep && ep->ContextRecord) {
+#if defined(_M_X64) || defined(__x86_64__)
+        SHEX("[stub] RIP", ep->ContextRecord->Rip);
+        SHEX("[stub] RSP", ep->ContextRecord->Rsp);
+        SHEX("[stub] RAX", ep->ContextRecord->Rax);
+        SHEX("[stub] RCX", ep->ContextRecord->Rcx);
+        SHEX("[stub] RDX", ep->ContextRecord->Rdx);
+#endif
+    }
+    _log_close();
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
 
 /* ─── Reflective PE Loader ─── */
 
@@ -384,19 +420,50 @@ static void _protect_sections(BYTE *base, IMAGE_NT_HEADERS *nt, RESOLVED_APIS *a
     }
 }
 
-static void _process_tls(BYTE *base, IMAGE_NT_HEADERS *nt) {
+static void _process_tls(BYTE *base, IMAGE_NT_HEADERS *nt, RESOLVED_APIS *api) {
     IMAGE_DATA_DIRECTORY *tlsDir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
-    if (!tlsDir->VirtualAddress || !tlsDir->Size)
+    if (!tlsDir->VirtualAddress || !tlsDir->Size) {
+        SLOG("[stub] TLS: no TLS directory");
         return;
+    }
 
     IMAGE_TLS_DIRECTORY *tls = (IMAGE_TLS_DIRECTORY *)(base + tlsDir->VirtualAddress);
-    if (!tls->AddressOfCallBacks)
-        return;
+    SLOG("[stub] TLS: directory found");
 
-    PIMAGE_TLS_CALLBACK *callbacks = (PIMAGE_TLS_CALLBACK *)tls->AddressOfCallBacks;
-    while (*callbacks) {
-        (*callbacks)((PVOID)base, DLL_PROCESS_ATTACH, NULL);
-        callbacks++;
+    /* Allocate TLS slot and copy initial data */
+    if (api->pTlsAlloc && api->pTlsSetValue && tls->AddressOfIndex) {
+        DWORD tlsIndex = api->pTlsAlloc();
+        SHEX("[stub] TLS: allocated index", tlsIndex);
+        *(DWORD *)tls->AddressOfIndex = tlsIndex;
+
+        if (tls->StartAddressOfRawData && tls->EndAddressOfRawData) {
+            SIZE_T dataSize = tls->EndAddressOfRawData - tls->StartAddressOfRawData;
+            if (dataSize > 0) {
+                LPVOID tlsData = api->pVirtualAlloc(NULL, dataSize,
+                    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                if (tlsData) {
+                    BYTE *src = (BYTE *)tls->StartAddressOfRawData;
+                    BYTE *dst = (BYTE *)tlsData;
+                    for (SIZE_T i = 0; i < dataSize; i++) dst[i] = src[i];
+                    api->pTlsSetValue(tlsIndex, tlsData);
+                    SHEX("[stub] TLS: data copied, size", dataSize);
+                }
+            }
+        }
+    }
+
+    /* Call TLS callbacks */
+    if (tls->AddressOfCallBacks) {
+        PIMAGE_TLS_CALLBACK *callbacks = (PIMAGE_TLS_CALLBACK *)tls->AddressOfCallBacks;
+        int cbCount = 0;
+        while (*callbacks) {
+            (*callbacks)((PVOID)base, DLL_PROCESS_ATTACH, NULL);
+            callbacks++;
+            cbCount++;
+        }
+        SHEX("[stub] TLS: callbacks called", cbCount);
+    } else {
+        SLOG("[stub] TLS: no callbacks");
     }
 }
 
@@ -481,7 +548,7 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     SLOG("[stub] protections set");
 
     /* TLS */
-    _process_tls(base, mappedNt);
+    _process_tls(base, mappedNt, api);
 
     /* Patch PEB.ImageBaseAddress */
     {
@@ -495,6 +562,14 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
 #endif
     }
 
+    /* Install crash handler (debug builds) */
+#ifdef STUB_DEBUG
+    if (api->pSetUnhandledExceptionFilter) {
+        api->pSetUnhandledExceptionFilter(_stub_exception_handler);
+        SLOG("[stub] exception handler installed");
+    }
+#endif
+
     /* Call entry point */
     DWORD entryRVA = mappedNt->OptionalHeader.AddressOfEntryPoint;
     if (!entryRVA) { SLOG("[stub] FAIL: no entry RVA"); return FALSE; }
@@ -502,15 +577,15 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     void *entry = base + entryRVA;
     SHEX("[stub] entry", (ULONG_PTR)entry);
     SLOG("[stub] calling entry...");
-    _log_close();
 
     if (mappedNt->FileHeader.Characteristics & IMAGE_FILE_DLL) {
         DllMain_t dllMain = (DllMain_t)entry;
         dllMain((HINSTANCE)base, DLL_PROCESS_ATTACH, NULL);
     } else {
-        typedef void (*EntryPoint_t)(void);
-        EntryPoint_t ep = (EntryPoint_t)entry;
-        ep();
+        typedef int (*MainFunc_t)(void);
+        MainFunc_t ep = (MainFunc_t)entry;
+        int ret = ep();
+        SHEX("[stub] entry returned", ret);
     }
 
     return TRUE;

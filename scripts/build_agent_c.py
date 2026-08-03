@@ -383,7 +383,7 @@ END
         "-static-libgcc",
         "-Wl,--subsystem,windows",
         "-Wl,--gc-sections",
-        "-Wl,-e,mainCRTStartup",
+        "-Wl,-e,main",
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
