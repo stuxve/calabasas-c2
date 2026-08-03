@@ -358,7 +358,7 @@ next_entry:
             KERNEL32$CloseHandle(hThreadToken);
             BeaconPrintf(CALLBACK_OUTPUT,
                 "[+] SUCCESS — elevated to SYSTEM\n"
-                "[*] Use 'tokenmanip --action revert' to drop\n");
+                "[*] Use 'rev2self' to drop\n");
         } else {
             BeaconPrintf(CALLBACK_ERROR,
                 "[!] Impersonation set but OpenThreadToken failed (%u)\n",

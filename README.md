@@ -246,7 +246,7 @@ main> interact 1
 | Module | Technique |
 |--------|-----------|
 | `getsystem` | Named pipe impersonation → SYSTEM |
-| `tokenmanip` | Token theft / impersonation / duplication |
+| `steal_token` | Steal + impersonate token from target PID |
 | `printspoofer` | SpoolSS named pipe impersonation |
 | `abusecerttemplate` | ADCS ESC1–ESC8 exploitation |
 | `addmachineaccount` | Add computer to domain (MAQ abuse) |

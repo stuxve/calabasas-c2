@@ -379,7 +379,7 @@ class HttpsListener(BaseListener):
                     if not completed:
                         # More chunks expected — send ACK and return
                         resp_plaintext = pack_command(Command.TASK_RESULT_ACK, b"")
-                        return await self._send_encrypted_response(session, resp_plaintext, request)
+                        return self._encrypt_and_respond(session, resp_plaintext)
                 else:
                     self.task_manager.mark_complete(session, task, result_data, success)
 
