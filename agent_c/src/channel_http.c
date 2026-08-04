@@ -10,7 +10,7 @@ static HINTERNET g_hSession = NULL;
 BOOL http_init(void) {
     g_hSession = WinHttpOpen(
         L"" /* User-Agent set per-request */,
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_ACCESS_TYPE_NO_PROXY,   /* Direct connection — bypass system proxy */
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
         0

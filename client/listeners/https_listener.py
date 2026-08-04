@@ -98,6 +98,10 @@ class HttpsListener(BaseListener):
             ssl_ctx.load_cert_chain(str(self._cert_path), str(self._key_path))
             # Accept TLS 1.2+ (WinHTTP on Win11 uses TLS 1.2/1.3)
             ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            # Disable TLS renegotiation — WinHTTP (Schannel) hangs when the
+            # server requests renegotiation mid-connection.  curl handles it
+            # but WinHttpSendRequest blocks indefinitely.
+            ssl_ctx.options |= ssl.OP_NO_RENEGOTIATION
             log.info(f"[*] TLS enabled with cert {self._cert_path}")
 
         self._site = web.TCPSite(self._runner, self.host, self.port, ssl_context=ssl_ctx)
