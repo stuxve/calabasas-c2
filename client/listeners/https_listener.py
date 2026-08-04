@@ -96,13 +96,21 @@ class HttpsListener(BaseListener):
         if self._cert_path and self._key_path:
             ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ssl_ctx.load_cert_chain(str(self._cert_path), str(self._key_path))
-            # Accept TLS 1.2+ (WinHTTP on Win11 uses TLS 1.2/1.3)
+            # Pin to TLS 1.2 only.  WinHTTP's Schannel TLS 1.3 has known
+            # interop issues with OpenSSL (post-handshake auth, session
+            # tickets, renegotiation).  Capping at TLS 1.2 on both sides
+            # eliminates the entire class of TLS 1.3 handshake hangs.
             ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-            # Disable TLS renegotiation — WinHTTP (Schannel) hangs when the
-            # server requests renegotiation mid-connection.  curl handles it
-            # but WinHttpSendRequest blocks indefinitely.
-            ssl_ctx.options |= ssl.OP_NO_RENEGOTIATION
-            log.info(f"[*] TLS enabled with cert {self._cert_path}")
+            ssl_ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+            # Disable TLS renegotiation — defense-in-depth.
+            try:
+                ssl_ctx.options |= ssl.OP_NO_RENEGOTIATION
+            except AttributeError:
+                pass  # Python < 3.7 or OpenSSL < 1.1.1
+            # Force HTTP/1.1 ALPN — prevents h2 negotiation that confuses
+            # WinHTTP when the server doesn't actually speak HTTP/2.
+            ssl_ctx.set_alpn_protocols(["http/1.1"])
+            log.info(f"[*] TLS 1.2 only, ALPN=http/1.1, cert={self._cert_path}")
 
         self._site = web.TCPSite(self._runner, self.host, self.port, ssl_context=ssl_ctx)
         await self._site.start()

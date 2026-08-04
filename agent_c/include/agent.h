@@ -44,6 +44,30 @@ typedef struct _UNICODE_STRING {
 typedef struct _PEB *PPEB;
 #include <bcrypt.h>
 #include <winhttp.h>
+
+/* ─── MinGW winhttp.h compatibility ───
+ * Older MinGW-w64 headers (<= v8) lack TLS protocol flags and some options.
+ * Define them manually with their documented values from the Windows SDK. */
+#ifndef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2
+#define WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2  0x00000800
+#endif
+#ifndef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_1
+#define WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_1  0x00000200
+#endif
+#ifndef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1
+#define WINHTTP_FLAG_SECURE_PROTOCOL_TLS1    0x00000080
+#endif
+#ifndef WINHTTP_OPTION_SECURE_PROTOCOLS
+#define WINHTTP_OPTION_SECURE_PROTOCOLS      84
+#endif
+/* WinHTTP enablement for HTTP/2 (Win10 1607+, may not exist in MinGW) */
+#ifndef WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL
+#define WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL  133
+#endif
+#ifndef WINHTTP_PROTOCOL_FLAG_HTTP2
+#define WINHTTP_PROTOCOL_FLAG_HTTP2          0x1
+#endif
+
 #include <tlhelp32.h>
 #include <sddl.h>
 #include <stdio.h>
