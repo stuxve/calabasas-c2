@@ -60,9 +60,9 @@ async def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-    # Silence noisy aiohttp internals but keep our access log
+    # Silence noisy aiohttp internals; access log only in debug mode
     logging.getLogger("aiohttp").setLevel(logging.WARNING)
-    logging.getLogger("caraxes.access").setLevel(level)
+    logging.getLogger("caraxes.access").setLevel(logging.DEBUG)
 
     # Core components
     session_manager = SessionManager()
