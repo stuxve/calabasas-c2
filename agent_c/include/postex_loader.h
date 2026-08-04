@@ -93,4 +93,32 @@ BOOL postex_get_text_section(HMODULE hMod, void **textBase, DWORD *textSize);
  */
 const wchar_t *postex_select_stomp_dll(SIZE_T minSize);
 
+/* ─── Region acquisition for COFF loader integration ───
+ *
+ * Acquires a writable, image-backed memory region >= minSize bytes.
+ * The caller writes data (BOF .text section), applies relocations,
+ * then sets RX via VirtualProtect in the normal COFF loader Step 7.
+ *
+ * On cleanup, call postex_release_region() instead of VirtualFree().
+ */
+typedef struct _STOMP_REGION {
+    void     *base;           /* Writable .text region */
+    DWORD     size;           /* .text region size */
+    HMODULE   hMod;           /* Module stomp: needs FreeLibrary */
+    void     *viewBase;       /* Phantom hollow: needs NtUnmapViewOfSection */
+} STOMP_REGION;
+
+/*
+ * Acquire a writable image-backed region >= minSize.
+ * Uses CONFIG_PHANTOM_HOLLOW technique if enabled, otherwise module stomping.
+ * Returns TRUE on success; region->base is writable and zeroed.
+ */
+BOOL postex_acquire_region(SIZE_T minSize, STOMP_REGION *region);
+
+/*
+ * Release a previously acquired region.
+ * Zeros memory before releasing. Safe to call with zeroed struct.
+ */
+void postex_release_region(STOMP_REGION *region);
+
 #endif /* POSTEX_LOADER_H */

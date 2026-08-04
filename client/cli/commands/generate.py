@@ -35,6 +35,9 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
         "no_amsi": False,
         "no_pe_stomp": False,
         "no_stack_spoofing": False,
+        "no_indirect_syscalls": False,
+        "no_module_stomp": False,
+        "no_phantom_hollow": False,
         "no_crypt": False,
         "target_os": "win10",
         "debug": False,
@@ -49,6 +52,9 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
         "--no-amsi": "no_amsi",
         "--no-pe-stomp": "no_pe_stomp",
         "--no-stack-spoofing": "no_stack_spoofing",
+        "--no-indirect-syscalls": "no_indirect_syscalls",
+        "--no-module-stomp": "no_module_stomp",
+        "--no-phantom-hollow": "no_phantom_hollow",
         "--no-crypt": "no_crypt",
         "--debug": "debug",
     }
@@ -138,7 +144,8 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
     # Show evasion/debug flags
     active_flags = [k for k in ("debug", "no_evasion", "no_sandbox", "no_unhook",
                                  "no_etw", "no_amsi", "no_pe_stomp", "no_stack_spoofing",
-                                 "no_crypt")
+                                 "no_indirect_syscalls", "no_module_stomp",
+                                 "no_phantom_hollow", "no_crypt")
                     if opts[k]]
     if active_flags:
         console.print(f"  Flags:     {', '.join('--' + f.replace('_', '-') for f in active_flags)}")
@@ -164,6 +171,9 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
             no_amsi=opts["no_amsi"],
             no_pe_stomp=opts["no_pe_stomp"],
             no_stack_spoof=opts["no_stack_spoofing"],
+            no_indirect_syscalls=opts["no_indirect_syscalls"],
+            no_module_stomp=opts["no_module_stomp"],
+            no_phantom_hollow=opts["no_phantom_hollow"],
             target_os=opts["target_os"],
             debug=opts["debug"],
             no_crypt=opts["no_crypt"],
@@ -200,6 +210,9 @@ def _print_help():
   --no-amsi             Disable AMSI patching only
   --no-pe-stomp         Disable PE header stomping only
   --no-stack-spoofing   Disable thread stack spoofing (even on win11)
+  --no-indirect-syscalls Disable indirect syscalls (Hell's Gate)
+  --no-module-stomp    Disable module stomping for BOF .text sections
+  --no-phantom-hollow  Disable phantom DLL hollowing
   --target-os OS        Target OS: win10 or win11 (default: win10)
                         Stack spoofing only enabled on win11
 

