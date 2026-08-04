@@ -186,7 +186,7 @@ class HttpsListener(BaseListener):
                           f"rsa_key={'yes' if self._rsa_private_key else 'NO'})")
                 return await self._handle_decoy(request)
 
-            log.info(f"[request] identified agent {agent_id[:8]}, plaintext {len(plaintext)} bytes")
+            log.debug(f"[request] identified agent {agent_id[:8]}, plaintext {len(plaintext)} bytes")
 
             # Parse command
             cmd, body = unpack_command(plaintext)
