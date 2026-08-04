@@ -47,7 +47,8 @@ BOOL check_debugger_present(void);          /* IsDebuggerPresent + PEB->BeingDeb
 BOOL check_remote_debugger(void);           /* NtQueryInformationProcess(DebugPort) */
 BOOL check_hardware_breakpoints(void);      /* GetThreadContext DR0-DR3 */
 BOOL check_timing(void);                    /* rdtsc delta detection */
-BOOL check_sandbox_resources(void);         /* CPU count, RAM, disk, uptime */
+BOOL check_emulator_timing(void);           /* Sleep timing — detects Defender emulator */
+BOOL check_sandbox_resources(void);         /* RAM, uptime (CPU check removed) */
 BOOL check_sandbox_artifacts(void);         /* Known sandbox process names, files, registry */
 BOOL check_vm_hypervisor(void);             /* CPUID hypervisor bit + vendor string */
 

