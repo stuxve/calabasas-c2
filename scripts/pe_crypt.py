@@ -31,16 +31,18 @@ from pathlib import Path
 
 def _derive_key(seed: bytes, key_len: int = 256) -> bytes:
     """
-    Derive an RC4 key from a seed using DJB2-based expansion.
-    Extracts all 4 bytes from each 32-bit hash for proper entropy.
+    Derive an RC4 key from a seed using XOR-rotate-multiply expansion.
     MUST match the C implementation in stub_loader.c exactly.
     """
     key = bytearray(key_len)
     for i in range(0, key_len, 4):
-        h = 5381
+        h = 0x4E67C6A7
         block = i >> 2
         for j in range(len(seed)):
-            h = (((h << 5) + h) ^ (seed[j] + block)) & 0xFFFFFFFF
+            val = seed[j] + block
+            h = (h ^ val) & 0xFFFFFFFF
+            h = ((h << 7) | (h >> 25)) & 0xFFFFFFFF  # ROL 7
+            h = (h + val * 0xAB) & 0xFFFFFFFF
         key[i] = h & 0xFF
         if i + 1 < key_len: key[i + 1] = (h >> 8) & 0xFF
         if i + 2 < key_len: key[i + 2] = (h >> 16) & 0xFF

