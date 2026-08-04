@@ -88,8 +88,8 @@ async def main():
             rsa_key_path = default_rsa
             log.info(f"Using RSA private key: {default_rsa}")
         else:
-            log.warning("No RSA private key found — agent key exchange will fail!")
-            log.warning("Run: python scripts/generate_keys.py")
+            log.info("No RSA private key found — agent key exchange will fail!")
+            log.info("Run: python scripts/generate_keys.py")
 
     # TLS certs — auto-discover from certs/ if not specified
     cert_path = args.cert

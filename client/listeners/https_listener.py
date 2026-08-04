@@ -177,9 +177,9 @@ class HttpsListener(BaseListener):
 
             if plaintext is None:
                 if self._rsa_private_key and len(encrypted_payload) != 256:
-                    log.warning(f"[!] Key exchange: expected 256-byte RSA ciphertext, "
-                                f"got {len(encrypted_payload)} (packet {len(raw_data)} bytes). "
-                                f"Check agent was built with current keys/server_pub.pem")
+                    log.debug(f"[!] Key exchange: expected 256-byte RSA ciphertext, "
+                              f"got {len(encrypted_payload)} (packet {len(raw_data)} bytes). "
+                              f"Check agent was built with current keys/server_pub.pem")
                 log.debug(f"[request] decryption failed — could not identify agent "
                           f"(payload {len(encrypted_payload)} bytes, "
                           f"sessions={len(list(self.session_manager.all_sessions()))}, "
@@ -204,11 +204,11 @@ class HttpsListener(BaseListener):
                 return await self._handle_heartbeat(agent_id, request)
 
             else:
-                log.warning(f"Unknown command 0x{cmd:02X} from {agent_id}")
+                log.debug(f"Unknown command 0x{cmd:02X} from {agent_id}")
                 return await self._handle_decoy(request)
 
         except Exception as e:
-            log.error(f"Error handling request: {e}", exc_info=True)
+            log.debug(f"Error handling request: {e}", exc_info=True)
             return await self._handle_decoy(request)
 
     async def _extract_request_data(self, request: web.Request) -> Optional[bytes]:
@@ -305,7 +305,7 @@ class HttpsListener(BaseListener):
             except Exception as e:
                 log.debug(f"[decrypt] RSA decrypt failed: {e}")
         else:
-            log.warning("[decrypt] no RSA private key loaded!")
+            log.debug("[decrypt] no RSA private key loaded!")
 
         return None, None
 
@@ -313,7 +313,7 @@ class HttpsListener(BaseListener):
                                    request: web.Request) -> web.Response:
         """Handle ECDH key exchange initialization."""
         if len(body) < 65:
-            log.warning(f"Key exchange body too short from {agent_id}")
+            log.debug(f"Key exchange body too short from {agent_id}")
             return await self._handle_decoy(request)
 
         agent_pub_bytes = body[:65]
