@@ -78,6 +78,9 @@ class ShellCompleter(Completer):
         self.module_registry = module_registry
         self.session_manager = session_manager
         self.context = "main"  # "main" or "agent"
+        # Cached remote directory entries from last ls output
+        # list of (name, is_dir) tuples
+        self.remote_entries: list[tuple[str, bool]] = []
 
     def get_completions(self, document: Document, complete_event):
         text = document.text_before_cursor
@@ -148,6 +151,17 @@ class ShellCompleter(Completer):
                 if sub.startswith(prefix):
                     yield Completion(sub, start_position=-len(prefix),
                                     display_meta=desc)
+
+        elif word_count == 2 and words[0] in ("cd", "ls", "cat"):
+            # Complete remote paths from cached ls entries
+            for name, is_dir in self.remote_entries:
+                if name.startswith(prefix):
+                    meta = "dir" if is_dir else "file"
+                    # For cd, only show directories
+                    if words[0] == "cd" and not is_dir:
+                        continue
+                    yield Completion(name, start_position=-len(prefix),
+                                    display_meta=meta)
 
         elif word_count >= 2:
             # Complete module arguments

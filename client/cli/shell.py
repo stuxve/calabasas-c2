@@ -688,6 +688,20 @@ class OperatorShell:
             _print(f"\n  {text}")
             return
 
+        # Handle ls — cache entries for tab completion
+        if task.module_name == "ls" and task.status.name == "COMPLETE":
+            text = task.result.raw.decode("utf-8", errors="replace").strip()
+            entries = []
+            for line in text.splitlines():
+                if line.startswith("Directory listing for:") or not line.strip():
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 4:
+                    name = parts[3]
+                    is_dir = parts[0].startswith("d")
+                    entries.append((name, is_dir))
+            self._completer.remote_entries = entries
+
         # Handle download — save file to disk
         if task.module_name == "download" and task.status.name == "COMPLETE":
             data = task.result.raw
