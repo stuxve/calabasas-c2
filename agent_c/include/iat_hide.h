@@ -80,7 +80,11 @@ BOOL iat_hide_init(void);
  *  now transparently goes through the PEB-resolved pointer.
  *
  *  This MUST come after <windows.h> has declared the originals.
+ *  Skipped when IAT_HIDE_IMPL is defined (i.e. inside iat_hide.c itself,
+ *  which needs the real Win32 names to define the globals).
  * ═══════════════════════════════════════════════════════════════════ */
+
+#ifndef IAT_HIDE_IMPL
 
 /* Undefine any existing macros from windows.h (MSVC compat) */
 #ifdef LoadLibraryA
@@ -115,5 +119,7 @@ BOOL iat_hide_init(void);
 #define CreateRemoteThread g_pCreateRemoteThread
 #define CreateProcessW     g_pCreateProcessW
 #define GetCurrentProcess  g_pGetCurrentProcess
+
+#endif /* !IAT_HIDE_IMPL */
 
 #endif /* IAT_HIDE_H */

