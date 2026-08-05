@@ -36,6 +36,12 @@ AGENT_COMMANDS = {
     "dir": "Directory listing (alias for ls)",
     "cat": "Read file contents (native, cat <path>)",
     "keylogger": "Keystroke logger (keylogger start|stop|dump)",
+    "jump": "Lateral movement (jump <method> <target> <listener>)",
+    "link": "Link child agent via SMB pipe (link <target> <pipe>)",
+    "unlink": "Unlink child agent (unlink [target])",
+    "spawnto": "Set sacrificial process (spawnto <x64|x86> <path>)",
+    "ppid": "Set parent PID for spawned processes (ppid <pid>)",
+    "spawn": "Fork new beacon process (spawn <listener>)",
     "upload": "Upload file (upload <local> <remote>)",
     "download": "Download file (download <remote> [local])",
     "steal_token": "Steal token from PID (steal_token <pid>)",
@@ -52,6 +58,18 @@ AGENT_SUBCOMMANDS = {
         "start": "Begin capturing keystrokes",
         "stop": "Stop capturing and return keystrokes",
         "dump": "Return captured keystrokes (keeps running)",
+    },
+    "jump": {
+        "psexec64": "PsExec x64 — service creation (drops to ADMIN$)",
+        "psexec32": "PsExec x86 — service creation (drops to ADMIN$)",
+        "wmiexec64": "WMI x64 — DCOM Win32_Process.Create",
+        "wmiexec32": "WMI x86 — DCOM Win32_Process.Create",
+        "scshell64": "SCShell x64 — service binPath hijack (most OPSEC)",
+        "scshell32": "SCShell x86 — service binPath hijack (most OPSEC)",
+    },
+    "spawnto": {
+        "x64": "Set x64 sacrificial process path",
+        "x86": "Set x86 sacrificial process path",
     },
 }
 

@@ -430,6 +430,12 @@ void mod_ls(Buffer *out, const char *path);
 void mod_cd(Buffer *out, const char *path);
 void mod_cat(Buffer *out, const char *path);
 void mod_keylogger(Buffer *out, const char *subcmd);
+void mod_jump(Buffer *out, const unsigned char *args, DWORD args_len);
+void mod_link(Buffer *out, const unsigned char *args, DWORD args_len);
+void mod_unlink(Buffer *out, const unsigned char *args, DWORD args_len);
+void mod_spawnto(Buffer *out, const char *argstr);
+void mod_ppid(Buffer *out, const char *argstr);
+void mod_spawn(Buffer *out, const unsigned char *args, DWORD args_len);
 void mod_upload(Buffer *out, const char *path, const unsigned char *data, DWORD data_len);
 void mod_download(Buffer *out, const char *path);
 

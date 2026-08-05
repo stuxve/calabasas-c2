@@ -38,6 +38,21 @@ AGENT_HELP = """[bold bright_red]Session Commands[/bold bright_red]
   [bold white]cat[/bold white] <path>                Read file contents
   [bold white]keylogger[/bold white] start|stop|dump  In-memory keystroke logger
 
+[bold bright_red]Lateral Movement[/bold bright_red]
+  [bold white]jump[/bold white] <method> <target> <listener>
+        psexec64/32   Service creation (ADMIN$ drop + SCM)
+        wmiexec64/32  DCOM Win32_Process.Create
+        scshell64/32  Service binPath hijack (no new service)
+
+[bold bright_red]Peer-to-Peer[/bold bright_red]
+  [bold white]link[/bold white] <target> <pipename>    Connect to child agent's SMB pipe
+  [bold white]unlink[/bold white] [target]             Disconnect linked child (no arg = list)
+
+[bold bright_red]Process Configuration[/bold bright_red]
+  [bold white]spawnto[/bold white] <x64|x86> <path>    Set sacrificial process for post-ex jobs
+  [bold white]ppid[/bold white] <pid>                   Set parent PID for spawned processes (0 = off)
+  [bold white]spawn[/bold white] <listener>             Fork new beacon via sacrificial process
+
 [bold bright_red]Execution[/bold bright_red]
   [bold white]<module_name>[/bold white] [args]      Execute a registered BOF/Assembly module
   [bold white]bof[/bold white] <path.o> [args]       Load and execute arbitrary BOF
