@@ -453,9 +453,20 @@ class OperatorShell:
             console.print(f"[green]Task queued: cd {cd_path}[/green]")
             return
 
-        # Aliases — map to canonical native module name
+        # dir — sends "ls" to agent, formatted as CMD dir output
         if cmd == "dir":
-            cmd = "ls"
+            dir_path = " ".join(args) if args else ""
+            task = self.task_manager.create_task(
+                agent, TaskType.NATIVE, "ls",
+                arguments=dir_path.encode() if dir_path else b"",
+            )
+            task._display_cmd = "dir"
+            self.logger.log_command(
+                agent.agent_id, agent.hostname, agent.username,
+                "dir", {"args": dir_path},
+            )
+            console.print(f"[green]Task queued: dir {dir_path}[/green]")
+            return
 
         # Native agent modules (built into agent binary, no module.yaml)
         native_modules = {
@@ -685,10 +696,12 @@ class OperatorShell:
             prefix = "Changed working directory to "
             if text.startswith(prefix):
                 session.cwd = text[len(prefix):]
+                self._completer.remote_entries = []  # stale after cd
             elif text.startswith("Current working directory: "):
                 session.cwd = text[len("Current working directory: "):]
             elif not text.startswith("there was an error"):
                 session.cwd = text
+                self._completer.remote_entries = []
             _print(f"\n  {text}")
             return
 
@@ -750,7 +763,8 @@ class OperatorShell:
                 _print(task.result.raw.decode("utf-8", errors="replace"))
         else:
             text = task.result.raw.decode("utf-8", errors="replace")
-            formatter = _NATIVE_FORMATTERS.get(task.module_name)
+            display_cmd = getattr(task, '_display_cmd', task.module_name)
+            formatter = _NATIVE_FORMATTERS.get(display_cmd)
             if formatter:
                 formatter(text)
             else:
@@ -849,6 +863,58 @@ def _fmt_ls(text: str):
     _print("")
 
 
+def _fmt_dir(text: str):
+    """Format ls output as Windows CMD dir style."""
+    lines = text.strip().splitlines()
+    if not lines:
+        _print("  Empty directory.")
+        return
+
+    dir_path = ""
+    file_count = 0
+    dir_count = 0
+    total_bytes = 0
+
+    _print("")
+    for line in lines:
+        if line.startswith("Directory listing for:"):
+            dir_path = line[len("Directory listing for:"):].strip()
+            _print(f" Directory of {dir_path}")
+            _print("")
+            continue
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 4:
+            perms, modified, size_str, name = parts[0], parts[1], parts[2], parts[3]
+            is_dir = perms.startswith("d")
+            # Convert modified "2025-07-15 10:30:45" → "07/15/2025  10:30 AM"
+            dt_display = modified
+            try:
+                from datetime import datetime as _dt
+                dt = _dt.strptime(modified, "%Y-%m-%d %H:%M:%S")
+                dt_display = dt.strftime("%m/%d/%Y  %I:%M %p")
+            except Exception:
+                pass
+            if is_dir:
+                dir_count += 1
+                _print(f"{dt_display}    <DIR>          {name}")
+            else:
+                file_count += 1
+                try:
+                    sz = int(size_str)
+                except ValueError:
+                    sz = 0
+                total_bytes += sz
+                _print(f"{dt_display}    {sz:>14,} {name}")
+        else:
+            _print(f"  {line}")
+
+    _print(f"               {file_count} File(s)  {total_bytes:>14,} bytes")
+    _print(f"               {dir_count} Dir(s)")
+    _print("")
+
+
 def _fmt_keylogger(text: str):
     """Print keylogger output."""
     _print("")
@@ -862,5 +928,6 @@ _NATIVE_FORMATTERS = {
     "whoami": _fmt_whoami,
     "ps": _fmt_ps,
     "ls": _fmt_ls,
+    "dir": _fmt_dir,
     "keylogger": _fmt_keylogger,
 }
