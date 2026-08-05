@@ -12,7 +12,9 @@ void buf_init(Buffer *b, DWORD initial_cap) {
 }
 
 void buf_append(Buffer *b, const void *data, DWORD len) {
+    if (len == 0) return;
     if (b->len + len > b->cap) {
+        if (b->cap == 0) b->cap = 256;
         while (b->len + len > b->cap) b->cap *= 2;
         b->data = (unsigned char *)realloc(b->data, b->cap);
     }
