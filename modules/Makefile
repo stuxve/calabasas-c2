@@ -30,7 +30,7 @@ INCLUDES = -I../shared/include
 # ─── Module definitions ───
 # Format: MODULE_NAME = category/name
 ENUM_MODULES = enumdomainusers enumdomaingroups enumspns ldapsearch
-CRED_MODULES = kerberoast asreproast dcsync dumplsass extracttickets ptt overpassthehash
+CRED_MODULES = kerberoast asreproast dcsync dumplsass extracttickets ptt overpassthehash hashdump
 LATERAL_MODULES = wmiexec smbexec psexec scshell
 EVASION_MODULES = patchamsi patchetw unhookntdll blockdlls ppidspoof timestomp
 
@@ -121,6 +121,13 @@ overpassthehash:
 		-o credentials/overpassthehash/bin/overpassthehash.$(ARCH).o \
 		credentials/overpassthehash/src/overpassthehash.c
 	@echo "  [+] overpassthehash.$(ARCH).o"
+
+hashdump:
+	@mkdir -p credentials/hashdump/bin
+	$(CC) $(CFLAGS) $(INCLUDES) \
+		-o credentials/hashdump/bin/hashdump.$(ARCH).o \
+		credentials/hashdump/src/hashdump.c
+	@echo "  [+] hashdump.$(ARCH).o"
 
 # ─── Lateral movement modules ───
 
