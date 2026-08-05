@@ -28,6 +28,7 @@ AGENT_COMMANDS = {
     "tasks": "Show pending/active/completed task queue",
     "back": "Return to main context",
     "exit": "Kill agent (asks confirmation)",
+    "systeminfo": "System info: hostname, IP, OS, user, domain (native)",
     "whoami": "Current user, privileges, groups (native)",
     "ps": "List running processes (native)",
     "cd": "Change working directory (native, cd <path>)",

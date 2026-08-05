@@ -455,6 +455,7 @@ class OperatorShell:
 
         # Native agent modules (built into agent binary, no module.yaml)
         native_modules = {
+            "systeminfo": {"desc": "System info (hostname, IP, OS, user, domain)", "args": False},
             "whoami": {"desc": "Current user, privileges, groups", "args": False},
             "ps": {"desc": "List running processes", "args": False},
             "ls": {"desc": "Directory listing", "args": True},
@@ -764,6 +765,18 @@ def _print_table(columns: list, rows: list):
         _print(f"  {line}")
 
 
+def _fmt_systeminfo(text: str):
+    """Print systeminfo output — key: value pairs, one per line."""
+    _print("")
+    for line in text.strip().splitlines():
+        if ":" in line:
+            key, _, val = line.partition(":")
+            _print(f"  [bold white]{key}:[/bold white]{val}")
+        else:
+            _print(f"  {line}")
+    _print("")
+
+
 def _fmt_whoami(text: str):
     """Print whoami output as-is — the agent already formats it like whoami /all."""
     _print("")
@@ -818,6 +831,7 @@ def _fmt_ls(text: str):
 
 
 _NATIVE_FORMATTERS = {
+    "systeminfo": _fmt_systeminfo,
     "whoami": _fmt_whoami,
     "ps": _fmt_ps,
     "ls": _fmt_ls,

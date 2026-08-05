@@ -29,6 +29,7 @@ AGENT_HELP = """[bold bright_red]Session Commands[/bold bright_red]
   [bold white]exit[/bold white]                      Kill agent process (asks confirmation)
 
 [bold bright_red]Native Modules[/bold bright_red] [bright_black](built into agent, no child process)[/bright_black]
+  [bold white]systeminfo[/bold white]                Hostname, IP, OS, user, domain, path, version
   [bold white]whoami[/bold white]                    Current user, privileges, group membership
   [bold white]ps[/bold white]                        List running processes
   [bold white]cd[/bold white] [path]                 Change working directory

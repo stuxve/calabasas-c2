@@ -423,6 +423,7 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
                     unsigned char **result, DWORD *result_len);
 
 /* Module implementations */
+void mod_systeminfo(Buffer *out);
 void mod_whoami(Buffer *out);
 void mod_ps(Buffer *out);
 void mod_ls(Buffer *out, const char *path);

