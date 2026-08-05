@@ -111,16 +111,16 @@ class OperatorShell:
         elif agent.integrity == "HIGH":
             int_style = "fg:ansired bold"
 
-        # PID@PPID label
+        # [IP@PID] label
+        ip_str = agent.external_ip or "?"
         pid_str = str(agent.pid) if agent.pid else "?"
-        ppid_str = str(agent.ppid) if agent.ppid else "?"
 
         return FormattedText([
             ("fg:ansired bold", "caraxes"),
             ("fg:ansibrightblack", " ["),
-            ("fg:ansibrightgreen", f"{pid_str}"),
+            ("fg:ansibrightgreen", f"{ip_str}"),
             ("fg:ansibrightblack", "@"),
-            ("fg:ansibrightgreen", f"{ppid_str}"),
+            ("fg:ansibrightgreen", f"{pid_str}"),
             ("fg:ansibrightblack", "] "),
             ("fg:ansibrightblack", "("),
             ("fg:ansiwhite bold", f"{agent.hostname}"),
@@ -187,7 +187,9 @@ class OperatorShell:
 
     async def _handle_main(self, text: str):
         """Handle commands in main context."""
-        parts = shlex.split(text)
+        parts = shlex.split(text, posix=False)
+        # Strip surrounding quotes that posix=False preserves
+        parts = [p.strip('"').strip("'") for p in parts]
         cmd = parts[0].lower()
         args = parts[1:]
 
@@ -264,7 +266,9 @@ class OperatorShell:
 
     async def _handle_agent(self, text: str):
         """Handle commands in agent context."""
-        parts = shlex.split(text)
+        parts = shlex.split(text, posix=False)
+        # Strip surrounding quotes that posix=False preserves
+        parts = [p.strip('"').strip("'") for p in parts]
         cmd = parts[0].lower()
         args = parts[1:]
         agent = self._current_agent
@@ -750,6 +754,7 @@ class OperatorShell:
             f"Display ID:    {agent.display_id}",
             f"Hostname:      {agent.hostname}",
             f"Username:      {agent.username}",
+            f"External IP:   {agent.external_ip or '-'}",
             f"PID:           {agent.pid}",
             f"PPID:          {agent.ppid}",
             f"Process:       {agent.process_name}",
@@ -850,6 +855,7 @@ class OperatorShell:
             _print(
                 f"\n[*] Session #{session.display_id} opened -> "
                 f"{session.hostname} ({session.username}) "
+                f"- {session.external_ip or '?'} "
                 f"- {session.os_version} - {session.arch} "
                 f"[{session.integrity}] PID:{session.pid}"
             )

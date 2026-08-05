@@ -46,6 +46,7 @@ class Task:
 @dataclass
 class AgentSession:
     agent_id: str
+    external_ip: str = ""
     hostname: str = ""
     username: str = ""
     pid: int = 0

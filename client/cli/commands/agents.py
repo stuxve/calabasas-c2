@@ -29,6 +29,7 @@ def cmd_agents(session_manager: SessionManager):
     table.add_column("ID", style="bold white", justify="right")
     table.add_column("Hostname", style="bold white")
     table.add_column("User", style="bright_yellow")
+    table.add_column("IP", style="bright_green")
     table.add_column("PID", style="white", justify="right")
     table.add_column("Arch", style="white")
     table.add_column("Integrity", min_width=8)
@@ -49,6 +50,7 @@ def cmd_agents(session_manager: SessionManager):
             str(s.display_id),
             s.hostname or "???",
             s.username or "???",
+            s.external_ip or "-",
             str(s.pid),
             s.arch,
             int_str,

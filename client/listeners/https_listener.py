@@ -340,12 +340,13 @@ class HttpsListener(BaseListener):
 
         session.encryption_key = session_key
         session.peer_public_key = agent_pub_bytes
+        session.external_ip = request.remote or ""
         session.nonce_manager = nonce.NonceManager(
             agent_id_prefix=agent_id_bytes[:4], is_server=True
         )
         session.update_last_seen()
 
-        log.info(f"[+] Key exchange completed with agent {agent_id[:8]}")
+        log.info(f"[+] Key exchange completed with agent {agent_id[:8]} from {request.remote}")
 
         # Build response with server public key.
         # The server_pub is sent in CLEARTEXT before the encrypted portion
@@ -370,6 +371,7 @@ class HttpsListener(BaseListener):
 
         # Update session metadata from TLVs
         self._update_session_from_checkin(session, body)
+        session.external_ip = request.remote or session.external_ip
         session.update_last_seen()
 
         # Check if this is a new agent (first real check-in after key exchange)
