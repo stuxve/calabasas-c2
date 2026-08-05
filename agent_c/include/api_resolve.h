@@ -85,6 +85,7 @@ DWORD api_hash(const char *str);
 #define HASH_HeapFree               0x374893C5
 #define HASH_HeapReAlloc            0x1E31C125
 #define HASH_Sleep                  0x0E19E5FE
+#define HASH_GetCurrentProcess      0xCA8D7527
 #define HASH_GetTickCount64         0x614DB023
 #define HASH_QueryPerformanceCounter 0xDB4E150D
 

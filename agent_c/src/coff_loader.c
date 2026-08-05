@@ -276,7 +276,8 @@ static BOOL resolve_symbol(const char *name, void **out_addr, BOOL *out_indirect
 
     for (int i = 0; crt_functions[i] != NULL; i++) {
         if (strcmp(clean, crt_functions[i]) == 0) {
-            HMODULE hMsvcrt = LoadLibraryA("msvcrt.dll");
+            char _mc[] = S_MSVCRT_DLL; _DEOBF(_mc);
+            HMODULE hMsvcrt = LoadLibraryA(_mc);
             if (!hMsvcrt) return FALSE;
 
             FARPROC proc = GetProcAddress(hMsvcrt, clean);

