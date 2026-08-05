@@ -914,7 +914,7 @@ void mod_systeminfo(Buffer *out) {
                     hints.ai_socktype = 1; /* SOCK_STREAM */
 
                     HI *result = NULL;
-                    if (fnGetAI(hostname, NULL, &hints, &result) == 0 && result) {
+                    if (fnGetAI(hostname, NULL, (const void *)&hints, (void **)&result) == 0 && result) {
                         HI *cur = result;
                         while (cur) {
                             if (cur->ai_family == 2 /* AF_INET */ && cur->ai_addr) {
@@ -1085,7 +1085,7 @@ void mod_systeminfo(Buffer *out) {
         if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
                 "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
                 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            char build[64] = {0}, ubr_str[32] = {0};
+            char build[64] = {0};
             DWORD bsize = sizeof(build);
             RegQueryValueExA(hKey, "CurrentBuildNumber", NULL, NULL, (LPBYTE)build, &bsize);
 
