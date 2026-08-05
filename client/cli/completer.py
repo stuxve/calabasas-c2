@@ -100,6 +100,8 @@ class ShellCompleter(Completer):
         # Cached remote directory entries from last ls output
         # list of (name, is_dir) tuples
         self.remote_entries: list[tuple[str, bool]] = []
+        # Reference to listeners dict (set by shell after init)
+        self.listeners: dict = {}
 
     def get_completions(self, document: Document, complete_event):
         text = document.text_before_cursor
@@ -171,6 +173,14 @@ class ShellCompleter(Completer):
                     yield Completion(sub, start_position=-len(prefix),
                                     display_meta=desc)
 
+        elif word_count == 2 and words[0] == "spawn":
+            # Complete listener names
+            yield from self._complete_listeners(prefix)
+
+        elif word_count == 4 and words[0] == "jump":
+            # jump <method> <target> <listener>
+            yield from self._complete_listeners(prefix)
+
         elif word_count == 2 and words[0] in ("cd", "ls", "dir", "cat"):
             # Complete remote paths from cached ls entries
             for name, is_dir in self.remote_entries:
@@ -199,3 +209,19 @@ class ShellCompleter(Completer):
                                 flag, start_position=-len(prefix),
                                 display_meta=meta,
                             )
+
+    def _complete_listeners(self, prefix):
+        """Yield completions for listener names/types/IDs."""
+        seen = set()
+        for lid, lst in self.listeners.items():
+            info = lst.info()
+            name = info.get("name", "")
+            ltype = info.get("type", "")
+            lid_str = str(info["id"])
+            status = info.get("status", "")
+            meta = f"{ltype} ({status})"
+            for candidate in (name, ltype, lid_str):
+                if candidate and candidate not in seen and candidate.lower().startswith(prefix.lower()):
+                    seen.add(candidate)
+                    yield Completion(candidate, start_position=-len(prefix),
+                                    display_meta=meta)

@@ -150,8 +150,9 @@ class DnsListener(BaseListener):
         logger: OperatorLogger = None,
         rsa_private_key_path: Optional[str] = None,
         magic: int = DEFAULT_MAGIC,
+        name: str = "",
     ):
-        super().__init__(listener_id, "DNS")
+        super().__init__(listener_id, "DNS", name=name or "DNS")
         self.c2_domain = c2_domain.lower().rstrip(".")
         self.host = host
         self.port = port
@@ -197,6 +198,7 @@ class DnsListener(BaseListener):
     def info(self) -> dict:
         return {
             "id": self.listener_id,
+            "name": self.name,
             "type": self.listener_type,
             "interface": self.host,
             "port": self.port,

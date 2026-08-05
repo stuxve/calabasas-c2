@@ -24,6 +24,7 @@ def cmd_listeners_list(listeners: dict):
         padding=(0, 1),
     )
     table.add_column("ID", style="bold white", justify="right")
+    table.add_column("Name", style="bold cyan")
     table.add_column("Type", style="white")
     table.add_column("Interface", style="white")
     table.add_column("Port/Pipe", style="white")
@@ -40,6 +41,7 @@ def cmd_listeners_list(listeners: dict):
 
         table.add_row(
             str(info["id"]),
+            info.get("name", "-"),
             info["type"],
             info.get("interface", "-"),
             str(info.get("port", "-")),

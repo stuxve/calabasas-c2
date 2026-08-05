@@ -132,8 +132,9 @@ class SmbListener(BaseListener):
         host: str = "0.0.0.0",
         rsa_private_key_path: Optional[Path] = None,
         magic: int = DEFAULT_MAGIC,
+        name: str = "",
     ):
-        super().__init__(listener_id, "SMB")
+        super().__init__(listener_id, "SMB", name=name or "SMB")
         self.pipe_name = pipe_name
         self.host = host
         self.session_manager = session_manager
@@ -211,6 +212,7 @@ class SmbListener(BaseListener):
     def info(self) -> dict:
         return {
             "id": self.listener_id,
+            "name": self.name,
             "type": self.listener_type,
             "interface": self.host,
             "port": f"pipe:{self.pipe_name}",

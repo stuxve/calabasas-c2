@@ -88,6 +88,7 @@ class OperatorShell:
 
     def register_listener(self, listener: BaseListener):
         self._listeners[listener.listener_id] = listener
+        self._completer.listeners = self._listeners
 
     def _get_prompt(self) -> FormattedText:
         if self._context == "main":
@@ -110,9 +111,18 @@ class OperatorShell:
         elif agent.integrity == "HIGH":
             int_style = "fg:ansired bold"
 
+        # PID@PPID label
+        pid_str = str(agent.pid) if agent.pid else "?"
+        ppid_str = str(agent.ppid) if agent.ppid else "?"
+
         return FormattedText([
             ("fg:ansired bold", "caraxes"),
-            ("fg:ansibrightblack", " ("),
+            ("fg:ansibrightblack", " ["),
+            ("fg:ansibrightgreen", f"{pid_str}"),
+            ("fg:ansibrightblack", "@"),
+            ("fg:ansibrightgreen", f"{ppid_str}"),
+            ("fg:ansibrightblack", "] "),
+            ("fg:ansibrightblack", "("),
             ("fg:ansiwhite bold", f"{agent.hostname}"),
             ("fg:ansibrightblack", ") "),
             ("fg:ansibrightyellow", f"{agent.username}"),
@@ -520,11 +530,12 @@ class OperatorShell:
 
             listener_name = args[0]
 
-            # Validate listener
+            # Validate listener (match by name, type, or ID)
             found_listener = None
             for lid, lst in self._listeners.items():
                 info = lst.info()
-                if (info["type"].upper() == listener_name.upper()
+                if (info.get("name", "").upper() == listener_name.upper()
+                        or info["type"].upper() == listener_name.upper()
                         or str(info["id"]) == listener_name):
                     found_listener = lst
                     break
@@ -593,12 +604,12 @@ class OperatorShell:
 
             method_id, arch = JUMP_METHODS[method_str]
 
-            # Validate listener exists and is running
+            # Validate listener exists and is running (match by name, type, or ID)
             found_listener = None
             for lid, lst in self._listeners.items():
                 info = lst.info()
-                # Match by type name (case-insensitive) or by listener ID
-                if (info["type"].upper() == listener_name.upper()
+                if (info.get("name", "").upper() == listener_name.upper()
+                        or info["type"].upper() == listener_name.upper()
                         or str(info["id"]) == listener_name):
                     found_listener = lst
                     break

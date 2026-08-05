@@ -48,8 +48,10 @@ class HttpsListener(BaseListener):
         cert_path: Optional[Path] = None,
         key_path: Optional[Path] = None,
         magic: int = DEFAULT_MAGIC,
+        name: str = "",
     ):
-        super().__init__(listener_id, "HTTPS" if cert_path else "HTTP")
+        ltype = "HTTPS" if cert_path else "HTTP"
+        super().__init__(listener_id, ltype, name=name or ltype)
         self.host = host
         self.port = port
         self.session_manager = session_manager
@@ -127,6 +129,7 @@ class HttpsListener(BaseListener):
     def info(self) -> dict:
         return {
             "id": self.listener_id,
+            "name": self.name,
             "type": self.listener_type,
             "interface": self.host,
             "port": self.port,

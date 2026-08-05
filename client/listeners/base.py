@@ -9,9 +9,10 @@ from typing import Optional
 class BaseListener(ABC):
     """Abstract base for all C2 listeners."""
 
-    def __init__(self, listener_id: int, listener_type: str):
+    def __init__(self, listener_id: int, listener_type: str, name: str = ""):
         self.listener_id = listener_id
         self.listener_type = listener_type
+        self.name = name  # user-assigned alias (e.g. "HTTPS", "internal")
         self.running = False
 
     @abstractmethod
