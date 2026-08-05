@@ -457,9 +457,12 @@ END
                     debug=debug,
                 )
             finally:
-                # Always clean up the raw payload
+                # Keep raw payload as .raw.exe for spawn (reflective injection)
+                # The crypter is for on-disk evasion; spawn payloads never touch disk.
+                raw_path = output_path.with_suffix(".raw.exe")
                 if payload_path.exists():
-                    payload_path.unlink()
+                    payload_path.rename(raw_path)
+                    print(f"[*] Raw agent (spawn payload): {raw_path}")
 
     return output_path
 

