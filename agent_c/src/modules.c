@@ -2170,7 +2170,7 @@ void mod_spawn(Buffer *out, const unsigned char *args, DWORD args_len) {
     #define SPAWN_HEADER_SIZE 16
 
     /* Check that we have a real loader compiled */
-#if defined(REFLECTIVE_LOADER_READY) && REFLECTIVE_LOADER_READY == 0
+#if !defined(REFLECTIVE_LOADER_READY) || REFLECTIVE_LOADER_READY == 0
     BUF_STR(out, "[-] Reflective loader not compiled!\n");
     BUF_STR(out, "[-] Run: ./scripts/compile_loader.sh\n");
     return;

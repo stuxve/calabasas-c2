@@ -406,6 +406,7 @@ END
         f"-I{build_dir / 'include'}",
         "-Wall", "-Os", "-s",
         "-fno-asynchronous-unwind-tables", "-fno-ident",
+        "-fno-omit-frame-pointer",
         "-fdata-sections", "-ffunction-sections",
         "-DWIN32_LEAN_AND_MEAN", "-D_WIN32_WINNT=0x0603",
         "-o", str(output_path),

