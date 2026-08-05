@@ -46,6 +46,14 @@ AGENT_COMMANDS = {
     "modules": "List or search modules",
 }
 
+AGENT_SUBCOMMANDS = {
+    "keylogger": {
+        "start": "Begin capturing keystrokes",
+        "stop": "Stop capturing and return keystrokes",
+        "dump": "Return captured keystrokes (keeps running)",
+    },
+}
+
 LISTENER_SUBCOMMANDS = {
     "list": "List all listeners",
     "start": "Start a new listener",
@@ -132,6 +140,14 @@ class ShellCompleter(Completer):
                         mod.name, start_position=-len(prefix),
                         display_meta=f"[{mod.category}] {mod.description[:40]}",
                     )
+
+        elif word_count == 2 and words[0] in AGENT_SUBCOMMANDS:
+            # Complete subcommands (e.g. keylogger start|stop|dump)
+            subs = AGENT_SUBCOMMANDS[words[0]]
+            for sub, desc in subs.items():
+                if sub.startswith(prefix):
+                    yield Completion(sub, start_position=-len(prefix),
+                                    display_meta=desc)
 
         elif word_count >= 2:
             # Complete module arguments
