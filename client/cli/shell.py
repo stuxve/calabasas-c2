@@ -460,6 +460,7 @@ class OperatorShell:
             "ps": {"desc": "List running processes", "args": False},
             "ls": {"desc": "Directory listing", "args": True},
             "cat": {"desc": "Read file contents", "args": True},
+            "keylogger": {"desc": "Start/stop keystroke logger", "args": True},
             "rev2self": {"desc": "Revert to process token", "args": False},
         }
         if cmd in native_modules:
@@ -675,12 +676,16 @@ class OperatorShell:
 
         # Handle cd specially — update agent CWD from result
         if task.module_name == "cd" and task.status.name == "COMPLETE":
-            new_cwd = task.result.raw.decode("utf-8", errors="replace").strip()
-            if new_cwd and not new_cwd.startswith("cd:"):
-                session.cwd = new_cwd
-                _print(f"\n{marker} {session.hostname}: {new_cwd}")
-            else:
-                _print(f"\n{marker} {session.hostname}: {new_cwd}")
+            text = task.result.raw.decode("utf-8", errors="replace").strip()
+            # Merlin format: "Changed working directory to <path>"
+            prefix = "Changed working directory to "
+            if text.startswith(prefix):
+                session.cwd = text[len(prefix):]
+            elif text.startswith("Current working directory: "):
+                session.cwd = text[len("Current working directory: "):]
+            elif not text.startswith("there was an error"):
+                session.cwd = text
+            _print(f"\n  {text}")
             return
 
         # Handle download — save file to disk
@@ -802,27 +807,35 @@ def _fmt_ps(text: str):
 
 
 def _fmt_ls(text: str):
-    """Format ls as clean aligned text."""
+    """Format ls output — Merlin-style: perms, modified, size, name."""
     lines = text.strip().splitlines()
     if not lines:
         _print("  Empty directory.")
         return
     _print("")
-    _print(f"  {'TYPE':<5}  {'MODIFIED':<20}  {'SIZE':>12}  NAME")
-    _print(f"  {'-----':<5}  {'--------------------':<20}  {'------------':>12}  {'----'}")
     for line in lines:
-        if line.startswith("TYPE") or line.startswith("──"):
+        # Header line: "Directory listing for: ..."
+        if line.startswith("Directory listing for:"):
+            _print(f"  {line}")
             continue
-        parts = line.split(None, 4)
-        if len(parts) >= 5:
-            ftype, date, time, size, name = parts
-            _print(f"  {ftype:<5}  {date + ' ' + time:<20}  {size:>12}  {name}")
+        # Blank lines
+        if not line.strip():
+            continue
+        # Data rows: perms\tmodified\tsize\tname
+        parts = line.split("\t")
+        if len(parts) >= 4:
+            perms, modified, size, name = parts[0], parts[1], parts[2], parts[3]
+            _print(f"  {perms:<10}  {modified:<19}  {size:>10}  {name}")
         else:
-            fields = line.split(None, 3)
-            if len(fields) >= 4:
-                _print(f"  {fields[0]:<5}  {fields[1]:<20}  {fields[2]:>12}  {fields[3]}")
-            elif fields:
-                _print(f"  {'':5}  {'':20}  {'':12}  {fields[0]}")
+            _print(f"  {line}")
+    _print("")
+
+
+def _fmt_keylogger(text: str):
+    """Print keylogger output."""
+    _print("")
+    for line in text.strip().splitlines():
+        _print(f"  {line}")
     _print("")
 
 
@@ -831,4 +844,5 @@ _NATIVE_FORMATTERS = {
     "whoami": _fmt_whoami,
     "ps": _fmt_ps,
     "ls": _fmt_ls,
+    "keylogger": _fmt_keylogger,
 }

