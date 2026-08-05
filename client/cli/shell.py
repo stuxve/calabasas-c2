@@ -317,17 +317,12 @@ class OperatorShell:
             return
 
         if cmd == "exit":
-            console.print("[bold red]Kill agent process? (y/N)[/bold red]")
-            confirm = await self._session.prompt_async(
-                FormattedText([("", "confirm> ")]),
-            )
-            if confirm.strip().lower() in ("y", "yes"):
-                self.task_manager.create_task(agent, TaskType.EXIT, "exit")
-                console.print("[red]Exit task queued.[/red]")
-                self._current_agent = None
-                self._context = "main"
-                self._completer.context = "main"
-                self._stop_prompt_refresh()
+            self.task_manager.create_task(agent, TaskType.EXIT, "exit")
+            console.print("[red]Exit task queued.[/red]")
+            self._current_agent = None
+            self._context = "main"
+            self._completer.context = "main"
+            self._stop_prompt_refresh()
             return
 
         if cmd == "steal_token":
@@ -352,15 +347,6 @@ class OperatorShell:
             return
 
         if cmd in ("shell", "powershell"):
-            console.print(
-                f"[bold red]WARNING: '{cmd}' spawns a child process. "
-                f"Detectable by EDR/AV. Continue? (y/N)[/bold red]"
-            )
-            confirm = await self._session.prompt_async(
-                FormattedText([("", "confirm> ")]),
-            )
-            if confirm.strip().lower() not in ("y", "yes"):
-                return
             shell_cmd = " ".join(args)
             self.task_manager.create_task(
                 agent, TaskType.NATIVE, cmd,
@@ -516,9 +502,7 @@ class OperatorShell:
                 i += 1
 
         def confirm_opsec(name, notes):
-            console.print(f"[bold red]OPSEC WARNING:[/bold red] {name} is HIGH risk.\n  {notes}")
-            resp = input("Continue? (y/N) ")
-            return resp.strip().lower() in ("y", "yes")
+            return True
 
         try:
             task = self.module_registry.dispatch(
