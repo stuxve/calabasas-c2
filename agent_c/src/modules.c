@@ -928,23 +928,7 @@ void mod_systeminfo(Buffer *out) {
                                     buf_append(out, line, (DWORD)strlen(line));
                                 }
                             }
-                            else if (cur->ai_family == 23 /* AF_INET6 */ && cur->ai_addr) {
-                                /* sockaddr_in6: family(2) + port(2) + flowinfo(4) + addr(16) */
-                                unsigned char *sa = (unsigned char *)cur->ai_addr;
-                                unsigned char *ip6 = sa + 8;
-                                /* Skip loopback ::1 */
-                                int is_loopback = 1;
-                                for (int k = 0; k < 15; k++)
-                                    if (ip6[k] != 0) { is_loopback = 0; break; }
-                                if (ip6[15] != 1) is_loopback = 0;
-                                if (!is_loopback) {
-                                    snprintf(line, sizeof(line),
-                                        "IP: %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x\n",
-                                        ip6[0],ip6[1],ip6[2],ip6[3],ip6[4],ip6[5],ip6[6],ip6[7],
-                                        ip6[8],ip6[9],ip6[10],ip6[11],ip6[12],ip6[13],ip6[14],ip6[15]);
-                                    buf_append(out, line, (DWORD)strlen(line));
-                                }
-                            }
+                            /* IPv6 skipped — only report IPv4 */
                             cur = cur->ai_next;
                         }
                         fnFreeAI(result);
@@ -960,17 +944,27 @@ void mod_systeminfo(Buffer *out) {
     {
         HKEY hKey;
         char product[256] = {0};
+        char buildstr[64] = {0};
         if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
                 "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
                 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
             DWORD psize = sizeof(product);
+            DWORD bsize = sizeof(buildstr);
             RegQueryValueExA(hKey, "ProductName", NULL, NULL, (LPBYTE)product, &psize);
+            RegQueryValueExA(hKey, "CurrentBuildNumber", NULL, NULL, (LPBYTE)buildstr, &bsize);
             RegCloseKey(hKey);
         }
-        if (product[0])
+        /* Win11 registry still says "Windows 10" — fix via build >= 22000 */
+        if (product[0]) {
+            int bnum = atoi(buildstr);
+            if (bnum >= 22000) {
+                char *p10 = strstr(product, "Windows 10");
+                if (p10) p10[9] = '1';  /* "Windows 10" → "Windows 11" */
+            }
             snprintf(line, sizeof(line), "OS: %s\n", product);
-        else
+        } else {
             snprintf(line, sizeof(line), "OS: Windows (unknown edition)\n");
+        }
         buf_append(out, line, (DWORD)strlen(line));
     }
 
@@ -1071,11 +1065,11 @@ void mod_systeminfo(Buffer *out) {
         }
     }
 
-    /* ── Path (CWD) ── */
+    /* ── Path (system directory) ── */
     {
-        char cwd[MAX_PATH] = {0};
-        GetCurrentDirectoryA(MAX_PATH, cwd);
-        snprintf(line, sizeof(line), "Path: %s\n", cwd);
+        char sysdir[MAX_PATH] = {0};
+        GetSystemDirectoryA(sysdir, MAX_PATH);
+        snprintf(line, sizeof(line), "Path: %s\n", sysdir);
         buf_append(out, line, (DWORD)strlen(line));
     }
 

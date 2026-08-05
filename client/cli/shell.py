@@ -769,11 +769,7 @@ def _fmt_systeminfo(text: str):
     """Print systeminfo output — key: value pairs, one per line."""
     _print("")
     for line in text.strip().splitlines():
-        if ":" in line:
-            key, _, val = line.partition(":")
-            _print(f"  [bold white]{key}:[/bold white]{val}")
-        else:
-            _print(f"  {line}")
+        _print(f"  {line}")
     _print("")
 
 
