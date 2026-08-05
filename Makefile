@@ -54,7 +54,10 @@ build-agent: ## Build C# agent binary (legacy)
 		--profile profiles/default.yaml \
 		--listener-url https://127.0.0.1:8443/api/v1
 
-build-agent-c: ## Cross-compile C agent via MinGW
+build-loader: ## Compile reflective PE loader to shellcode
+	bash scripts/compile_loader.sh
+
+build-agent-c: build-loader ## Cross-compile C agent via MinGW
 	$(PYTHON) scripts/build_agent_c.py \
 		--listener-url https://127.0.0.1:8443/api/v1 \
 		--profile profiles/default.yaml

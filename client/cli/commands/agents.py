@@ -31,6 +31,7 @@ def cmd_agents(session_manager: SessionManager):
     table.add_column("User", style="bright_yellow")
     table.add_column("IP", style="bright_green")
     table.add_column("PID", style="white", justify="right")
+    table.add_column("Process", style="dim white")
     table.add_column("Arch", style="white")
     table.add_column("Integrity", min_width=8)
     table.add_column("Channel", style="cyan")
@@ -52,6 +53,7 @@ def cmd_agents(session_manager: SessionManager):
             s.username or "???",
             s.external_ip or "-",
             str(s.pid),
+            s.process_name or "-",
             s.arch,
             int_str,
             s.c2_channel,

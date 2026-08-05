@@ -398,8 +398,9 @@ END
         if wr_result.returncode == 0:
             res_obj = res_obj_path
 
-    # Compile
-    src_files = list((build_dir / "src").glob("*.c"))
+    # Compile (exclude reflective_loader.c — it's compiled separately to shellcode)
+    src_files = [f for f in (build_dir / "src").glob("*.c")
+                 if f.name != "reflective_loader.c"]
     cmd = [
         cc,
         f"-I{build_dir / 'include'}",
