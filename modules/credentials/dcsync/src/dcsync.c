@@ -81,7 +81,7 @@ DECLSPEC_IMPORT char*  __cdecl MSVCRT$strncpy(char*, const char*, size_t);
 DECLSPEC_IMPORT size_t __cdecl MSVCRT$strlen(const char*);
 DECLSPEC_IMPORT void*  __cdecl MSVCRT$memcpy(void*, const void*, size_t);
 DECLSPEC_IMPORT int    __cdecl MSVCRT$memset(void*, int, size_t);
-DECLSPEC_IMPORT int    __cdecl MSVCRT$swprintf(wchar_t*, size_t, const wchar_t*, ...);
+DECLSPEC_IMPORT int    __cdecl MSVCRT$_snwprintf(wchar_t*, size_t, const wchar_t*, ...);
 DECLSPEC_IMPORT wchar_t* __cdecl MSVCRT$wcscpy(wchar_t*, const wchar_t*);
 DECLSPEC_IMPORT int    __cdecl MSVCRT$_wcsicmp(const wchar_t*, const wchar_t*);
 
@@ -261,7 +261,7 @@ void go(char *args, int args_len) {
                 wNetBios[j] -= 32;
         }
     }
-    MSVCRT$swprintf(nt4Name, 512, L"%s\\%s", wNetBios, wUser);
+    MSVCRT$_snwprintf(nt4Name, 512, L"%s\\%s", wNetBios, wUser);
 
     LPCWSTR names[1] = { nt4Name };
     DS_NAME_RESULTW *crackResult = NULL;

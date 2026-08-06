@@ -139,7 +139,7 @@ DECLSPEC_IMPORT void WINAPI OLEAUT32$SysFreeString(BSTR);
 DECLSPEC_IMPORT void WINAPI OLEAUT32$VariantInit(VARIANT*);
 DECLSPEC_IMPORT HRESULT WINAPI OLEAUT32$VariantClear(VARIANT*);
 
-DECLSPEC_IMPORT int __cdecl MSVCRT$swprintf(wchar_t*, size_t, const wchar_t*, ...);
+DECLSPEC_IMPORT int __cdecl MSVCRT$_snwprintf(wchar_t*, size_t, const wchar_t*, ...);
 
 void go(char *args, int args_len) {
     datap parser;
@@ -176,7 +176,7 @@ void go(char *args, int args_len) {
     wchar_t connStr[512];
     wchar_t wTarget[256];
     KERNEL32$MultiByteToWideChar(CP_UTF8, 0, target, -1, wTarget, 256);
-    MSVCRT$swprintf(connStr, 512, L"\\\\%s\\ROOT\\CIMV2", wTarget);
+    MSVCRT$_snwprintf(connStr, 512, L"\\\\%s\\ROOT\\CIMV2", wTarget);
 
     BSTR bstrConn = OLEAUT32$SysAllocString(connStr);
 
