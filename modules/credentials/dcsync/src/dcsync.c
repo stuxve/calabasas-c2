@@ -66,7 +66,7 @@ DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$RpcEpResolveBinding(
 DECLSPEC_IMPORT DWORD WINAPI NTDSAPI$DsBindW(LPCWSTR, LPCWSTR, HANDLE*);
 DECLSPEC_IMPORT DWORD WINAPI NTDSAPI$DsUnBindW(HANDLE*);
 DECLSPEC_IMPORT DWORD WINAPI NTDSAPI$DsCrackNamesW(
-    HANDLE, DWORD, DWORD, DWORD, DWORD, const LPCWSTR*, DWORD*, void**);
+    HANDLE, DWORD, DWORD, DWORD, DWORD, const LPCWSTR*, void**);
 DECLSPEC_IMPORT void  WINAPI NTDSAPI$DsFreeNameResultW(void*);
 
 DECLSPEC_IMPORT BOOL  WINAPI KERNEL32$GetComputerNameExW(int, LPWSTR, LPDWORD);
@@ -281,11 +281,10 @@ void go(char *args, int args_len) {
 
     LPCWSTR names[1] = { nt4Name };
     DS_NAME_RESULTW *crackResult = NULL;
-    DWORD crackOutVersion = 0;
 
     dwResult = NTDSAPI$DsCrackNamesW(hDs, DS_NAME_NO_FLAGS,
         DS_NT4_ACCOUNT_NAME, DS_FQDN_1779_NAME,
-        1, names, &crackOutVersion, (void**)&crackResult);
+        1, names, (void**)&crackResult);
 
     if (dwResult != 0 || !crackResult) {
         BeaconPrintf(CALLBACK_ERROR, "[!] DsCrackNames failed: %u\n", dwResult);
@@ -318,7 +317,7 @@ void go(char *args, int args_len) {
     DS_NAME_RESULTW *guidResult = NULL;
     dwResult = NTDSAPI$DsCrackNamesW(hDs, DS_NAME_NO_FLAGS,
         DS_NT4_ACCOUNT_NAME, DS_UNIQUE_ID_NAME,
-        1, names, &crackOutVersion, (void**)&guidResult);
+        1, names, (void**)&guidResult);
 
     if (dwResult == 0 && guidResult && guidResult->cItems > 0 && guidResult->rItems[0].status == 0) {
         char guidStr[128] = {0};
