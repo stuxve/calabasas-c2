@@ -593,7 +593,6 @@ BOOL evasion_init(void) {
 #endif
 
     ELOG("[evasion] complete OK\r\n");
-#endif
 
     return TRUE;
 }
