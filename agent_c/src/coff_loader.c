@@ -298,6 +298,78 @@ static BOOL resolve_symbol(const char *name, void **out_addr, BOOL *out_indirect
         }
     }
 
+    /* ─── Compiler runtime stubs ─── */
+    /* MinGW inserts calls to ___chkstk_ms when a function's stack frame
+     * exceeds 4KB. It probes each page so the OS commits stack memory.
+     * We provide a real implementation as executable shellcode.
+     *
+     * x64 ___chkstk_ms:
+     *   Input:  RAX = bytes to allocate
+     *   Output: RAX preserved, stack pages probed
+     *   Clobbers: flags only
+     */
+    if (strcmp(clean, "__chkstk_ms") == 0 ||
+        strcmp(clean, "___chkstk_ms") == 0 ||
+        strcmp(clean, "_chkstk_ms") == 0)
+    {
+        /*
+         * push rcx
+         * push rax
+         * cmp  rax, 0x1000
+         * lea  rcx, [rsp+0x18]
+         * jb   .last
+         * .loop:
+         * sub  rcx, 0x1000
+         * test [rcx], ecx
+         * sub  rax, 0x1000
+         * cmp  rax, 0x1000
+         * ja   .loop
+         * .last:
+         * sub  rcx, rax
+         * test [rcx], ecx
+         * pop  rax
+         * pop  rcx
+         * ret
+         */
+        static const unsigned char chkstk_code[] = {
+            0x51,                                       /* push rcx           */
+            0x50,                                       /* push rax           */
+            0x48, 0x3D, 0x00, 0x10, 0x00, 0x00,        /* cmp rax, 0x1000    */
+            0x48, 0x8D, 0x4C, 0x24, 0x18,              /* lea rcx,[rsp+0x18] */
+            0x72, 0x17,                                 /* jb .last (+23)     */
+            /* .loop: (offset 0x0F) */
+            0x48, 0x81, 0xE9, 0x00, 0x10, 0x00, 0x00,  /* sub rcx, 0x1000   */
+            0x85, 0x09,                                 /* test [rcx], ecx   */
+            0x48, 0x2D, 0x00, 0x10, 0x00, 0x00,        /* sub rax, 0x1000   */
+            0x48, 0x3D, 0x00, 0x10, 0x00, 0x00,        /* cmp rax, 0x1000   */
+            0x77, 0xE9,                                 /* ja .loop (-23)    */
+            /* .last: (offset 0x26) */
+            0x48, 0x29, 0xC1,                           /* sub rcx, rax      */
+            0x85, 0x09,                                 /* test [rcx], ecx   */
+            0x58,                                       /* pop rax           */
+            0x59,                                       /* pop rcx           */
+            0xC3                                        /* ret               */
+        };
+
+        /* Allocate RX memory for the stub (persists for BOF lifetime) */
+        static void *chkstk_stub = NULL;
+        if (!chkstk_stub) {
+            chkstk_stub = VirtualAlloc(NULL, sizeof(chkstk_code),
+                MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            if (chkstk_stub) {
+                memcpy(chkstk_stub, chkstk_code, sizeof(chkstk_code));
+                DWORD old;
+                VirtualProtect(chkstk_stub, sizeof(chkstk_code), PAGE_EXECUTE_READ, &old);
+            }
+        }
+        if (chkstk_stub) {
+            /* __chkstk_ms is called directly (not via __imp_), so never indirect */
+            *out_addr = chkstk_stub;
+            *out_indirect = FALSE;
+            return TRUE;
+        }
+    }
+
     return FALSE;
 }
 

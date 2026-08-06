@@ -22,7 +22,8 @@ CC = $(CC_$(ARCH))
 #   -fno-ident      = no compiler ident string
 #   -fpack-struct=8 = pack structs to 8-byte alignment (x64 ABI)
 CFLAGS = -c -Wall -Wextra -Os \
-         -fno-asynchronous-unwind-tables -fno-ident -fpack-struct=8
+         -fno-asynchronous-unwind-tables -fno-ident -fpack-struct=8 \
+         -mno-stack-arg-probe
 
 # Include path for beacon_compat.h
 INCLUDES = -I../shared/include
