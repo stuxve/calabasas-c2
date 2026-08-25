@@ -28,8 +28,8 @@ DECLSPEC_IMPORT char* __cdecl MSVCRT$strchr(const char *str, int c);
 #define CUR_BLOB_VERSION 2
 #endif
 
-// InterlockedCompareExchange — call via KERNEL32$ directly in code
-DECLSPEC_IMPORT LONG WINAPI KERNEL32$InterlockedCompareExchange(volatile LONG* Destination, LONG Exchange, LONG Comparand);
+// InterlockedCompareExchange is a compiler intrinsic in MinGW, NOT a real
+// kernel32 export. Use GCC __sync builtin which emits inline lock cmpxchg.
 
 // ============================================================================
 // Session Key Capture (RPC Security Callback)
@@ -40,7 +40,7 @@ static DWORD g_SessionKeyCopyLen = 0;
 static volatile LONG g_SessionKeyCapturing = 0;
 
 void RPC_ENTRY RpcSecurityCallback(void *Context) {
-    if (KERNEL32$InterlockedCompareExchange(&g_SessionKeyCapturing, 1, 0) != 0) {
+    if (__sync_val_compare_and_swap(&g_SessionKeyCapturing, 0, 1) != 0) {
         return;
     }
 
