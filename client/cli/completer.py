@@ -16,6 +16,7 @@ MAIN_COMMANDS = {
     "listeners": "Manage listeners (start/stop/list)",
     "modules": "List or search modules",
     "generate": "Generate an agent payload",
+    "bof-import": "Register an external BOF (.o + optional .cna/.yaml)",
     "help": "Show help",
     "exit": "Exit the operator client",
 }
@@ -149,6 +150,27 @@ class ShellCompleter(Completer):
                 if lt.startswith(prefix):
                     yield Completion(lt, start_position=-len(prefix),
                                     display_meta=desc)
+
+        elif words[0] == "bof-import":
+            # After the path, complete the flag names bof-import knows.
+            # We don't try to complete filesystem paths here — the shell
+            # doesn't wrap a filesystem completer for us — but flag
+            # completion after the first arg keeps the UX consistent
+            # with module argument completion in agent context.
+            flags = {
+                "--name": "Explicit module name (default: derived from filename)",
+                "--args": "Pack spec, e.g. 'z:host,i:port' or bare 'zzi'",
+                "--desc": "Human-readable description shown in modules list",
+                "--category": "Category for `modules list` grouping",
+            }
+            if word_count >= 3:
+                used = {w for w in words[1:] if w.startswith("--")}
+                for f, desc in flags.items():
+                    if f in used:
+                        continue
+                    if f.startswith(prefix) or not prefix:
+                        yield Completion(f, start_position=-len(prefix),
+                                         display_meta=desc)
 
     def _complete_agent(self, words, word_count, prefix):
         if word_count <= 1:

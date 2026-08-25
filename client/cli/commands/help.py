@@ -13,8 +13,20 @@ MAIN_HELP = """[bold bright_red]Global Commands[/bold bright_red]
   [bold white]listeners[/bold white] <sub>           Manage listeners (list|start|stop|kill)
   [bold white]modules[/bold white] [list|search]     Browse module registry
   [bold white]generate[/bold white]                  Generate agent payload
+  [bold white]bof-import[/bold white] <path.o>       Import an external BOF into the registry
   [bold white]help[/bold white]                      Show this help
   [bold white]exit[/bold white]                      Exit operator client
+
+[bold bright_red]bof-import[/bold bright_red] — ingest a BOF compiled for CobaltStrike / TrustedSec CS-SA /
+Havoc / any COFF framework. The .o (plus its .cna or module.yaml, if
+present) is copied under modules/external/<name>/ so it survives
+restart, and registered on-the-fly so the module appears in
+[dim]modules list[/dim], is tab-completable at the agent prompt, and gets
+a [dim]help <name>[/dim] panel auto-rendered from its argument list — no
+per-BOF wiring anywhere in the client.
+
+  bof-import ~/tools/situational-awareness/adcs_enum.x64.o
+  bof-import ~/foo/reg_query.x64.o --name reg_query --args 'z:hive,z:key'
 """
 
 AGENT_HELP = """[bold bright_red]Session Commands[/bold bright_red]

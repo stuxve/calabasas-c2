@@ -103,8 +103,10 @@ class ModuleRegistry:
 
     def __init__(self, modules_dir: Optional[Path] = None):
         self.modules: dict[str, ModuleDefinition] = {}
+        self.modules_dir: Optional[Path] = modules_dir
         if modules_dir and modules_dir.exists():
             self._discover(modules_dir)
+            self._discover_external(modules_dir / "external")
 
     def _discover(self, base: Path):
         for manifest_path in base.rglob("module.yaml"):
@@ -118,6 +120,44 @@ class ModuleRegistry:
                 log.debug(f"Loaded module: {mod.name} ({mod.execution_type})")
             except Exception as e:
                 log.warning(f"Skipping {manifest_path}: {e}")
+
+    def _discover_external(self, external_dir: Path):
+        """
+        Sweep modules/external/ for imported BOFs. Each subdirectory is
+        one external BOF; metadata comes from a sibling module.yaml,
+        manifest.json, or .cna file (in that priority order). See
+        external_bof.py for the parsing rules.
+
+        Modules found here go through the same self.register() path as
+        native modules, so the completer, `modules list`, and `help
+        <name>` panel all treat them identically — that is the whole
+        point of routing everything through this registry.
+        """
+        if not external_dir.exists():
+            return
+        # Local import to avoid a circular dependency at module load
+        from .external_bof import build_module_from_directory
+
+        for entry in sorted(external_dir.iterdir()):
+            if not entry.is_dir():
+                continue
+            try:
+                mod = build_module_from_directory(entry)
+                self.register(mod)
+                log.info(f"Loaded external BOF: {mod.name}")
+            except Exception as e:
+                log.warning(f"Skipping external BOF {entry.name}: {e}")
+
+    def register(self, mod: ModuleDefinition) -> None:
+        """
+        Insert or replace a module in the registry. Called by
+        _discover_external at startup AND by the runtime `bof-import`
+        command. Because the completer and help panel both read
+        self.modules directly, a registration here is immediately
+        visible in the shell — no reload step needed.
+        """
+        self._validate(mod)
+        self.modules[mod.name] = mod
 
     def _parse_manifest(self, raw: dict, base_path: Path) -> ModuleDefinition:
         compat_raw = raw.get("compatibility", {})

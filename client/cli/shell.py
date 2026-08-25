@@ -29,6 +29,7 @@ from .commands.listeners import cmd_listeners_list
 from .commands.modules import cmd_modules_list, cmd_modules_search, cmd_module_help
 from .commands.help import cmd_help
 from .commands.generate import cmd_generate
+from .commands.bof_import import cmd_bof_import
 
 from ..core.session_manager import SessionManager, AgentSession
 from ..core.task_manager import TaskManager
@@ -257,6 +258,14 @@ class OperatorShell:
             args_str = " ".join(args) if args else ""
             project_root = Path(__file__).parent.parent.parent
             cmd_generate(args_str, project_root, list(self._listeners.values()))
+
+        elif cmd == "bof-import":
+            # Register an external BOF into the module registry. Because
+            # the completer and help panel both read registry.modules,
+            # the imported command becomes tab-completable and
+            # help-documented on the next prompt with no reload step.
+            project_root = Path(__file__).parent.parent.parent
+            cmd_bof_import(self.module_registry, args, project_root)
 
         elif cmd == "exit":
             self._running = False
