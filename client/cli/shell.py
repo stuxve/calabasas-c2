@@ -40,6 +40,7 @@ from ..core.module_registry import (
 from ..core.events import event_bus, EventBus
 from ..formatters.table import OutputParser
 from ..listeners.base import BaseListener
+from ..listeners.smb_listener import SmbListener
 from ..logging.operator_logger import OperatorLogger
 from ..protocol.commands import TaskType
 
@@ -90,6 +91,87 @@ class OperatorShell:
     def register_listener(self, listener: BaseListener):
         self._listeners[listener.listener_id] = listener
         self._completer.listeners = self._listeners
+
+    def _next_listener_id(self) -> int:
+        return max(self._listeners.keys(), default=0) + 1
+
+    async def _cmd_listeners_start(self, args: list[str]):
+        """
+        Start a new listener.
+
+        Usage:
+          listeners start smb [--pipename <name>] [--host <ip>] [--name <alias>]
+          listeners start https [--host <ip>] [--port <port>] [--name <alias>]
+        """
+        if not args:
+            console.print(
+                "[red]Usage: listeners start <type> [options][/red]\n"
+                "[dim]  Types: smb, https\n"
+                "  Options:\n"
+                "    --pipename <name>   SMB pipe name (default: msagent_01)\n"
+                "    --host <ip>         Bind address (default: 0.0.0.0)\n"
+                "    --port <port>       Port for HTTPS (default: 443)\n"
+                "    --name <alias>      Listener display name[/dim]"
+            )
+            return
+
+        listener_type = args[0].lower()
+        # Parse --key value pairs from remaining args
+        opts = {}
+        i = 1
+        while i < len(args):
+            if args[i].startswith("--") and i + 1 < len(args):
+                opts[args[i][2:]] = args[i + 1]
+                i += 2
+            else:
+                i += 1
+
+        if listener_type == "smb":
+            pipe_name = opts.get("pipename", "msagent_01")
+            host = opts.get("host", "0.0.0.0")
+            name = opts.get("name", "SMB")
+            lid = self._next_listener_id()
+
+            # Find RSA key from existing listeners or default path
+            rsa_path = None
+            for existing in self._listeners.values():
+                if hasattr(existing, "_rsa_private_key") and existing._rsa_private_key:
+                    rsa_path = getattr(existing, "_rsa_private_key_path", None)
+                    break
+            if not rsa_path:
+                for candidate in [Path("keys/server_priv.pem"), Path("./keys/server_priv.pem")]:
+                    if candidate.exists():
+                        rsa_path = candidate
+                        break
+
+            listener = SmbListener(
+                listener_id=lid,
+                pipe_name=pipe_name,
+                session_manager=self.session_manager,
+                task_manager=self.task_manager,
+                logger=self.logger,
+                host=host,
+                rsa_private_key_path=rsa_path,
+                name=name,
+            )
+            try:
+                await listener.start()
+                self.register_listener(listener)
+                console.print(
+                    f"[green][+] SMB listener started[/green] "
+                    f"(ID: {lid}, pipe: {pipe_name}, host: {host})"
+                )
+            except Exception as e:
+                console.print(f"[red][-] Failed to start SMB listener: {e}[/red]")
+
+        elif listener_type == "https":
+            console.print(
+                "[dim]HTTPS listeners are configured at startup via CLI args.\n"
+                "  Use: python -m client.main --listen-port <port>[/dim]"
+            )
+        else:
+            console.print(f"[red]Unknown listener type: {listener_type}[/red]")
+            console.print("[dim]  Available types: smb, https[/dim]")
 
     def _get_prompt(self) -> FormattedText:
         if self._context == "main":
@@ -227,7 +309,7 @@ class OperatorShell:
             if not args or args[0] == "list":
                 cmd_listeners_list(self._listeners)
             elif args[0] == "start":
-                console.print("[dim]Listener start requires configuration.[/dim]")
+                await self._cmd_listeners_start(args[1:])
             elif args[0] in ("stop", "kill"):
                 if len(args) < 2:
                     console.print("[red]Usage: listeners stop <id>[/red]")
