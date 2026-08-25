@@ -154,13 +154,11 @@ class SmbListener(BaseListener):
         self._loop = asyncio.get_event_loop()
 
         # Create impacket SMB server
+        # IPC$ is created automatically by SimpleSMBServer
         self._server = smbserver.SimpleSMBServer(
             listenAddress=self.host,
             listenPort=445,
         )
-
-        # Configure share and pipe
-        self._server.addShare("IPC$", "")
 
         # Register named pipe callback
         listener_ref = self
