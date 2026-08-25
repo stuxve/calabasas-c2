@@ -62,6 +62,9 @@
 #define S_OpenServiceW {'O'^_XK,'p'^_XK,'e'^_XK,'n'^_XK,'S'^_XK,'e'^_XK,'r'^_XK,'v'^_XK,'i'^_XK,'c'^_XK,'e'^_XK,'W'^_XK,0}
 #define S_ChangeServiceConfigW {'C'^_XK,'h'^_XK,'a'^_XK,'n'^_XK,'g'^_XK,'e'^_XK,'S'^_XK,'e'^_XK,'r'^_XK,'v'^_XK,'i'^_XK,'c'^_XK,'e'^_XK,'C'^_XK,'o'^_XK,'n'^_XK,'f'^_XK,'i'^_XK,'g'^_XK,'W'^_XK,0}
 #define S_QueryServiceConfigW {'Q'^_XK,'u'^_XK,'e'^_XK,'r'^_XK,'y'^_XK,'S'^_XK,'e'^_XK,'r'^_XK,'v'^_XK,'i'^_XK,'c'^_XK,'e'^_XK,'C'^_XK,'o'^_XK,'n'^_XK,'f'^_XK,'i'^_XK,'g'^_XK,'W'^_XK,0}
+#define S_StartServiceCtrlDispatcherW {'S'^_XK,'t'^_XK,'a'^_XK,'r'^_XK,'t'^_XK,'S'^_XK,'e'^_XK,'r'^_XK,'v'^_XK,'i'^_XK,'c'^_XK,'e'^_XK,'C'^_XK,'t'^_XK,'r'^_XK,'l'^_XK,'D'^_XK,'i'^_XK,'s'^_XK,'p'^_XK,'a'^_XK,'t'^_XK,'c'^_XK,'h'^_XK,'e'^_XK,'r'^_XK,'W'^_XK,0}
+#define S_RegisterServiceCtrlHandlerW {'R'^_XK,'e'^_XK,'g'^_XK,'i'^_XK,'s'^_XK,'t'^_XK,'e'^_XK,'r'^_XK,'S'^_XK,'e'^_XK,'r'^_XK,'v'^_XK,'i'^_XK,'c'^_XK,'e'^_XK,'C'^_XK,'t'^_XK,'r'^_XK,'l'^_XK,'H'^_XK,'a'^_XK,'n'^_XK,'d'^_XK,'l'^_XK,'e'^_XK,'r'^_XK,'W'^_XK,0}
+#define S_SetServiceStatus_S {'S'^_XK,'e'^_XK,'t'^_XK,'S'^_XK,'e'^_XK,'r'^_XK,'v'^_XK,'i'^_XK,'c'^_XK,'e'^_XK,'S'^_XK,'t'^_XK,'a'^_XK,'t'^_XK,'u'^_XK,'s'^_XK,0}
 
 /* ═══════════════════════════════════════════════════════════════
  *  File / process API names (kernel32)
