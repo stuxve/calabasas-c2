@@ -104,14 +104,15 @@ DCSYNC_SRCS = $(DCSYNC_SRC)/dcsync.c \
               $(DCSYNC_SRC)/rpc_adapter.c \
               $(DCSYNC_SRC)/ms_drsr_stubs.c
 
-DCSYNC_OBJS = $(patsubst $(DCSYNC_SRC)/%.c,$(DCSYNC_BIN)/_%.$(ARCH).o,$(DCSYNC_SRCS))
+DCSYNC_OBJDIR = $(DCSYNC_BIN)/obj
+DCSYNC_OBJS = $(patsubst $(DCSYNC_SRC)/%.c,$(DCSYNC_OBJDIR)/%.$(ARCH).o,$(DCSYNC_SRCS))
 
 dcsync: $(DCSYNC_OBJS)
 	$(LD) -r -o $(DCSYNC_BIN)/dcsync.$(ARCH).o $(DCSYNC_OBJS)
 	@echo "  [+] dcsync.$(ARCH).o (linked from $(words $(DCSYNC_OBJS)) objects)"
 
-$(DCSYNC_BIN)/_%.$(ARCH).o: $(DCSYNC_SRC)/%.c
-	@mkdir -p $(DCSYNC_BIN)
+$(DCSYNC_OBJDIR)/%.$(ARCH).o: $(DCSYNC_SRC)/%.c
+	@mkdir -p $(DCSYNC_OBJDIR)
 	$(CC) $(CFLAGS) $(DCSYNC_INCLUDES) -o $@ $<
 
 dumplsass:
