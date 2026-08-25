@@ -131,6 +131,49 @@ static int ParseDataRuns(BYTE *data, int dataLen, DataRun *runs, int maxRuns)
     return count;
 }
 
+/* Apply NTFS Update Sequence Array (USA) fixup to an MFT record.
+ *
+ * NTFS protects multi-sector structures against torn writes by replacing
+ * the last 2 bytes of every sector with a check value.  The original
+ * bytes are saved in a small array (the USA) inside the record header.
+ *
+ * Without this fixup, any attribute data that happens to span bytes
+ * 510-511 or 1022-1023 of the MFT record will contain the check value
+ * instead of the real data — silently corrupting data run parsing and
+ * producing a broken file copy. */
+static BOOL ApplyUSAFixup(BYTE *record, DWORD recordSize, WORD sectorSize)
+{
+    /* Header offsets 4-5 = USA offset, 6-7 = USA size (in WORDs,
+     * including the check value itself). */
+    WORD usaOffset = (WORD)(record[4] | ((WORD)record[5] << 8));
+    WORD usaCount  = (WORD)(record[6] | ((WORD)record[7] << 8));
+
+    if (usaCount < 2)
+        return TRUE;   /* nothing to fix — shouldn't happen for FILE records */
+    if ((DWORD)usaOffset + (DWORD)usaCount * 2 > recordSize)
+        return FALSE;  /* USA extends past the record */
+
+    WORD checkVal = (WORD)(record[usaOffset] |
+                           ((WORD)record[usaOffset + 1] << 8));
+
+    for (WORD i = 1; i < usaCount; i++) {
+        DWORD pos = (DWORD)i * sectorSize - 2;   /* last 2 bytes of sector i */
+        if (pos + 2 > recordSize)
+            break;
+
+        /* Verify the check value was written at the sector boundary. */
+        WORD sectorVal = (WORD)(record[pos] | ((WORD)record[pos + 1] << 8));
+        if (sectorVal != checkVal)
+            return FALSE;   /* torn write or corrupt record */
+
+        /* Restore the original 2 bytes from the USA entry. */
+        DWORD usaIdx = usaOffset + (DWORD)i * 2;
+        record[pos]     = record[usaIdx];
+        record[pos + 1] = record[usaIdx + 1];
+    }
+    return TRUE;
+}
+
 /* Build the raw volume path L"\\.\<drive>:" for CreateFileW. */
 static void BuildVolumePath(char drive, wchar_t out[7])
 {
@@ -265,6 +308,10 @@ void go(char *args, int len)
         BeaconPrintf(CALLBACK_ERROR, "[-] Invalid $MFT signature");
         goto cleanup;
     }
+    if (!ApplyUSAFixup(mftSelf, MFT_RECORD_SIZE, bps)) {
+        BeaconPrintf(CALLBACK_ERROR, "[-] $MFT USA fixup failed (torn write?)");
+        goto cleanup;
+    }
     int mftRunCnt = 0;
     WORD mftAttrOff = (WORD)(mftSelf[20] | ((WORD)mftSelf[21] << 8));
     while (mftAttrOff + 4 < MFT_RECORD_SIZE) {
@@ -323,6 +370,10 @@ void go(char *args, int len)
     if (mftRec[0] != 'F' || mftRec[1] != 'I' ||
         mftRec[2] != 'L' || mftRec[3] != 'E') {
         BeaconPrintf(CALLBACK_ERROR, "[-] Invalid target MFT signature");
+        goto cleanup;
+    }
+    if (!ApplyUSAFixup(mftRec, MFT_RECORD_SIZE, bps)) {
+        BeaconPrintf(CALLBACK_ERROR, "[-] target MFT USA fixup failed (torn write?)");
         goto cleanup;
     }
 
