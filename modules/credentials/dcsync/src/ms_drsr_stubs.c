@@ -12,13 +12,8 @@
 #include <windows.h>
 #include "dcsync.h"
 
-// BOF compatibility
+// BOF compatibility — RPCRT4$NdrClientCall2 declared in dcsync.h
 #define NdrClientCall2 RPCRT4$NdrClientCall2
-
-DECLSPEC_IMPORT CLIENT_CALL_RETURN RPC_VAR_ENTRY RPCRT4$NdrClientCall2(
-    PMIDL_STUB_DESC pStubDescriptor,
-    PFORMAT_STRING pFormat,
-    ...);
 
 extern void* __RPC_USER MIDL_user_allocate(size_t);
 extern void __RPC_USER MIDL_user_free(void*);
@@ -52,7 +47,7 @@ static const MIDL_STUB_DESC drsuapi_StubDesc = {
     (void*)&drsuapi___RpcClientInterface,
     MIDL_user_allocate,
     MIDL_user_free,
-    &drsuapi__MIDL_AutoBindHandle,
+    {&drsuapi__MIDL_AutoBindHandle},
     0, 0, 0, 0,
     ms2Ddrsr__MIDL_TypeFormatString.Format,
     1, 0x60000, 0, 0x8000253, 0, 0, 0, 0x1, 0, 0, 0

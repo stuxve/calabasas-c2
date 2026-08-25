@@ -337,7 +337,7 @@ DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$I_RpcBindingInqSecurityContext(
     RPC_BINDING_HANDLE Binding, void** SecurityContextHandle);
 DECLSPEC_IMPORT RPC_STATUS RPC_ENTRY RPCRT4$UuidCreate(UUID* Uuid);
 DECLSPEC_IMPORT CLIENT_CALL_RETURN RPC_VAR_ENTRY RPCRT4$NdrClientCall2(
-    void* pStubDescriptor, void* pFormat, ...);
+    const MIDL_STUB_DESC* pStubDescriptor, const unsigned char* pFormat, ...);
 
 // ADVAPI32 Crypto
 DECLSPEC_IMPORT BOOL WINAPI ADVAPI32$CryptAcquireContextA(HCRYPTPROV* phProv, LPCSTR szContainer, LPCSTR szProvider, DWORD dwProvType, DWORD dwFlags);
