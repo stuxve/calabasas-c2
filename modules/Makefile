@@ -31,7 +31,7 @@ INCLUDES = -I../shared/include
 # ─── Module definitions ───
 # Format: MODULE_NAME = category/name
 ENUM_MODULES = enumdomainusers enumdomaingroups enumspns ldapsearch
-CRED_MODULES = kerberoast asreproast dcsync dumplsass extracttickets ptt overpassthehash hashdump
+CRED_MODULES = kerberoast asreproast dcsync dumplsass extracttickets ptt overpassthehash hashdump underlaycopy
 LATERAL_MODULES = wmiexec smbexec psexec scshell
 EVASION_MODULES = patchamsi patchetw unhookntdll blockdlls ppidspoof timestomp
 
@@ -229,3 +229,10 @@ validate:
 clean:
 	find . -name "*.o" -path "*/bin/*" -delete
 	@echo "[*] Cleaned BOF binaries"
+
+underlaycopy:
+	@mkdir -p credentials/underlaycopy/bin
+	$(CC) $(CFLAGS) $(INCLUDES) \
+		-o credentials/underlaycopy/bin/underlaycopy.$(ARCH).o \
+		credentials/underlaycopy/src/underlaycopy.c
+	@echo "  [+] underlaycopy.$(ARCH).o"
