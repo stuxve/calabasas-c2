@@ -341,8 +341,18 @@ static void RepairEseDatabase(const wchar_t *dbPath, HANDLE heap)
 
     /* Fallback: if JET recovery failed (e.g. missing log files), directly
      * patch the database header's dbstate from DirtyShutdown (2) to
-     * CleanShutdown (3).  This is the same trick esentutl uses internally.
-     * Offset 0xD4 in the ESE header holds the JET_dbstate DWORD. */
+     * CleanShutdown (3).
+     *
+     * ESE DBFILEHDR layout (from microsoft/Extensible-Storage-Engine):
+     *   0x00  le_ulChecksum
+     *   0x04  le_ulMagic       (0x89ABCDEF)
+     *   0x08  le_ulVersion
+     *   0x0C  le_attrib        (file type: 0 = database)
+     *   0x10  le_dbtimeDirtied (8B)
+     *   0x18  signDb           (28B JET_SIGNATURE)
+     *   0x34  le_dbstate       ← THIS IS THE FIELD (4B)
+     *   0xEC  le_cbPageSize    (4B)
+     */
     if (err != JET_errSuccess) {
         HANDLE hDb = KERNEL32$CreateFileW(dbPath,
             GENERIC_READ | GENERIC_WRITE,
@@ -351,15 +361,20 @@ static void RepairEseDatabase(const wchar_t *dbPath, HANDLE heap)
             BYTE hdr[256] = {0};
             DWORD rd = 0;
             KERNEL32$ReadFile(hDb, hdr, 256, &rd, NULL);
-            if (rd >= 0xD8) {
-                DWORD dbState = (DWORD)(hdr[0xD4] | (hdr[0xD5] << 8) |
-                                        (hdr[0xD6] << 16) | (hdr[0xD7] << 24));
+            if (rd >= 0x38) {
+                /* Verify magic = 0xEFCDAB89 (little-endian of 0x89ABCDEF) */
+                DWORD magic = (DWORD)(hdr[0x04] | (hdr[0x05] << 8) |
+                                      (hdr[0x06] << 16) | (hdr[0x07] << 24));
                 BeaconPrintf(CALLBACK_OUTPUT,
-                    "[*] current dbstate: %lu (2=dirty, 3=clean)", dbState);
+                    "[*] ESE magic: 0x%08lX (expect 0xEFCDAB89)", magic);
+
+                DWORD dbState = (DWORD)(hdr[0x34] | (hdr[0x35] << 8) |
+                                        (hdr[0x36] << 16) | (hdr[0x37] << 24));
+                BeaconPrintf(CALLBACK_OUTPUT,
+                    "[*] dbstate @0x34: %lu (2=dirty, 3=clean)", dbState);
                 if (dbState == 2) {
-                    /* Set to CleanShutdown (3). */
-                    hdr[0xD4] = 3; hdr[0xD5] = 0;
-                    hdr[0xD6] = 0; hdr[0xD7] = 0;
+                    hdr[0x34] = 3; hdr[0x35] = 0;
+                    hdr[0x36] = 0; hdr[0x37] = 0;
                     LONG zero = 0;
                     KERNEL32$SetFilePointer(hDb, 0, &zero, FILE_BEGIN);
                     DWORD wr = 0;
