@@ -11,6 +11,8 @@
 #include <windows.h>
 #include <rpc.h>
 #include <wincrypt.h>
+#define SECURITY_WIN32
+#include <security.h>
 
 // ============================================================================
 // Debug Output Macros
@@ -216,38 +218,9 @@ typedef union {
 // Stub type for DRSReplicaSync (not used by dcsync, but present in format strings)
 typedef struct { int dummy; } DRS_MSG_REPSYNC;
 
-// ============================================================================
-// RPC & Security Type Definitions
-// (Guarded — these may already be defined by MinGW system headers)
-// ============================================================================
-
-#ifndef __CLIENT_CALL_RETURN_DEFINED__
-#define __CLIENT_CALL_RETURN_DEFINED__
-typedef union _CLIENT_CALL_RETURN {
-    void *Pointer;
-    LONG_PTR Simple;
-} CLIENT_CALL_RETURN;
-#endif
-
-#ifndef __SEC_HANDLE_DEFINED__
-#define __SEC_HANDLE_DEFINED__
-typedef struct _SecHandle {
-    ULONG_PTR dwLower;
-    ULONG_PTR dwUpper;
-} SecHandle;
-
-typedef SecHandle CtxtHandle;
-typedef SecHandle *PSecHandle;
-typedef PSecHandle PCtxtHandle;
-#endif
-
-#ifndef __SEC_PKG_CONTEXT_SESSION_KEY_DEFINED__
-#define __SEC_PKG_CONTEXT_SESSION_KEY_DEFINED__
-typedef struct _SecPkgContext_SessionKey {
-    ULONG SessionKeyLength;
-    PBYTE SessionKey;
-} SecPkgContext_SessionKey;
-#endif
+// CLIENT_CALL_RETURN, SecHandle, CtxtHandle, SecPkgContext_SessionKey
+// are already defined by MinGW via <rpcndr.h>, <sspi.h>, <security.h>
+// included transitively through <windows.h> and <rpc.h> above.
 
 // ============================================================================
 // Constants
