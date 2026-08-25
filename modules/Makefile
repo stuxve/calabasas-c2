@@ -88,12 +88,31 @@ asreproast:
 		credentials/asreproast/src/asreproast.c
 	@echo "  [+] asreproast.$(ARCH).o"
 
-dcsync:
-	@mkdir -p credentials/dcsync/bin
-	$(CC) $(CFLAGS) $(INCLUDES) \
-		-o credentials/dcsync/bin/dcsync.$(ARCH).o \
-		credentials/dcsync/src/dcsync.c
-	@echo "  [+] dcsync.$(ARCH).o"
+LD_x64 = x86_64-w64-mingw32-ld
+LD_x86 = i686-w64-mingw32-ld
+LD = $(LD_$(ARCH))
+
+DCSYNC_DIR     = credentials/dcsync
+DCSYNC_SRC     = $(DCSYNC_DIR)/src
+DCSYNC_INC     = $(DCSYNC_DIR)/include
+DCSYNC_BIN     = $(DCSYNC_DIR)/bin
+DCSYNC_INCLUDES = -I$(DCSYNC_INC) $(INCLUDES)
+
+DCSYNC_SRCS = $(DCSYNC_SRC)/dcsync.c \
+              $(DCSYNC_SRC)/ldap_helpers.c \
+              $(DCSYNC_SRC)/ldap_syncall.c \
+              $(DCSYNC_SRC)/rpc_adapter.c \
+              $(DCSYNC_SRC)/ms_drsr_stubs.c
+
+DCSYNC_OBJS = $(patsubst $(DCSYNC_SRC)/%.c,$(DCSYNC_BIN)/%.$(ARCH).o,$(DCSYNC_SRCS))
+
+dcsync: $(DCSYNC_OBJS)
+	$(LD) -r -o $(DCSYNC_BIN)/dcsync.$(ARCH).o $(DCSYNC_OBJS)
+	@echo "  [+] dcsync.$(ARCH).o (linked from $(words $(DCSYNC_OBJS)) objects)"
+
+$(DCSYNC_BIN)/%.$(ARCH).o: $(DCSYNC_SRC)/%.c
+	@mkdir -p $(DCSYNC_BIN)
+	$(CC) $(CFLAGS) $(DCSYNC_INCLUDES) -o $@ $<
 
 dumplsass:
 	@mkdir -p credentials/dumplsass/bin

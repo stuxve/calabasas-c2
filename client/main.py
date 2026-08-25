@@ -15,6 +15,9 @@ import logging
 import sys
 from pathlib import Path
 
+from .utils.impacket_patches import apply_patches
+apply_patches()
+
 from .core.session_manager import SessionManager
 from .core.task_manager import TaskManager
 from .core.module_registry import ModuleRegistry
