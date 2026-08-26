@@ -208,6 +208,12 @@ class ShellCompleter(Completer):
             # jump <method> <target> <listener>
             yield from self._complete_listeners(prefix)
 
+        elif words[0] == "jump" and word_count >= 5:
+            # After method/target/listener, offer --server-connection
+            if "--server-connection".startswith(prefix) and "--server-connection" not in words:
+                yield Completion("--server-connection", start_position=-len(prefix),
+                                display_meta="Child connects directly to C2")
+
         elif word_count == 2 and words[0] in ("cd", "ls", "dir", "cat"):
             # Complete remote paths from cached ls entries
             for name, is_dir in self.remote_entries:

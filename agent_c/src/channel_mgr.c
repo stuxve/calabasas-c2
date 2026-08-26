@@ -16,6 +16,23 @@ void channels_register(void) {
     g_channel_count = 0;
 
     /*
+     * Pipe child mode: the agent was spawned via chained jump.
+     * Only the pipe child channel is available — ignore config priority.
+     */
+    if (g_pipe_child_mode) {
+        g_channels[0].type = CHANNEL_PIPE_CHILD;
+        g_channels[0].name = "PIPE_CHILD";
+        g_channels[0].init = pipe_child_init;
+        g_channels[0].cleanup = pipe_child_cleanup;
+        g_channels[0].send_recv = pipe_child_send_recv;
+        g_channels[0].initialized = FALSE;
+        g_channels[0].consecutive_failures = 0;
+        g_channel_count = 1;
+        g_active_channel = 0;
+        return;
+    }
+
+    /*
      * Parse CHANNEL_PRIORITY ("http,smb,dns") and register
      * channels in the specified order.
      */

