@@ -343,6 +343,10 @@ BOOL rsa_encrypt(const unsigned char *modulus, DWORD mod_len,
 extern BOOL g_pipe_child_mode;        /* TRUE = chained agent via parent pipe */
 extern char g_pipe_child_name[256];   /* pipe name from command line */
 
+/* ─── C2 SMB override (set from command line C2SMB:<pipe>) ─── */
+extern BOOL g_c2smb_override;         /* TRUE = use SMB to C2 instead of baked-in channel */
+extern char g_c2smb_pipe[256];        /* pipe name for SMB C2 connection */
+
 /* ─── Channel abstraction ─── */
 
 #define CHANNEL_HTTP  0

