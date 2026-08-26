@@ -47,6 +47,11 @@ def cmd_agents(session_manager: SessionManager):
         else:
             int_str = "[yellow]MEDIUM[/yellow]"
 
+        # Show pipe name in channel column for chained agents
+        channel_str = s.c2_channel
+        if s.pipe_name:
+            channel_str = f"PIPE:{s.pipe_name}"
+
         table.add_row(
             str(s.display_id),
             s.hostname or "???",
@@ -56,7 +61,7 @@ def cmd_agents(session_manager: SessionManager):
             s.process_name or "-",
             s.arch,
             int_str,
-            s.c2_channel,
+            channel_str,
             s.last_seen_ago,
         )
 

@@ -510,6 +510,8 @@ class HttpsListener(BaseListener):
                     session.agent_version = v.decode("utf-8")
                 elif t == TlvType.CWD:
                     session.cwd = v.decode("utf-8")
+                elif t == TlvType.PIPE_CHILD_NAME:
+                    session.pipe_name = v.decode("utf-8")
             except Exception:
                 continue
 

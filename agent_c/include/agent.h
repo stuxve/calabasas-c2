@@ -184,6 +184,7 @@ typedef struct _BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
 #define TLV_DOTNET_VERSION    0x000B
 #define TLV_AGENT_VERSION     0x000C
 #define TLV_CWD               0x000D
+#define TLV_PIPE_CHILD_NAME   0x000E
 
 #define TLV_TASK_ID           0x0100
 #define TLV_TASK_TYPE         0x0101

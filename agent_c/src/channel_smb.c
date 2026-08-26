@@ -395,16 +395,28 @@ BOOL pipe_child_send_recv(const unsigned char *packet, DWORD packet_len,
     *response = NULL;
     *response_len = 0;
 
-    if (g_pipe_child_handle == INVALID_HANDLE_VALUE)
-        return FALSE;
+    /* If pipe is broken (parent died), recreate and wait for new parent */
+    if (g_pipe_child_handle == INVALID_HANDLE_VALUE) {
+        if (!pipe_child_init())
+            return FALSE;
+    }
 
     /* Write request to parent */
-    if (!pipe_write_framed(g_pipe_child_handle, packet, packet_len))
+    if (!pipe_write_framed(g_pipe_child_handle, packet, packet_len)) {
+        /* Pipe broken — tear down and mark for reconnect on next call */
+        DisconnectNamedPipe(g_pipe_child_handle);
+        CloseHandle(g_pipe_child_handle);
+        g_pipe_child_handle = INVALID_HANDLE_VALUE;
         return FALSE;
+    }
 
     /* Read response from parent */
-    if (!pipe_read_framed(g_pipe_child_handle, response, response_len))
+    if (!pipe_read_framed(g_pipe_child_handle, response, response_len)) {
+        DisconnectNamedPipe(g_pipe_child_handle);
+        CloseHandle(g_pipe_child_handle);
+        g_pipe_child_handle = INVALID_HANDLE_VALUE;
         return FALSE;
+    }
 
     return TRUE;
 }

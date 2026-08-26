@@ -75,6 +75,8 @@ class AgentSession:
     loaded_modules_cache: dict = field(default_factory=dict)
     # Nonce manager set after key exchange
     nonce_manager: Optional[object] = None
+    # Pipe name if this is a chained (pipe child) agent
+    pipe_name: str = ""
     # Internal numeric ID for CLI display
     display_id: int = 0
 

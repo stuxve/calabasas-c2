@@ -38,6 +38,7 @@ class TlvType(IntEnum):
     DOTNET_VERSION      = 0x000B
     AGENT_VERSION       = 0x000C
     CWD                 = 0x000D
+    PIPE_CHILD_NAME     = 0x000E
 
     # Task fields
     TASK_ID             = 0x0100

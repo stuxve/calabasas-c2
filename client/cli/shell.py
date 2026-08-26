@@ -922,6 +922,7 @@ class OperatorShell:
             f"Integrity:     {agent.integrity}",
             f"Is Admin:      {agent.is_admin}",
             f"C2 Channel:    {agent.c2_channel}",
+            f"Pipe Name:     {agent.pipe_name or '-'}",
             f"Sleep:         {agent.sleep_interval}s (jitter {agent.jitter_percent}%)",
             f"CWD:           {agent.cwd}",
             f"Agent Version: {agent.agent_version}",
