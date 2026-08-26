@@ -41,6 +41,7 @@ AGENT_COMMANDS = {
     "link": "Link child agent via SMB pipe (link <target> <pipe>)",
     "unlink": "Unlink child agent (unlink [target])",
     "spawnto": "Set sacrificial process (spawnto <x64|x86> <path>)",
+    "ak-settings": "Framework settings (ak-settings <setting> <value>)",
     "ppid": "Set parent PID for spawned processes (ppid <pid>)",
     "spawn": "Fork new beacon process (spawn <listener>)",
     "upload": "Upload file (upload <local> <remote>)",
@@ -71,6 +72,10 @@ AGENT_SUBCOMMANDS = {
     "spawnto": {
         "x64": "Set x64 sacrificial process path",
         "x86": "Set x86 sacrificial process path",
+    },
+    "ak-settings": {
+        "spawnto_x64": "Set x64 sacrificial process for post-ex/lateral movement",
+        "spawnto_x86": "Set x86 sacrificial process for post-ex/lateral movement",
     },
 }
 
