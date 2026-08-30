@@ -1,0 +1,72 @@
+---
+name: klist
+category: tickets
+description: >
+  List Kerberos tickets from the current logon session or a specific LUID.
+  Supports filtering by user, service, or client. Use with /dump flag to
+  extract full ticket data (base64 kirbi).
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: klist.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: luid
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target logon session LUID (hex). Empty = current session."
+    example: "0x3e7"
+
+  - name: user
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Filter tickets by username."
+    example: "jdoe"
+
+  - name: service
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Filter tickets by service name."
+    example: "krbtgt"
+
+  - name: client
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Filter tickets by client name."
+    example: "jdoe@CORP.LOCAL"
+
+  - name: dump
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Dump full ticket data (base64 kirbi). 1 = yes."
+
+output_format: raw
+opsec_level: low
+opsec_notes: >
+  Reads the local Kerberos ticket cache via LSA. Does not generate
+  network traffic or authentication events.
+
+timeout: 60
+tags: [kerberos, tickets, klist, enumeration]
+references:
+  - https://attack.mitre.org/techniques/T1558/
+  - https://github.com/RalfHacker/Kerbeus-BOF
+mitre_attack_id: T1558

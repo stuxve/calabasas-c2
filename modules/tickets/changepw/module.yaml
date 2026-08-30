@@ -1,0 +1,71 @@
+---
+name: changepw
+category: tickets
+description: >
+  Change or reset a user's password via the Kerberos kpasswd protocol
+  (port 464). Can change the current user's password or reset another
+  user's password using a TGT with the appropriate privileges.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: changepw.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: dc
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Domain controller IP/hostname (kpasswd server). Empty = auto-discover."
+
+  - name: ticket
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "Base64-encoded TGT (.kirbi) for authentication."
+
+  - name: targetuser
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target user to reset password for (requires kadmin/changepw TGT). Empty = change own password."
+    example: "jdoe"
+
+  - name: targetdomain
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target user's domain. Required if /targetuser is set."
+    example: "CORP.LOCAL"
+
+  - name: new
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "New password to set."
+
+output_format: raw
+opsec_level: high
+opsec_notes: >
+  Sends an MS kpasswd request to the KDC on port 464. Password change
+  events (4723/4724) will be logged on the DC. Resetting another user's
+  password is a high-impact action.
+
+timeout: 120
+tags: [kerberos, password, changepw, reset, tickets]
+references:
+  - https://attack.mitre.org/techniques/T1098/
+  - https://github.com/RalfHacker/Kerbeus-BOF
+mitre_attack_id: T1098

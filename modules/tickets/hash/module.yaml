@@ -1,0 +1,56 @@
+---
+name: hash
+category: tickets
+description: >
+  Compute Kerberos encryption keys (RC4/NTLM, AES128, AES256) from a
+  plaintext password using the standard key derivation functions.
+  Useful for overpass-the-hash or AS-REQ with hash-based auth.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: hash.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: user
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "Username (sAMAccountName) for the key derivation salt."
+    example: "jdoe"
+
+  - name: domain
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "Domain FQDN for the key derivation salt."
+    example: "corp.local"
+
+  - name: password
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "Plaintext password to derive keys from."
+
+output_format: raw
+opsec_level: low
+opsec_notes: >
+  Purely local computation using CRYPTDLL key derivation. No network
+  traffic or authentication events generated.
+
+timeout: 30
+tags: [kerberos, hash, keys, password, tickets]
+references:
+  - https://attack.mitre.org/techniques/T1558/
+  - https://github.com/RalfHacker/Kerbeus-BOF
+mitre_attack_id: T1558

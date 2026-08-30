@@ -1,0 +1,47 @@
+---
+name: ptt
+category: tickets
+description: >
+  Pass-the-Ticket: inject a base64-encoded Kerberos ticket (.kirbi)
+  into the current or specified logon session via the LSA ticket cache.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: ptt.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: ticket
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "Base64-encoded Kerberos ticket (.kirbi) to inject."
+
+  - name: luid
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target logon session LUID (hex). Empty = current session. Requires SYSTEM for cross-session."
+    example: "0x3e7"
+
+output_format: raw
+opsec_level: medium
+opsec_notes: >
+  Injects a ticket into the LSA ticket cache via LsaCallAuthenticationPackage.
+  Requires SYSTEM integrity for injecting into other logon sessions.
+
+timeout: 60
+tags: [kerberos, ptt, pass-the-ticket, tickets]
+references:
+  - https://attack.mitre.org/techniques/T1550.003/
+  - https://github.com/RalfHacker/Kerbeus-BOF
+mitre_attack_id: T1550.003

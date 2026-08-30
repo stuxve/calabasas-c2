@@ -34,8 +34,10 @@ ENUM_MODULES = enumdomainusers enumdomaingroups enumspns ldapsearch
 CRED_MODULES = kerberoast asreproast dcsync dumplsass extracttickets ptt overpassthehash hashdump underlaycopy
 LATERAL_MODULES = wmiexec smbexec psexec scshell
 EVASION_MODULES = patchamsi patchetw unhookntdll blockdlls ppidspoof timestomp
+TICKET_MODULES  = requesttgt requesttgs klist tickets_ptt purgetickets tgtdeleg \
+                  describeticket hash renewticket changepw s4u
 
-ALL_MODULES = $(ENUM_MODULES) $(CRED_MODULES) $(LATERAL_MODULES) $(EVASION_MODULES)
+ALL_MODULES = $(ENUM_MODULES) $(CRED_MODULES) $(LATERAL_MODULES) $(EVASION_MODULES) $(TICKET_MODULES)
 
 .PHONY: all clean validate $(ALL_MODULES)
 
@@ -223,6 +225,90 @@ timestomp:
 		-o evasion/timestomp/bin/timestomp.$(ARCH).o \
 		evasion/timestomp/src/timestomp.c
 	@echo "  [+] timestomp.$(ARCH).o"
+
+# ─── Ticket modules (Kerbeus-BOF) ───
+# These modules share the Kerbeus-BOF library under tickets/_kerbeus_lib/
+# and need its include path so the #include directives resolve correctly.
+
+KERBEUS_INCLUDES = $(INCLUDES) -Itickets/_kerbeus_lib
+
+requesttgt:
+	@mkdir -p tickets/requesttgt/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/requesttgt/bin/requesttgt.$(ARCH).o \
+		tickets/requesttgt/src/requesttgt.c
+	@echo "  [+] requesttgt.$(ARCH).o"
+
+requesttgs:
+	@mkdir -p tickets/requesttgs/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/requesttgs/bin/requesttgs.$(ARCH).o \
+		tickets/requesttgs/src/requesttgs.c
+	@echo "  [+] requesttgs.$(ARCH).o"
+
+klist:
+	@mkdir -p tickets/klist/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/klist/bin/klist.$(ARCH).o \
+		tickets/klist/src/klist.c
+	@echo "  [+] klist.$(ARCH).o"
+
+# Note: "tickets_ptt" avoids collision with the credentials/ptt target.
+tickets_ptt:
+	@mkdir -p tickets/ptt/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/ptt/bin/ptt.$(ARCH).o \
+		tickets/ptt/src/ptt.c
+	@echo "  [+] tickets/ptt.$(ARCH).o"
+
+purgetickets:
+	@mkdir -p tickets/purgetickets/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/purgetickets/bin/purgetickets.$(ARCH).o \
+		tickets/purgetickets/src/purgetickets.c
+	@echo "  [+] purgetickets.$(ARCH).o"
+
+tgtdeleg:
+	@mkdir -p tickets/tgtdeleg/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/tgtdeleg/bin/tgtdeleg.$(ARCH).o \
+		tickets/tgtdeleg/src/tgtdeleg.c
+	@echo "  [+] tgtdeleg.$(ARCH).o"
+
+describeticket:
+	@mkdir -p tickets/describeticket/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/describeticket/bin/describeticket.$(ARCH).o \
+		tickets/describeticket/src/describeticket.c
+	@echo "  [+] describeticket.$(ARCH).o"
+
+hash:
+	@mkdir -p tickets/hash/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/hash/bin/hash.$(ARCH).o \
+		tickets/hash/src/hash.c
+	@echo "  [+] hash.$(ARCH).o"
+
+renewticket:
+	@mkdir -p tickets/renewticket/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/renewticket/bin/renewticket.$(ARCH).o \
+		tickets/renewticket/src/renewticket.c
+	@echo "  [+] renewticket.$(ARCH).o"
+
+changepw:
+	@mkdir -p tickets/changepw/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/changepw/bin/changepw.$(ARCH).o \
+		tickets/changepw/src/changepw.c
+	@echo "  [+] changepw.$(ARCH).o"
+
+s4u:
+	@mkdir -p tickets/s4u/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/s4u/bin/s4u.$(ARCH).o \
+		tickets/s4u/src/s4u.c
+	@echo "  [+] s4u.$(ARCH).o"
 
 # ─── Validation ───
 

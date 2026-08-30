@@ -1,0 +1,120 @@
+---
+name: requesttgt
+category: tickets
+description: >
+  Request a Kerberos TGT (Ticket Granting Ticket) using a password, RC4
+  hash, or AES256 hash. Supports pre-authentication bypass (/nopreauth),
+  OPSEC-safe mode with full etype negotiation, and direct pass-the-ticket
+  injection into the current logon session.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: requesttgt.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: user
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "Target username (sAMAccountName)."
+    example: "jdoe"
+
+  - name: domain
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target domain FQDN. Empty = current domain."
+    example: "corp.local"
+
+  - name: password
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Plaintext password for the user."
+    example: "Summer2024!"
+
+  - name: rc4
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "RC4/NTLM hash (32 hex chars). Mutually exclusive with /password and /aes256."
+    example: "A4F49C406510BDCAB6824EE7C30FD852"
+
+  - name: aes256
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "AES256 key (64 hex chars). Mutually exclusive with /password and /rc4."
+    example: "AA6E09...64 hex chars..."
+
+  - name: dc
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Domain controller IP/hostname to send the AS-REQ to. Empty = auto-discover."
+    example: "dc01.corp.local"
+
+  - name: enctype
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Preferred encryption type: 'rc4' or 'aes256'. Default = rc4."
+    example: "aes256"
+
+  - name: ptt
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Pass-the-ticket: inject TGT into current logon session. 1 = yes, 0 = no."
+
+  - name: opsec
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "OPSEC mode: negotiate all etypes like a real Windows client. 1 = yes."
+
+  - name: nopac
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Request ticket without PAC. 1 = exclude PAC."
+
+  - name: nopreauth
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "AS-REQ without pre-authentication (for accounts with DONT_REQUIRE_PREAUTH). 1 = yes."
+
+output_format: raw
+opsec_level: medium
+opsec_notes: >
+  Generates a Kerberos AS-REQ to the target DC. With /opsec, the request
+  mimics a genuine Windows logon (full etype list, NETBIOS address). Without
+  /opsec, only the single requested etype is included, which may look
+  anomalous. Pre-authentication timestamps may be logged (event 4768).
+
+timeout: 120
+tags: [kerberos, tgt, authentication, tickets, asreq]
+references:
+  - https://attack.mitre.org/techniques/T1558/
+  - https://github.com/RalfHacker/Kerbeus-BOF
+mitre_attack_id: T1558

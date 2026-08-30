@@ -1,0 +1,43 @@
+---
+name: tgtdeleg
+category: tickets
+description: >
+  Extract a usable TGT from the current user's ticket cache using the
+  Kerberos GSS-API trick (tgtdeleg). Abuses the GSS-API to request a
+  delegated ticket, then decrypts and extracts the session key to
+  produce a fully usable .kirbi TGT — without elevation.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: tgtdeleg.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: target
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target SPN for the GSS-API delegation. Empty = auto-discover CIFS/DC."
+    example: "CIFS/dc01.corp.local"
+
+output_format: raw
+opsec_level: medium
+opsec_notes: >
+  Initiates a GSS-API security context with the ISC_REQ_DELEGATE flag
+  to extract the delegated TGT. Generates a TGS-REQ and reads from
+  the ticket cache. Does not require elevation.
+
+timeout: 120
+tags: [kerberos, tgt, delegation, tgtdeleg, tickets]
+references:
+  - https://attack.mitre.org/techniques/T1558/
+  - https://github.com/RalfHacker/Kerbeus-BOF
+mitre_attack_id: T1558

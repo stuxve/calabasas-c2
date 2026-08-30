@@ -1,0 +1,37 @@
+---
+name: purgetickets
+category: tickets
+description: >
+  Purge all Kerberos tickets from the current or specified logon session's
+  ticket cache via the LSA.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: purgetickets.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: luid
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target logon session LUID (hex). Empty = current session. Requires SYSTEM for cross-session."
+    example: "0x3e7"
+
+output_format: raw
+opsec_level: low
+opsec_notes: >
+  Purges tickets from the local ticket cache via LSA. No network traffic generated.
+
+timeout: 60
+tags: [kerberos, purge, tickets]
+references:
+  - https://github.com/RalfHacker/Kerbeus-BOF

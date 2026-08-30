@@ -1,0 +1,126 @@
+---
+name: s4u
+category: tickets
+description: >
+  Perform Kerberos S4U2Self and S4U2Proxy constrained delegation attacks.
+  Request a service ticket on behalf of another user (impersonation) using
+  an existing TGT. Supports alternative service name substitution and
+  OPSEC-safe mode.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: s4u.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: user
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Service account username (from the TGT)."
+    example: "svc_sql"
+
+  - name: domain
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Domain FQDN. Empty = current domain."
+    example: "corp.local"
+
+  - name: ticket
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "Base64-encoded TGT (.kirbi) for the service account."
+
+  - name: dc
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Domain controller IP/hostname. Empty = auto-discover."
+
+  - name: service
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target SPN for S4U2Proxy (e.g. CIFS/server.corp.local)."
+    example: "CIFS/fileserver.corp.local"
+
+  - name: tgs
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Base64-encoded S4U2Self TGS (.kirbi) for S4U2Proxy. Mutually exclusive with /impersonateuser."
+
+  - name: altservice
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Alternative service name to substitute in the final ticket (e.g. LDAP/dc01.corp.local)."
+    example: "LDAP/dc01.corp.local"
+
+  - name: impersonateuser
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "User to impersonate via S4U2Self. Mutually exclusive with /tgs."
+    example: "administrator"
+
+  - name: ptt
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Pass-the-ticket: inject resulting ticket. 1 = yes."
+
+  - name: opsec
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "OPSEC mode: mimic genuine Windows S4U requests. 1 = yes."
+
+  - name: nopac
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Request ticket without PAC. 1 = exclude PAC."
+
+  - name: self
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "S4U2Self only (no S4U2Proxy). 1 = yes."
+
+output_format: raw
+opsec_level: high
+opsec_notes: >
+  Generates S4U2Self and/or S4U2Proxy TGS-REQ messages to the KDC.
+  These are constrained delegation operations that may trigger specific
+  monitoring rules (event 4769 with delegation flags). With /opsec,
+  requests mimic genuine Windows behavior.
+
+timeout: 180
+tags: [kerberos, s4u, delegation, s4u2self, s4u2proxy, tickets, impersonation]
+references:
+  - https://attack.mitre.org/techniques/T1558/
+  - https://attack.mitre.org/techniques/T1134/
+  - https://github.com/RalfHacker/Kerbeus-BOF
+mitre_attack_id: T1558
