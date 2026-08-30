@@ -4,6 +4,7 @@
 #include "../_kerbeus_lib/asn_decode.c"
 #include "../_kerbeus_lib/crypt_b64.c"
 
+SYSTEMTIME ConvertToSystemtime(LARGE_INTEGER li) {
     FILETIME ft;
     SYSTEMTIME st_utc;
     ft.dwHighDateTime = li.HighPart;
