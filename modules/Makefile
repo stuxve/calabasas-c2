@@ -230,7 +230,7 @@ timestomp:
 # These modules share the Kerbeus-BOF library under tickets/_kerbeus_lib/
 # and need its include path so the #include directives resolve correctly.
 
-KERBEUS_INCLUDES = $(INCLUDES) -Itickets/_kerbeus_lib
+KERBEUS_INCLUDES = $(INCLUDES) -Itickets/_kerbeus_lib -Wno-incompatible-pointer-types -Wno-int-conversion
 
 requesttgt:
 	@mkdir -p tickets/requesttgt/bin

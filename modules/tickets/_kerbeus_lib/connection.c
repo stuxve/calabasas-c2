@@ -63,7 +63,7 @@ void sendBytes(char* server, char* port, PBYTE content, int contentSize, PBYTE* 
 
     int networkContentSize = my_htonl(contentSize);
     char test[4] = "";
-    MemCpy(test, &networkContentSize, sizeof(int));
+    MemCpy((PBYTE)test, (PBYTE)&networkContentSize, sizeof(int));
     iResult = WS2_32$send(ConnectSocket, test, 4, 0);
     iResult = WS2_32$send(ConnectSocket, content, contentSize, 0);
     if (iResult == SOCKET_ERROR) {
@@ -80,7 +80,7 @@ void sendBytes(char* server, char* port, PBYTE content, int contentSize, PBYTE* 
         return;
     }
 
-    MemCpy(size, sizeBuff, sizeof(int));
+    MemCpy((PBYTE)size, (PBYTE)sizeBuff, sizeof(int));
     *size = my_ntohl(*size) & 0x7fffffff;
 
     *response = MemAlloc(*size);

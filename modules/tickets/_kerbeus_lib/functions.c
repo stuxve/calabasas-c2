@@ -252,10 +252,10 @@ BOOL LoadFunc() {
         goto failed;
     }
 
-    CDLocateCheckSum = GetProcAddress(crypt, "CDLocateCheckSum");
+    CDLocateCheckSum = (pCDLocateCheckSum)GetProcAddress(crypt, "CDLocateCheckSum");
     if (!CDLocateCheckSum) goto failed;
 
-    CDLocateCSystem = GetProcAddress(crypt, "CDLocateCSystem");
+    CDLocateCSystem = (pCDLocateCSystem)GetProcAddress(crypt, "CDLocateCSystem");
     if (!CDLocateCSystem) goto failed;
     
     
@@ -263,13 +263,13 @@ BOOL LoadFunc() {
     HMODULE ntdll = GetModuleHandleA("ntdll.dll");
     if (!ntdll) goto failed;
 
-    RtlAnsiStringToUnicodeString = GetProcAddress(ntdll, "RtlAnsiStringToUnicodeString");
+    RtlAnsiStringToUnicodeString = (pRtlAnsiStringToUnicodeString)GetProcAddress(ntdll, "RtlAnsiStringToUnicodeString");
     if (!RtlAnsiStringToUnicodeString) goto failed;
 
-    RtlInitUnicodeString = GetProcAddress(ntdll, "RtlInitUnicodeString");
+    RtlInitUnicodeString = (pRtlInitUnicodeString)GetProcAddress(ntdll, "RtlInitUnicodeString");
     if (!RtlInitUnicodeString) goto failed;
 
-    RtlInitAnsiString = GetProcAddress(ntdll, "RtlInitAnsiString");
+    RtlInitAnsiString = (pRtlInitAnsiString)GetProcAddress(ntdll, "RtlInitAnsiString");
     if (!RtlInitAnsiString) goto failed;
 
 
@@ -283,28 +283,28 @@ BOOL LoadFunc() {
         goto failed;
     }
 
-    ADVAPI32$ConvertSidToStringSidA = GetProcAddress(advapi, "ConvertSidToStringSidA");
+    ADVAPI32$ConvertSidToStringSidA = (_ConvertSidToStringSidA)GetProcAddress(advapi, "ConvertSidToStringSidA");
     if (!ADVAPI32$ConvertSidToStringSidA) goto failed;
 
-    ADVAPI32$SystemFunction036 = GetProcAddress(advapi, "SystemFunction036");
+    ADVAPI32$SystemFunction036 = (_SystemFunction036)GetProcAddress(advapi, "SystemFunction036");
     if (!ADVAPI32$SystemFunction036) goto failed;
 
-    ADVAPI32$GetTokenInformation = GetProcAddress(advapi, "GetTokenInformation");
+    ADVAPI32$GetTokenInformation = (_GetTokenInformation)GetProcAddress(advapi, "GetTokenInformation");
     if (!ADVAPI32$GetTokenInformation) goto failed;
 
-    ADVAPI32$OpenThreadToken = GetProcAddress(advapi, "OpenThreadToken");
+    ADVAPI32$OpenThreadToken = (_OpenThreadToken)GetProcAddress(advapi, "OpenThreadToken");
     if (!ADVAPI32$OpenThreadToken) goto failed;
 
-    ADVAPI32$OpenProcessToken = GetProcAddress(advapi, "OpenProcessToken");
+    ADVAPI32$OpenProcessToken = (_OpenProcessToken)GetProcAddress(advapi, "OpenProcessToken");
     if (!ADVAPI32$OpenProcessToken) goto failed;
 
-    ADVAPI32$AllocateAndInitializeSid = GetProcAddress(advapi, "AllocateAndInitializeSid");
+    ADVAPI32$AllocateAndInitializeSid = (_AllocateAndInitializeSid)GetProcAddress(advapi, "AllocateAndInitializeSid");
     if (!ADVAPI32$AllocateAndInitializeSid) goto failed;
 
-    ADVAPI32$EqualSid = GetProcAddress(advapi, "EqualSid");
+    ADVAPI32$EqualSid = (_EqualSid)GetProcAddress(advapi, "EqualSid");
     if (!ADVAPI32$EqualSid) goto failed;
 
-    ADVAPI32$FreeSid = GetProcAddress(advapi, "FreeSid");
+    ADVAPI32$FreeSid = (_FreeSid)GetProcAddress(advapi, "FreeSid");
     if (!ADVAPI32$FreeSid) goto failed;
 
     HMODULE secur32 = GetModuleHandleA("SECUR32");
@@ -315,40 +315,40 @@ BOOL LoadFunc() {
         goto failed;
     }
 
-    SECUR32$LsaConnectUntrusted = GetProcAddress(secur32, "LsaConnectUntrusted");
+    SECUR32$LsaConnectUntrusted = (_LsaConnectUntrusted)GetProcAddress(secur32, "LsaConnectUntrusted");
     if (!SECUR32$LsaConnectUntrusted) goto failed;
 
-    SECUR32$LsaRegisterLogonProcess = GetProcAddress(secur32, "LsaRegisterLogonProcess");
+    SECUR32$LsaRegisterLogonProcess = (_LsaRegisterLogonProcess)GetProcAddress(secur32, "LsaRegisterLogonProcess");
     if (!SECUR32$LsaRegisterLogonProcess) goto failed;
 
-    SECUR32$LsaGetLogonSessionData = GetProcAddress(secur32, "LsaGetLogonSessionData");
+    SECUR32$LsaGetLogonSessionData = (_LsaGetLogonSessionData)GetProcAddress(secur32, "LsaGetLogonSessionData");
     if (!SECUR32$LsaGetLogonSessionData) goto failed;
 
-    SECUR32$LsaEnumerateLogonSessions = GetProcAddress(secur32, "LsaEnumerateLogonSessions");
+    SECUR32$LsaEnumerateLogonSessions = (_LsaEnumerateLogonSessions)GetProcAddress(secur32, "LsaEnumerateLogonSessions");
     if (!SECUR32$LsaEnumerateLogonSessions) goto failed;
 
-    SECUR32$LsaFreeReturnBuffer = GetProcAddress(secur32, "LsaFreeReturnBuffer");
+    SECUR32$LsaFreeReturnBuffer = (_LsaFreeReturnBuffer)GetProcAddress(secur32, "LsaFreeReturnBuffer");
     if (!SECUR32$LsaFreeReturnBuffer) goto failed;
 
-    SECUR32$LsaCallAuthenticationPackage = GetProcAddress(secur32, "LsaCallAuthenticationPackage");
+    SECUR32$LsaCallAuthenticationPackage = (_LsaCallAuthenticationPackage)GetProcAddress(secur32, "LsaCallAuthenticationPackage");
     if (!SECUR32$LsaCallAuthenticationPackage) goto failed;
 
-    SECUR32$LsaDeregisterLogonProcess = GetProcAddress(secur32, "LsaDeregisterLogonProcess");
+    SECUR32$LsaDeregisterLogonProcess = (_LsaDeregisterLogonProcess)GetProcAddress(secur32, "LsaDeregisterLogonProcess");
     if (!SECUR32$LsaDeregisterLogonProcess) goto failed;
 
-    SECUR32$LsaLookupAuthenticationPackage = GetProcAddress(secur32, "LsaLookupAuthenticationPackage");
+    SECUR32$LsaLookupAuthenticationPackage = (_LsaLookupAuthenticationPackage)GetProcAddress(secur32, "LsaLookupAuthenticationPackage");
     if (!SECUR32$LsaLookupAuthenticationPackage) goto failed;
 
-    SECUR32$InitializeSecurityContextA = GetProcAddress(secur32, "InitializeSecurityContextA");
+    SECUR32$InitializeSecurityContextA = (_InitializeSecurityContextA)GetProcAddress(secur32, "InitializeSecurityContextA");
     if (!SECUR32$InitializeSecurityContextA) goto failed;
 
-    SECUR32$DeleteSecurityContext = GetProcAddress(secur32, "DeleteSecurityContext");
+    SECUR32$DeleteSecurityContext = (_DeleteSecurityContext)GetProcAddress(secur32, "DeleteSecurityContext");
     if (!SECUR32$DeleteSecurityContext) goto failed;
 
-    SECUR32$FreeCredentialsHandle = GetProcAddress(secur32, "FreeCredentialsHandle");
+    SECUR32$FreeCredentialsHandle = (_FreeCredentialsHandle)GetProcAddress(secur32, "FreeCredentialsHandle");
     if (!SECUR32$FreeCredentialsHandle) goto failed;
 
-    SECUR32$AcquireCredentialsHandleA = GetProcAddress(secur32, "AcquireCredentialsHandleA");
+    SECUR32$AcquireCredentialsHandleA = (_AcquireCredentialsHandleA)GetProcAddress(secur32, "AcquireCredentialsHandleA");
     if ( !SECUR32$AcquireCredentialsHandleA) goto failed;
 
     MEMORY_BANK = KERNEL32$VirtualAlloc(NULL, sizeof(void*) * 0x1000, MEM_COMMIT, PAGE_READWRITE);
@@ -492,10 +492,10 @@ void GetDomainInfo(char** domain, char** dc) {
         DWORD dwError = NETAPI32$DsGetDcNameA(NULL, NULL, NULL, NULL, DS_DIRECTORY_SERVICE_REQUIRED, &pDomainControllerInfo);
         if (dwError == ERROR_SUCCESS) {
             if (domain && *domain == NULL)
-                my_copybuf(domain, pDomainControllerInfo->DomainName, my_strlen(pDomainControllerInfo->DomainName) + 1);
+                my_copybuf((byte**)domain, (byte*)pDomainControllerInfo->DomainName, my_strlen(pDomainControllerInfo->DomainName) + 1);
 
             if (dc && *dc == NULL)
-                my_copybuf(dc, ((char*)pDomainControllerInfo->DomainControllerName) + 2, my_strlen(((char*)pDomainControllerInfo->DomainControllerName) + 2) + 1);
+                my_copybuf((byte**)dc, (byte*)(((char*)pDomainControllerInfo->DomainControllerName) + 2), my_strlen(((char*)pDomainControllerInfo->DomainControllerName) + 2) + 1);
 
             if (pDomainControllerInfo != NULL)
                 NETAPI32$NetApiBufferFree(pDomainControllerInfo);
@@ -508,7 +508,7 @@ int GetStrParam(PCHAR buffer, DWORD bufferLength, PCHAR param, DWORD paramLength
         int ind = my_strfind(buffer + paramLength, ' ');
         if (ind == -1)
             ind = bufferLength - paramLength - 1;
-        my_copybuf(Value, buffer + paramLength, ind + 1);
+        my_copybuf((byte**)Value, (byte*)(buffer + paramLength), ind + 1);
         (*Value)[ind] = 0;
         return paramLength + ind;
     }

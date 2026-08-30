@@ -205,7 +205,7 @@ BOOL HandleASREP(AsnElt responseAsn, EncryptionKey encKey, byte* serviceKey, BOO
     else { PRINT_OUT("[X] Encryption type \"%d\" not currently supported", as_rep.enc_part.etype); return TRUE; }
 
     byte* result = NULL;
-    size_t resultSize = 0;
+    int resultSize = 0;
     if (decrypt(key, encKey.key_type, key_usage, as_rep.enc_part.cipher, as_rep.enc_part.cipher_size, &result, &resultSize)) return TRUE;
 
     AsnElt ae = { 0 };
@@ -232,8 +232,8 @@ BOOL HandleASREP(AsnElt responseAsn, EncryptionKey encKey, byte* serviceKey, BOO
     info.renew_till = encRepPart.renew_till;
     info.pname = as_rep.cname;
     info.sname = encRepPart.sname;
-    my_copybuf(&(info.prealm), encRepPart.realm, my_strlen(encRepPart.realm) + 1);
-    my_copybuf(&(info.srealm), encRepPart.realm, my_strlen(encRepPart.realm) + 1);
+    my_copybuf((byte**)&(info.prealm), (byte*)encRepPart.realm, my_strlen(encRepPart.realm) + 1);
+    my_copybuf((byte**)&(info.srealm), (byte*)encRepPart.realm, my_strlen(encRepPart.realm) + 1);
 
     cred.enc_part.ticket_count = 1;
     cred.enc_part.ticket_info = MemAlloc(sizeof(KrbCredInfo) * cred.enc_part.ticket_count);
@@ -245,7 +245,7 @@ BOOL HandleASREP(AsnElt responseAsn, EncryptionKey encKey, byte* serviceKey, BOO
     int kirbiBytesSize = 0;
     byte* kirbiBytes = 0;
     if (AsnToBytesEncode(&asnKirbi, &kirbiBytesSize, &kirbiBytes)) return TRUE;
-    *ticket = base64_encode(kirbiBytes, kirbiBytesSize);
+    *ticket = (byte*)base64_encode(kirbiBytes, kirbiBytesSize);
     return FALSE;
 }
 
@@ -255,13 +255,13 @@ BOOL NewAS_REQ(char* pcUsername, char* pcDomain, EncryptionKey encKey, BOOL opse
     as_req->req_body.kdc_options = FORWARDABLE | RENEWABLE | RENEWABLEOK;
     as_req->req_body.till = 1 * 3600;
     ADVAPI32$SystemFunction036(&(as_req->req_body.nonce), 4);
-    if (my_copybuf(&as_req->req_body.realm, pcDomain, my_strlen(pcDomain) + 1)) return TRUE;
+    if (my_copybuf((byte**)&as_req->req_body.realm, (byte*)pcDomain, my_strlen(pcDomain) + 1)) return TRUE;
 
     as_req->req_body.cname.name_type = PRINCIPAL_NT_PRINCIPAL;
     as_req->req_body.cname.name_count = 1;
     as_req->req_body.cname.name_string = MemAlloc(sizeof(void*) * as_req->req_body.cname.name_count);
     if (!as_req->req_body.cname.name_string) { PRINT_OUT("[x] Failed alloc memory"); return TRUE; }
-    if (my_copybuf(&(as_req->req_body.cname.name_string[0]), pcUsername, my_strlen(pcUsername) + 1)) return TRUE;
+    if (my_copybuf((byte**)&(as_req->req_body.cname.name_string[0]), (byte*)pcUsername, my_strlen(pcUsername) + 1)) return TRUE;
 
     if (service) {
         int partsCount = 1, index = 0;
@@ -273,20 +273,20 @@ BOOL NewAS_REQ(char* pcUsername, char* pcDomain, EncryptionKey encKey, BOOL opse
         index = 0;
         while (service[index] && partIndex < partsCount) {
             if (service[index] == '/') {
-                if (my_copybuf(&(as_req->req_body.sname.name_string[partIndex]), service + startIndex, index + 1 - startIndex)) return TRUE;
+                if (my_copybuf((byte**)&(as_req->req_body.sname.name_string[partIndex]), (byte*)(service + startIndex), index + 1 - startIndex)) return TRUE;
                 as_req->req_body.sname.name_string[partIndex][index] = 0;
                 startIndex = index + 1;
                 partIndex++;
             }
             index++;
         }
-        if (my_copybuf(&(as_req->req_body.sname.name_string[partIndex]), service + startIndex, index + 1 - startIndex)) return TRUE;
+        if (my_copybuf((byte**)&(as_req->req_body.sname.name_string[partIndex]), (byte*)(service + startIndex), index + 1 - startIndex)) return TRUE;
     } else {
         as_req->req_body.sname.name_count = 2;
         as_req->req_body.sname.name_string = MemAlloc(sizeof(void*) * 2);
         as_req->req_body.sname.name_type = PRINCIPAL_NT_SRV_INST;
-        if (my_copybuf(&(as_req->req_body.sname.name_string[0]), "krbtgt", 7)) return TRUE;
-        if (my_copybuf(&(as_req->req_body.sname.name_string[1]), pcDomain, my_strlen(pcDomain) + 1)) return TRUE;
+        if (my_copybuf((byte**)&(as_req->req_body.sname.name_string[0]), (byte*)"krbtgt", 7)) return TRUE;
+        if (my_copybuf((byte**)&(as_req->req_body.sname.name_string[1]), (byte*)pcDomain, my_strlen(pcDomain) + 1)) return TRUE;
     }
 
     int pa_index = 0;
@@ -321,11 +321,11 @@ BOOL NewAS_REQ(char* pcUsername, char* pcDomain, EncryptionKey encKey, BOOL opse
         as_req->req_body.addresses_count = 1;
         as_req->req_body.addresses = MemAlloc(sizeof(HostAddress));
         if (!as_req->req_body.addresses) { PRINT_OUT("[x] Failed alloc memory"); return TRUE; }
-        int size = MAX_COMPUTERNAME_LENGTH + 2;
+        DWORD size = MAX_COMPUTERNAME_LENGTH + 2;
         char* hostname = MemAlloc(size);
         if (!hostname) { PRINT_OUT("[x] Failed alloc memory"); return TRUE; }
         KERNEL32$GetComputerNameA(hostname, &size);
-        int numSpaces = 8 - (size % 8);
+        int numSpaces = 8 - ((int)size % 8);
         int i = 0;
         for (; i < numSpaces; i++) hostname[size + i] = ' ';
         hostname[size + i] = 0;

@@ -20,7 +20,9 @@ BOOL decrypt(byte* key, DWORD eType, DWORD keyUsage, byte* data, int dataSize, b
 
     *result = MemAlloc(dataSize);
     *size = dataSize;
-    status = pCSystem->Decrypt(pContext, data, dataSize, *result, size);
+    ULONG decSize = (ULONG)*size;
+    status = pCSystem->Decrypt(pContext, data, dataSize, *result, &decSize);
+    *size = (int)decSize;
 
     pCSystem->Finish(&pContext);
     return FALSE;

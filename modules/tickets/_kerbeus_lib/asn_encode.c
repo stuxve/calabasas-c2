@@ -70,7 +70,7 @@ void FlasToBytes(UINT32 Options, byte* OptionsBytes) {
 
 int CodePoint(wchar_t* str, int* offset) {
     int c = str[(*offset)++];
-    if (c >= 0xD800 && c < 0xDC00 && *offset < my_strlen(str)) {
+    if (c >= 0xD800 && c < 0xDC00 && *offset < (int)my_wcslen(str)) {
         int d = str[(*offset)];
         if (d >= 0xDC00 && d < 0xE000) {
             (*offset)++;
@@ -136,13 +136,13 @@ bool EncodeUTF16(const wchar_t* str, int* lenr, byte** buf) {
 }
 
 bool EncodeUTF32(const wchar_t* str, int* len, byte** ms) {
-    size_t k = 0;
-    size_t n = my_wcslen(str);
+    int k = 0;
+    int n = (int)my_wcslen(str);
     size_t capacity = 32;
     size_t size = 0;
     *ms = MemAlloc(n * 4);
     while (k < n) {
-        int cp = CodePoint(str, &k);
+        int cp = CodePoint((wchar_t*)str, &k);
         (*ms)[size++] = (byte)(cp >> 24);
         (*ms)[size++] = (byte)(cp >> 16);
         (*ms)[size++] = (byte)(cp >> 8);
@@ -361,7 +361,9 @@ bool AsnEncTimeStampToPaDataEncode(EncryptionKey encKey, PA_DATA* pa_data) {
     if (AsnToBytesEncode(&totalSeq, &rawBytesSize, &rawBytes)) return true;
 
     byte* encBytes;
-    if (encrypt(rawBytes, rawBytesSize, encKey.key_value, encKey.key_type, KRB_KEY_USAGE_AS_REQ_PA_ENC_TIMESTAMP, &encBytes, &rawBytesSize)) return true;
+    DWORD encBytesSize_ts = rawBytesSize;
+    if (encrypt(rawBytes, rawBytesSize, encKey.key_value, encKey.key_type, KRB_KEY_USAGE_AS_REQ_PA_ENC_TIMESTAMP, &encBytes, &encBytesSize_ts)) return true;
+    rawBytesSize = (int)encBytesSize_ts;
 
     EncryptedData* pEncData = MemAlloc(sizeof(EncryptedData));
     if (!pEncData) {
@@ -743,7 +745,9 @@ bool AsnApReqEncode(AP_REQ* value, AsnElt* totalSeqContext) {
     if (AsnToBytesEncode(&authenticatorAsn, &authenticatorBytesLength, &authenticatorBytes)) return true;
 
     byte* encBytes = NULL;
-    if (encrypt(authenticatorBytes, authenticatorBytesLength, value->key.key_value, value->key.key_type, value->keyUsage, &encBytes, &authenticatorBytesLength)) return true;;
+    DWORD encBytesSize_auth = authenticatorBytesLength;
+    if (encrypt(authenticatorBytes, authenticatorBytesLength, value->key.key_value, value->key.key_type, value->keyUsage, &encBytes, &encBytesSize_auth)) return true;
+    authenticatorBytesLength = (int)encBytesSize_auth;
 
     EncryptedData authenticatorEncryptedData = { 0 };
     authenticatorEncryptedData.etype = value->key.key_type;
@@ -1132,7 +1136,7 @@ bool AsnKrbCredEncode(KRB_CRED* krb_cred, AsnElt* finalContext) {
     return false;
 }
 
-bool AsnADEncode(ADIfRelevant* adif, AsnElt** finalContext) {
+bool AsnADEncode(ADIfRelevant* adif, AsnElt* finalContext) {
     AsnElt adTypeSeqContext = { 0 };
     if (PackIntegerLong(0, adif->ad_type, &adTypeSeqContext)) return true;
 
@@ -1161,7 +1165,7 @@ bool AsnADRestrictionEntryEncode(ADRestrictionEntry* adre, AsnElt* finalContext)
 
     if (AsnToBytesEncode(&seq2, &(adre->ad_data_length), &(adre->ad_data))) return true;
 
-    if (AsnADEncode(adre, finalContext)) return true;
+    if (AsnADEncode((ADIfRelevant*)adre, finalContext)) return true;
     return false;
 }
 
@@ -1175,10 +1179,10 @@ bool AsnADIfRelevantEncode(ADIfRelevant* adif, AsnElt* finalContext) {
 
             switch (((ADIfRelevant*)adif->ADData[i])->ad_type) {
                 case 141:
-                    if (AsnADRestrictionEntryEncode(adif->ADData[i], &addrElt)) return true;
+                    if (AsnADRestrictionEntryEncode((ADRestrictionEntry*)adif->ADData[i], &addrElt)) return true;
                     break;
                 case 142:
-                    if (AsnADEncode(adif->ADData[i], &addrElt)) return true;
+                    if (AsnADEncode((ADIfRelevant*)adif->ADData[i], &addrElt)) return true;
                     break;
                 default:
                     break;
@@ -1245,14 +1249,15 @@ bool ReqToAsnEncode(AS_REQ as_req, int APP_NUM, AsnElt* totalSeqApp) {
 bool AsnEncKrbPrivPartEncode(EncKrbPrivPart* privPart, AsnElt* totalSeq) {
     // user-data       [0] OCTET STRING
     AsnElt new_passwordAsn = { 0 };
-    if (MakeBlob(privPart->new_password, 0, my_strlen(privPart->new_password), &new_passwordAsn)) return true;
+    if (MakeBlob((byte*)privPart->new_password, 0, my_strlen(privPart->new_password), &new_passwordAsn)) return true;
 
     AsnElt new_passwordAsnContext = { 0 }, principalAsn = { 0 }, principalAsnContext = { 0 }, realmAsn = { 0 }, realmAsnContext = { 0 }, new_passwordSeq = { 0 };
     if (privPart->username) {
         PrincipalName principal = { 0 };
         principal.name_type = PRINCIPAL_NT_PRINCIPAL;
         principal.name_count = 1;
-        if (my_copybuf(&(principal.name_string), privPart->username, my_strlen(privPart->username) + 1)) return true;
+        principal.name_string = MemAlloc(sizeof(void*));
+        if (my_copybuf((byte**)&(principal.name_string[0]), (byte*)privPart->username, my_strlen(privPart->username) + 1)) return true;
         if (AsnPrincipalNameEncode(&principal, &principalAsn)) return true;
 
         if (MakeString(ASN_GeneralString, privPart->realm, &realmAsn)) return true;
@@ -1272,8 +1277,8 @@ bool AsnEncKrbPrivPartEncode(EncKrbPrivPart* privPart, AsnElt* totalSeq) {
     AsnElt new_passwordBlobAsn = { 0 }, new_passwordSeqContext = { 0 };
     char* new_passwordBlob = NULL;
     int new_passwordBlobSize = 0;
-    if (AsnToBytesEncode(&new_passwordSeq, &new_passwordBlobSize, &new_passwordBlob))return true;
-    if (MakeBlob(new_passwordBlob, 0, new_passwordBlobSize, &new_passwordBlobAsn)) return true;
+    if (AsnToBytesEncode(&new_passwordSeq, &new_passwordBlobSize, (byte**)&new_passwordBlob))return true;
+    if (MakeBlob((byte*)new_passwordBlob, 0, new_passwordBlobSize, &new_passwordBlobAsn)) return true;
     if (MakeExplicit(ASN_CONTEXT, 0, &new_passwordBlobAsn, 1, &new_passwordSeqContext)) return true;
 
     // seq-number      [3] UInt32 OPTIONAL
@@ -1285,7 +1290,7 @@ bool AsnEncKrbPrivPartEncode(EncKrbPrivPart* privPart, AsnElt* totalSeq) {
     if (PackIntegerLong(0, 20, &hostAddressTypeSeqContext)) return true;
 
     AsnElt hostAddressAddressSeqContext = { 0 };
-    if (PackBlock(1, privPart->host_name, my_strlen(privPart->host_name), &hostAddressAddressSeqContext) ) return true;
+    if (PackBlock(1, (byte*)privPart->host_name, my_strlen(privPart->host_name), &hostAddressAddressSeqContext) ) return true;
 
     AsnElt hostAddressSeq = { 0 }, hostAddressSeq2 = { 0 }, hostAddressSeq2Context = { 0 };
     AsnElt seqHostAddress[] = { hostAddressTypeSeqContext, hostAddressAddressSeqContext };
@@ -1320,7 +1325,7 @@ bool AsnKrbPrivEncode(KRB_PRIV* privPart, AsnElt* totalSeq) {
     if (AsnToBytesEncode(&enc_partAsn, &enc_partByteSize, &enc_partByte)) return true;
 
     byte* encBytes = NULL;
-    int encBytesSize = 0;
+    DWORD encBytesSize = 0;
     if (encrypt(enc_partByte, enc_partByteSize, privPart->ekey.key_value, privPart->ekey.key_type, KRB_KEY_USAGE_KRB_PRIV_ENCRYPTED_PART, &encBytes, &encBytesSize)) return true;
 
     AsnElt blobSeqContext = { 0 };
