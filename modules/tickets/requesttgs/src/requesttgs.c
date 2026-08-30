@@ -11,6 +11,7 @@
 #include "../_kerbeus_lib/asn_encode.c"
 #include "../_kerbeus_lib/crypt_b64.c"
 #include "../_kerbeus_lib/crypt_dec.c"
+#include "../_kerbeus_lib/crypt_checksum.c"
 #include "../_kerbeus_lib/crypt_key.c"
 #include "../_kerbeus_lib/connection.c"
 
