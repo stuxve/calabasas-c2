@@ -35,9 +35,12 @@ CRED_MODULES = kerberoast asreproast dcsync dumplsass extracttickets ptt overpas
 LATERAL_MODULES = wmiexec smbexec psexec scshell
 EVASION_MODULES = patchamsi patchetw unhookntdll blockdlls ppidspoof timestomp
 TICKET_MODULES  = requesttgt requesttgs klist tickets_ptt purgetickets tgtdeleg \
-                  describeticket hash renewticket changepw s4u
+                  describeticket hash renewticket changepw s4u cross_s4u \
+                  kerberoasting asreproasting dump triage
 
-ALL_MODULES = $(ENUM_MODULES) $(CRED_MODULES) $(LATERAL_MODULES) $(EVASION_MODULES) $(TICKET_MODULES)
+UTILITY_MODULES = execute_assembly
+
+ALL_MODULES = $(ENUM_MODULES) $(CRED_MODULES) $(LATERAL_MODULES) $(EVASION_MODULES) $(TICKET_MODULES) $(UTILITY_MODULES)
 
 .PHONY: all clean validate $(ALL_MODULES)
 
@@ -309,6 +312,53 @@ s4u:
 		-o tickets/s4u/bin/s4u.$(ARCH).o \
 		tickets/s4u/src/s4u.c
 	@echo "  [+] s4u.$(ARCH).o"
+
+
+# ─── New Kerbeus ticket modules ───
+
+cross_s4u:
+	@mkdir -p tickets/cross_s4u/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/cross_s4u/bin/cross_s4u.$(ARCH).o \
+		tickets/cross_s4u/src/cross_s4u.c
+	@echo "  [+] cross_s4u.$(ARCH).o"
+
+kerberoasting:
+	@mkdir -p tickets/kerberoasting/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/kerberoasting/bin/kerberoasting.$(ARCH).o \
+		tickets/kerberoasting/src/kerberoasting.c
+	@echo "  [+] kerberoasting.$(ARCH).o"
+
+asreproasting:
+	@mkdir -p tickets/asreproasting/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) \
+		-o tickets/asreproasting/bin/asreproasting.$(ARCH).o \
+		tickets/asreproasting/src/asreproasting.c
+	@echo "  [+] asreproasting.$(ARCH).o"
+
+dump:
+	@mkdir -p tickets/dump/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) -DDUMP \
+		-o tickets/dump/bin/dump.$(ARCH).o \
+		tickets/dump/src/dump.c
+	@echo "  [+] dump.$(ARCH).o"
+
+triage:
+	@mkdir -p tickets/triage/bin
+	$(CC) $(CFLAGS) $(KERBEUS_INCLUDES) -DTRIAGE \
+		-o tickets/triage/bin/triage.$(ARCH).o \
+		tickets/triage/src/triage.c
+	@echo "  [+] triage.$(ARCH).o"
+
+# ─── Utility modules ───
+
+execute_assembly:
+	@mkdir -p utility/execute_assembly/bin
+	$(CC) $(CFLAGS) $(INCLUDES) \
+		-o utility/execute_assembly/bin/execute_assembly.$(ARCH).o \
+		utility/execute_assembly/src/execute_assembly.c
+	@echo "  [+] execute_assembly.$(ARCH).o"
 
 # ─── Validation ───
 

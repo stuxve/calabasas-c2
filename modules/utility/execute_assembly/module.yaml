@@ -1,0 +1,54 @@
+---
+name: execute_assembly
+category: utility
+description: >
+  Host the .NET CLR to load and run a .NET assembly (e.g. Rubeus.exe,
+  Seatbelt.exe) entirely in memory.  Pass the assembly as a base64-encoded
+  blob along with command-line arguments.  Run patchamsi and patchetw
+  beforehand to disable AMSI and ETW.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: execute_assembly.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: assembly
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "Base64-encoded .NET assembly bytes."
+    example: "TVqQAAMAAAAEAAAA..."
+
+  - name: args
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Command-line arguments for the assembly's Main(string[]) method."
+    example: "kerberoast /outfile:hashes.txt"
+
+output_format: raw
+opsec_level: high
+opsec_notes: >
+  Loads the .NET CLR (mscoree.dll) into the process and executes a
+  .NET assembly from memory.  Detection vectors include: CLR DLL loading
+  into an unmanaged process (clrjit.dll, clr.dll — Sysmon Event 7),
+  suspicious COM interface instantiation, and in-memory assembly loading.
+  Run patchamsi + patchetw first to reduce visibility.  The CLR cannot be
+  unloaded once started — it persists in the process for the session.
+
+timeout: 300
+tags: [execute-assembly, dotnet, clr, in-memory, utility]
+references:
+  - https://attack.mitre.org/techniques/T1620/
+  - https://www.ired.team/offensive-security/code-injection-process-injection/loading-and-executing-.net-assembly-in-memory
+mitre_attack_id: T1620

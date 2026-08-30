@@ -1,0 +1,134 @@
+---
+name: cross_s4u
+category: tickets
+description: >
+  Perform cross-domain S4U2Self/S4U2Proxy constrained delegation attacks.
+  Requests a service ticket via S4U across trust boundaries, using a TGT
+  for the originating domain and targeting a service in a foreign domain.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: cross_s4u.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: ticket
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "Base64-encoded TGT (kirbi) for the source domain principal."
+    example: "doIFxjCCBcKgAwI..."
+
+  - name: service
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "Target SPN in the foreign domain (e.g. cifs/fileserver.child.corp.local)."
+    example: "cifs/fs01.child.corp.local"
+
+  - name: targetdomain
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "FQDN of the target (foreign) domain."
+    example: "child.corp.local"
+
+  - name: targetdc
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "IP/hostname of a DC in the target domain. Empty = auto-discover."
+    example: "dc02.child.corp.local"
+
+  - name: impersonateuser
+    type: string
+    pack_type: z
+    required: true
+    default: ""
+    description: "User to impersonate via S4U2Self."
+    example: "administrator"
+
+  - name: tgs
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Base64-encoded S4U2Self service ticket to use for S4U2Proxy (skip S4U2Self step)."
+    example: ""
+
+  - name: domain
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Source domain FQDN. Empty = current domain."
+    example: "corp.local"
+
+  - name: dc
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "DC in the source domain. Empty = auto-discover."
+    example: "dc01.corp.local"
+
+  - name: altservice
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Rewrite the SPN in the final ticket (e.g. cifs,ldap for multiple)."
+    example: "cifs"
+
+  - name: ptt
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Inject the resulting ticket into the current logon session. 1 = yes."
+
+  - name: opsec
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "OPSEC mode: mimic genuine Windows Kerberos negotiation. 1 = yes."
+
+  - name: nopac
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Request ticket without PAC. 1 = exclude PAC."
+
+  - name: self
+    type: int
+    pack_type: i
+    required: false
+    default: 0
+    description: "Perform only S4U2Self (no S4U2Proxy). 1 = yes."
+
+output_format: raw
+opsec_level: medium
+opsec_notes: >
+  Performs cross-domain Kerberos S4U requests. Generates TGS-REQ traffic
+  to DCs in both source and target domains. Event 4769 will be logged for
+  each service ticket request.
+
+timeout: 180
+tags: [kerberos, s4u, delegation, cross-domain, tickets, lateral-movement]
+references:
+  - https://attack.mitre.org/techniques/T1558/
+  - https://github.com/RalfHacker/Kerbeus-BOF
+mitre_attack_id: T1558

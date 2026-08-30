@@ -1,0 +1,66 @@
+---
+name: triage
+category: tickets
+description: >
+  Display a summary table of all Kerberos tickets in the current or all
+  logon sessions. Shows client, server, encryption type, start/end times,
+  and renewal info without extracting the full ticket data.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: triage.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: luid
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target logon session LUID (hex, e.g. 0x3e7). Empty = current session."
+    example: "0x3e7"
+
+  - name: user
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Filter by client username substring."
+    example: "admin"
+
+  - name: service
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Filter by service name substring."
+    example: "krbtgt"
+
+  - name: client
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Filter by client realm substring."
+    example: "CORP.LOCAL"
+
+output_format: raw
+opsec_level: medium
+opsec_notes: >
+  Enumerates Kerberos ticket caches via LSA for display only — does not
+  extract ticket data. Viewing all sessions requires SYSTEM privileges.
+  Lower risk than dump since no ticket blobs are returned.
+
+timeout: 120
+tags: [kerberos, triage, tickets, enumeration]
+references:
+  - https://attack.mitre.org/techniques/T1558/
+  - https://github.com/RalfHacker/Kerbeus-BOF
+mitre_attack_id: T1558

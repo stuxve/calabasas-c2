@@ -1,0 +1,67 @@
+---
+name: dump
+category: tickets
+description: >
+  Extract full Kerberos tickets (TGTs and service tickets) from the
+  current logon session or all sessions (requires elevation). Outputs
+  base64-encoded kirbi blobs that can be used with ptt or offline.
+
+author: "operator"
+version: "1.0.0"
+
+execution_type: bof
+bof_file: dump.x64.o
+entry_point: go
+bof_arch: x64
+
+compatibility:
+  agent_min_version: "1.0.0"
+  agent_max_version: "99.x"
+
+arguments:
+  - name: luid
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Target logon session LUID (hex, e.g. 0x3e7). Empty = current session."
+    example: "0x3e7"
+
+  - name: user
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Filter by client username substring."
+    example: "admin"
+
+  - name: service
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Filter by service name substring."
+    example: "krbtgt"
+
+  - name: client
+    type: string
+    pack_type: z
+    required: false
+    default: ""
+    description: "Filter by client realm substring."
+    example: "CORP.LOCAL"
+
+output_format: raw
+opsec_level: high
+opsec_notes: >
+  Enumerates Kerberos ticket caches via LSA. Dumping tickets from other
+  sessions requires SYSTEM privileges (SeTcbPrivilege). Reading from
+  the current session's cache is lower-privilege. This is a post-exploitation
+  action that accesses LSASS-managed data.
+
+timeout: 120
+tags: [kerberos, dump, tickets, credential-access, extraction]
+references:
+  - https://attack.mitre.org/techniques/T1558/
+  - https://github.com/RalfHacker/Kerbeus-BOF
+mitre_attack_id: T1558
