@@ -430,6 +430,7 @@ _OID_SPC_INDIRECT  = '1.3.6.1.4.1.311.2.1.4'
 _OID_SPC_PE_IMAGE  = '1.3.6.1.4.1.311.2.1.15'
 _OID_SHA256         = '2.16.840.1.101.3.4.2.1'
 _OID_RSA            = '1.2.840.113549.1.1.1'
+_OID_SPC_OPUS_INFO  = '1.3.6.1.4.1.311.2.1.12'
 _OID_CONTENT_TYPE   = '1.2.840.113549.1.9.3'
 _OID_SIGNING_TIME   = '1.2.840.113549.1.9.5'
 _OID_MESSAGE_DIGEST = '1.2.840.113549.1.9.4'
@@ -456,12 +457,17 @@ def _build_spc_indirect_data(pe_hash: bytes) -> bytes:
 
 
 def _build_auth_attrs_body(content_digest: bytes,
-                           signing_time: datetime.datetime) -> bytes:
+                           signing_time: datetime.datetime,
+                           description: str = "") -> bytes:
     """Build authenticated attributes (sorted SET OF Attribute).
 
-    Returns raw concatenated DER of the three attributes.
+    Returns raw concatenated DER of the four attributes.
     Caller wraps in [0] IMPLICIT (0xA0) for PKCS#7 or SET (0x31)
     for signing.
+
+    The SPC_SP_OPUS_INFO attribute carries the program description
+    that Windows shows as the signer subject in Properties →
+    Digital Signatures.
     """
     attr_ct = _der_seq(
         _der_oid(_OID_CONTENT_TYPE),
@@ -475,8 +481,24 @@ def _build_auth_attrs_body(content_digest: bytes,
         _der_oid(_OID_MESSAGE_DIGEST),
         _der_set(_der_oct(content_digest)),
     )
+
+    # SPC_SP_OPUS_INFO — populates signer name in Windows properties
+    if description:
+        opus_body = _der_seq(
+            _der_tlv(0xA0,                          # programName [0] EXPLICIT
+                _der_tlv(0x80,                      # BMPString [0] IMPLICIT
+                    description.encode('utf-16-be'))
+            )
+        )
+    else:
+        opus_body = _der_seq()
+    attr_opus = _der_seq(
+        _der_oid(_OID_SPC_OPUS_INFO),
+        _der_set(opus_body),
+    )
+
     # DER SET OF: elements sorted by their encoded value
-    return b''.join(sorted([attr_ct, attr_st, attr_md]))
+    return b''.join(sorted([attr_ct, attr_st, attr_md, attr_opus]))
 
 
 def _pe_checksum(data: bytearray) -> int:
@@ -612,7 +634,7 @@ def _sign_pe_python(exe_path, company: str, description: str = "") -> bool:
     spc_content = _build_spc_indirect_data(pe_hash)
 
     content_digest = hashlib.sha256(spc_content).digest()
-    attrs_body = _build_auth_attrs_body(content_digest, now)
+    attrs_body = _build_auth_attrs_body(content_digest, now, description)
 
     # Sign authenticated attrs (re-tagged as SET 0x31 for signing)
     attrs_for_signing = _der_tlv(0x31, attrs_body)
@@ -646,6 +668,8 @@ def _sign_pe_python(exe_path, company: str, description: str = "") -> bool:
     win_cert = struct.pack('<IHH', 8 + len(pkcs7), 0x0200, 0x0002) + pkcs7
     win_cert += b'\x00' * ((8 - len(win_cert) % 8) % 8)  # 8-byte align
 
+    # Pad PE to 8-byte boundary before cert table
+    pe_data += b'\x00' * ((8 - len(pe_data) % 8) % 8)
     cert_table_rva = len(pe_data)
     struct.pack_into('<II', pe_data, cert_dd_offset,
                      cert_table_rva, len(win_cert))
