@@ -540,16 +540,16 @@ typedef struct {
 
 static void _unhook_ntdll(BYTE *ntdll_base, RESOLVED_APIS *api) {
     /*
-     * TARGETED per-stub ntdll unhooking via \KnownDlls.
+     * TARGETED per-stub ntdll unhooking via KnownDlls.
      *
-     * Maps a clean ntdll from the kernel's \KnownDlls section object,
-     * walks its export table, and only restores individual Nt*/Zw*
+     * Maps a clean ntdll from the kernel KnownDlls section object,
+     * walks its export table, and only restores individual Nt and Zw
      * syscall stubs that have been hooked (first bytes differ).
      *
-     * Does NOT replace the entire .text section — that would revert
+     * Does NOT replace the entire .text section -- that would revert
      * Windows in-memory hotfixes and break WinHTTP networking.
      *
-     * Uses only ntdll-native APIs — zero kernel32/kernelbase dependency,
+     * Uses only ntdll-native APIs -- zero kernel32 dependency,
      * so the forwarded-export problem does not apply.
      */
 
