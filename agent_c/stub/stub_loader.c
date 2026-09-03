@@ -31,7 +31,7 @@
 /* ─── Evasion toggles: enable one at a time to isolate issues ─── */
 #define EVASION_STOMP   1   /* MZ/PE signature stomp in _load_pe       */
 #define EVASION_UNHOOK  1   /* ntdll .text unhooking                   */
-#define EVASION_ETW     1   /* EtwEventWrite patch                     */
+#define EVASION_ETW     0   /* EtwEventWrite patch — DISABLED to test  */
 
 /* Legacy macro — leave at 0, individual toggles above take over */
 #define STUB_EVASION_ENABLED 0
