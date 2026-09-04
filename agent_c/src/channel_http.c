@@ -328,7 +328,10 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
                                              resp_buf.len - 1, response_len);
     }
 
-    if (resp_buf.data) SecureZeroMemory(resp_buf.data, resp_buf.len);
+    /* NOTE: resp_buf NOT wiped here — profile_decode_response may return
+     * a pointer into resp_buf.data (in-place base64 decode). The caller
+     * owns *response and wipes it after use. Contents are ciphertext
+     * wrapped in HTML anyway, not plaintext. */
     buf_free(&resp_buf);
     ok = (*response != NULL && *response_len > 0);
     DBG("[http] response decoded: %u bytes (ok=%d)", *response_len, ok);
