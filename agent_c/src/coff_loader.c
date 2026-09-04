@@ -984,14 +984,18 @@ BOOL coff_load_and_execute(
             VirtualProtect(loaded[i].base, loaded[i].size, PAGE_READWRITE, &op);
             SecureZeroMemory(loaded[i].base, loaded[i].size);
             FreeLibrary(loaded[i].hStompedMod);
-        } else if (loaded[i].phantomView) {
+        }
+#if CONFIG_MODULE_STOMP || CONFIG_PHANTOM_HOLLOW
+        else if (loaded[i].phantomView) {
             /* Phantom hollow: zero memory, release region */
             STOMP_REGION sr = {0};
             sr.base = loaded[i].base;
             sr.size = loaded[i].size;
             sr.viewBase = loaded[i].phantomView;
             postex_release_region(&sr);
-        } else {
+        }
+#endif
+        else {
             VirtualFree(loaded[i].base, 0, MEM_RELEASE);
         }
     }
@@ -1020,13 +1024,17 @@ cleanup_with_diag:
             VirtualProtect(loaded[i].base, loaded[i].size, PAGE_READWRITE, &op);
             SecureZeroMemory(loaded[i].base, loaded[i].size);
             FreeLibrary(loaded[i].hStompedMod);
-        } else if (loaded[i].phantomView) {
+        }
+#if CONFIG_MODULE_STOMP || CONFIG_PHANTOM_HOLLOW
+        else if (loaded[i].phantomView) {
             STOMP_REGION sr = {0};
             sr.base = loaded[i].base;
             sr.size = loaded[i].size;
             sr.viewBase = loaded[i].phantomView;
             postex_release_region(&sr);
-        } else {
+        }
+#endif
+        else {
             VirtualFree(loaded[i].base, 0, MEM_RELEASE);
         }
     }
