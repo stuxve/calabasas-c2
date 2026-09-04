@@ -43,8 +43,8 @@
  * after the load is complete.
  */
 #define EVASION_STOMP   1   /* Surgical PE header stomp — post-load    */
-#define EVASION_UNHOOK  0   /* DO NOT ENABLE — breaks WinHTTP (see above) */
-#define EVASION_ETW     0   /* DO NOT ENABLE — breaks WinHTTP (see above) */
+#define EVASION_UNHOOK  1   /* DO NOT ENABLE — breaks WinHTTP (see above) */
+#define EVASION_ETW     1   /* DO NOT ENABLE — breaks WinHTTP (see above) */
 
 
 /* ═══════════════════════════════════════════════════════════════════
